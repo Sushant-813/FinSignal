@@ -17,6 +17,15 @@ def test_settings_requires_password(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_settings_loads_with_password(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify settings initialization and defaults when password is provided."""
     monkeypatch.delenv("ENVIRONMENT", raising=False)
+    monkeypatch.delenv("POSTGRES_HOST", raising=False)
+    monkeypatch.delenv("DATABASE_HOST", raising=False)
+    monkeypatch.delenv("POSTGRES_PORT", raising=False)
+    monkeypatch.delenv("DATABASE_PORT", raising=False)
+    monkeypatch.delenv("POSTGRES_DB", raising=False)
+    monkeypatch.delenv("DATABASE_DB", raising=False)
+    monkeypatch.delenv("DATABASE_NAME", raising=False)
+    monkeypatch.delenv("POSTGRES_USER", raising=False)
+    monkeypatch.delenv("DATABASE_USER", raising=False)
     settings = Settings(
         database_password=SecretStr("supersecret"),
         _env_file=None,
