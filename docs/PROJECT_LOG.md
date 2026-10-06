@@ -208,35 +208,35 @@ The following sections are reserved for implementation milestones.
 
 Establish the Python project, development environment, configuration, PostgreSQL connectivity, migration infrastructure, testing foundation, and CI baseline.
 
-### Planned Work
+### Completed Work
 
-- initialize Python project;
-- configure `uv`;
-- configure FastAPI;
-- configure PostgreSQL;
-- configure migrations;
-- configure environment management;
-- configure linting;
-- configure formatting;
-- configure type checking;
-- configure pytest;
-- establish Docker foundation;
-- establish CI.
+- Pinned Python 3.12 with `uv` (`.python-version`, `pyproject.toml`, `uv.lock`).
+- Established standard `src/finsignal` package layout.
+- Implemented environment-based configuration using Pydantic Settings with dual alias mapping (`POSTGRES_*` / `DATABASE_*`), `SecretStr` password masking, and safe URL generators.
+- Created `.env.example` with placeholders; ensured `.env` is ignored by Git.
+- Implemented SQLAlchemy 2.0 Async (`asyncpg`) database resource factory (`create_db_resources(settings)`) bound to `app.state.db_engine` and `app.state.session_maker`.
+- Implemented FastAPI application factory (`create_app(settings)`), lifespan database cleanup, and exposed module-level `app = create_app()`.
+- Implemented `GET /health` (200 alive) and `GET /ready` (200 when DB connected, 503 JSONResponse when disconnected).
+- Implemented async database session dependency (`get_db_session`) with automatic rollback on error.
+- Configured Alembic with synchronous `psycopg` driver, dynamic settings URL retrieval, and created initial baseline migration (`0001_initial_baseline.py`) with zero domain tables.
+- Resolved database URL construction defect by transitioning from naive string interpolation to SQLAlchemy's structured `URL.create()` API, ensuring safe percent-encoding for passwords with reserved URI characters (`@`, `:`, `/`, etc.) and adding regression tests.
+- Implemented comprehensive test suite (unit, API, integration) using `pytest-asyncio` and `httpx`, verifying health, ready, disconnected handling, settings validation, and test database isolation (`finsignal_test`).
+- Configured Ruff (linter and formatter) with `extend-exclude = ["docs"]`, and configured mypy in strict mode.
+- Created GitHub Actions CI workflow (`.github/workflows/ci.yml`) targeting `main` with ephemeral PostgreSQL 16 service container.
+- Note: Docker local containerization was explicitly deferred to Phase 12 per architectural decision (ADR-061); native Windows PostgreSQL and GitHub Actions CI service were established.
 
 ### Validation
 
-Required:
-
-- application starts;
-- database connects;
-- migration executes;
-- health endpoint works;
-- test suite runs;
-- static checks pass.
+- **Automated Tests:** `uv run pytest -v` passed with 12/12 tests passing across unit, API, and integration suites.
+- **Static Analysis & Formatting:** `uv run ruff check .` passed with 0 errors; `uv run ruff format --check .` confirmed all 16 files formatted; `uv run mypy src tests` passed in strict mode with 0 issues.
+- **Live PostgreSQL Verification:** Native PostgreSQL 18 service (`postgresql-x64-18`) on Windows validated on port 5432; connection verified using project settings.
+- **Migration Verification:** `uv run alembic upgrade head` executed live against `finsignal_dev`; downgrade to base (`alembic downgrade base`) and re-upgrade cycles verified; database catalog inspection confirmed `alembic_version` contains `0001_initial_baseline` with zero domain tables.
+- **Endpoint Verification:** Live Uvicorn execution verified with HTTP client; `GET /health` returned HTTP 200 `{"status": "healthy"}`; `GET /ready` returned HTTP 200 `{"status": "ready", "database": "connected"}` with live database, and HTTP 503 `{"status": "unhealthy", "database": "disconnected"}` when database is disconnected.
+- **CI Workflow:** GitHub Actions workflow reviewed and validated locally; staged for remote execution upon repository push.
 
 ### Status
 
-`NOT STARTED`
+`COMPLETED`
 
 ---
 

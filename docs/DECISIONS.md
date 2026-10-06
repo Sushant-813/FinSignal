@@ -1545,6 +1545,34 @@ Use an unconstrained UUID column `source_id` paired with `source_type` on `inves
 
 ---
 
+# ADR-061 — Defer Docker Local Containerization to Phase 12
+
+**Status:** ACCEPTED
+
+## Context
+
+Phase 0 local development runs directly against native Windows PostgreSQL and uses ephemeral PostgreSQL containers in GitHub Actions CI. Mandating Docker Desktop locally for Phase 0 adds virtualization overhead and unnecessary setup prerequisites for developers without architectural benefit.
+
+## Decision
+
+Defer Docker local containerization to Phase 12 (Deployment & Packaging). Develop Phase 0 through Phase 11 using native Python 3.12 (managed via `uv`) and native PostgreSQL installations.
+
+---
+
+# ADR-062 — Structured URL Construction for Database Connections
+
+**Status:** ACCEPTED
+
+## Context
+
+Database credentials (e.g. passwords containing reserved URI characters such as `@`, `:`, `/`, `?`, `#`, `%`) break naive string-interpolated connection URLs, causing driver URI parsing failures.
+
+## Decision
+
+Use SQLAlchemy's structured `URL.create()` API for generating runtime (`postgresql+asyncpg`) and migration (`postgresql+psycopg`) connection URLs. This guarantees proper percent-encoding of credential values while preserving exact credentials during downstream database engine connection.
+
+---
+
 # 4. Decision Dependency Map
 
 ```text
@@ -1616,17 +1644,16 @@ The following decisions remain intentionally open until implementation provides 
 
 1. Exact JWT revocation/logout strategy.
 2. Exact password policy.
-3. Exact database migration tooling configuration.
-4. Exact model artifact storage location.
-5. Exact LLM provider.
-6. Exact AI model.
-7. Exact risk-score thresholds.
-8. Exact feature normalization strategy.
-9. Exact model artifact serialization format.
-10. Exact deployment platform.
-11. Exact rate-limiting implementation defaults.
-12. Exact background-job strategy if batch processing becomes slow.
-13. Exact frontend architecture after Backend + ML completion.
+3. Exact model artifact storage location.
+4. Exact LLM provider.
+5. Exact AI model.
+6. Exact risk-score thresholds.
+7. Exact feature normalization strategy.
+8. Exact model artifact serialization format.
+9. Exact deployment platform.
+10. Exact rate-limiting implementation defaults.
+11. Exact background-job strategy if batch processing becomes slow.
+12. Exact frontend architecture after Backend + ML completion.
 
 ### Detailed Open Decision: Sparse/New-Account Baseline Strategy (Phase 6 Resolution Checkpoint)
 

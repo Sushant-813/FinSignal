@@ -186,13 +186,13 @@ Establish the repository, development environment, documentation structure, depe
 - Python environment configured;
 - `uv` configured;
 - FastAPI project skeleton;
-- PostgreSQL development environment;
-- Docker configuration foundation;
+- PostgreSQL development environment (Windows native);
 - environment configuration;
 - `.env.example`;
 - Git conventions;
 - base documentation structure;
-- initial CI skeleton.
+- initial CI skeleton;
+- Note: Docker containerization is deferred to Phase 12 per approved architectural decision.
 
 ## Key Tasks
 
@@ -216,7 +216,11 @@ Establish the repository, development environment, documentation structure, depe
 - health endpoint works;
 - tests execute;
 - linting/type checking execute;
-- Docker development environment works.
+- native PostgreSQL development environment works (Docker containerization deferred to Phase 12).
+
+## Status
+
+`COMPLETED`
 
 ---
 
