@@ -3,11 +3,24 @@
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Response
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
+from sqlalchemy.exc import SQLAlchemyError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from finsignal.api.router import api_v1_router
+from finsignal.api.v1.system import router as system_router
+from finsignal.common.exceptions import FinSignalError
+from finsignal.common.handlers import (
+    finsignal_exception_handler,
+    sqlalchemy_exception_handler,
+    starlette_http_exception_handler,
+    validation_exception_handler,
+)
 from finsignal.core import database
 from finsignal.core.config import Settings, get_settings
+from finsignal.core.logging import setup_logging
+from finsignal.core.middleware import RequestIdMiddleware
 
 
 @asynccontextmanager
@@ -23,9 +36,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Construct and configure a FinSignal FastAPI application instance.
 
-    Accepts optional settings to allow clean test database isolation.
+    Acts as the composition root, wiring logging, middleware, exception handlers,
+    routers, and application-bound resources.
     """
     app_settings = settings or get_settings()
+
+    # Idempotent logging configuration
+    setup_logging(app_settings)
 
     app = FastAPI(
         title=app_settings.app_name,
@@ -39,24 +56,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.db_engine = engine
     app.state.session_maker = session_maker
 
-    @app.get("/health", tags=["System"])
-    async def health_check() -> dict[str, str]:
-        """Process liveness probe; independent of database connectivity."""
-        return {"status": "healthy"}
+    # Attach pure ASGI Request-ID and unexpected exception middleware
+    app.add_middleware(RequestIdMiddleware, header_name=app_settings.request_id_header)
 
-    @app.get("/ready", tags=["System"], response_model=None)
-    async def readiness_check() -> Response:
-        """Infrastructure readiness probe; verifies downstream database availability."""
-        is_ready = await database.ping_database(app.state.db_engine)
-        if is_ready:
-            return JSONResponse(
-                status_code=200,
-                content={"status": "ready", "database": "connected"},
-            )
-        return JSONResponse(
-            status_code=503,
-            content={"status": "unhealthy", "database": "disconnected"},
-        )
+    # Register specific FastAPI exception handlers (Layer 2)
+    # Note: No generic handler for Exception is registered to avoid competing fallback handlers;
+    # unexpected errors escaping the app boundary are handled cleanly by RequestIdMiddleware (Layer 1).
+    app.add_exception_handler(FinSignalError, finsignal_exception_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(RequestValidationError, validation_exception_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(SQLAlchemyError, sqlalchemy_exception_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(StarletteHTTPException, starlette_http_exception_handler)  # type: ignore[arg-type]
+
+    # Mount system probes at root / for Phase 0 contract compatibility (/health, /ready)
+    app.include_router(system_router)
+
+    # Mount versioned API routes (/api/v1/...)
+    app.include_router(api_v1_router)
 
     return app
 

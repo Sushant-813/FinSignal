@@ -1242,14 +1242,18 @@ Access may be restricted because device relationships can reveal investigative i
 
 # 41. Health Endpoints
 
-The backend should expose:
+The backend exposes health and readiness checks at both root and versioned API paths:
 
 ```http
 GET /health
 GET /ready
+GET /api/v1/health
+GET /api/v1/ready
 ```
 
-### `/health`
+Responses also include `X-Request-ID` (or configured correlation header) and `X-Process-Time` headers.
+
+### `/health` and `/api/v1/health`
 
 Answers:
 
@@ -1257,7 +1261,9 @@ Answers:
 Is the process running?
 ```
 
-### `/ready`
+Returns HTTP 200 `{"status": "healthy"}` independently of downstream database availability.
+
+### `/ready` and `/api/v1/ready`
 
 Answers:
 
@@ -1265,7 +1271,7 @@ Answers:
 Can the service accept requests?
 ```
 
-Readiness may verify dependencies such as PostgreSQL.
+Readiness verifies dependencies such as PostgreSQL. Returns HTTP 200 `{"status": "ready", "database": "connected"}` when connected, and HTTP 503 `{"status": "unhealthy", "database": "disconnected"}` when unreachable.
 
 Health endpoints should not expose secrets or detailed infrastructure information.
 
@@ -1346,15 +1352,17 @@ Example:
 
 Every API request should have a request/correlation ID.
 
-Example header:
+Default header:
 
 ```text
 X-Request-ID
 ```
 
-If the client provides a valid ID, the server may preserve it.
+The correlation header name is configurable via application settings (`Settings.request_id_header`).
 
-Otherwise the server generates one.
+Client-supplied IDs are validated against `^[a-zA-Z0-9_-]{1,64}$`. If valid, the ID is preserved as a correlation hint; otherwise a 32-character hex UUID4 is generated. Client IDs are never treated as an authentication or authorization signal.
+
+Authoritative request ID and `X-Process-Time` (in milliseconds) headers are attached to responses. Pre-existing duplicate instances of these headers are stripped.
 
 The ID should appear in logs and error responses.
 

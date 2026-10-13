@@ -831,11 +831,11 @@ raw authentication headers
 
 Avoid logging complete transaction payloads by default.
 
-Prefer identifiers and structured metadata.
+Prefer identifiers and structured metadata (e.g. `request_id`, endpoint method/path, status codes, process timing). Where application exceptions contain diagnostics, log only safe metadata flags (e.g. `has_internal_context: bool`) rather than serializing raw unvetted diagnostic dictionaries into routine log streams.
 
 ---
 
-# 42. Sensitive Error Messages
+# 42. Sensitive Error Messages & Exception Boundaries
 
 Production errors must not expose:
 
@@ -848,6 +848,25 @@ Production errors must not expose:
 - third-party API credentials
 
 Detailed diagnostics belong in protected server logs.
+
+### Exception Safety Contracts
+
+FinSignal enforces strict error sanitization boundaries across all API responses:
+
+1. **Domain Exceptions (`FinSignalError`):**
+   - `message` must contain only intentionally selected, client-safe public descriptions.
+   - `details` must contain only explicitly approved public fields (or empty dict). Never include connection info, raw SQL, or sensitive transaction fields.
+   - `internal_context` is strictly isolated for server-side debugging and is never included in HTTP response envelopes.
+   - Error codes must adhere to the standardized uppercase pattern (`^[A-Z0-9_]{3,64}$`).
+
+2. **Request Validation Errors (`RequestValidationError`):**
+   - Validation failure details are sanitized before returning to the client.
+   - Field location path segments are validated against `^[a-zA-Z0-9_]+$` (or integer indices); invalid tokens are omitted or normalized to prevent reflective payload injection.
+   - Raw input values and arbitrary unvalidated client strings are never echoed back in error responses.
+
+3. **Unhandled Exceptions:**
+   - Any unhandled runtime exception is caught by the application error boundary and returned as a generic 500 `INTERNAL_ERROR` envelope.
+   - The active `request_id` is retained in the envelope and response headers for correlation with protected server logs.
 
 ---
 

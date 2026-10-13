@@ -37,6 +37,9 @@ def test_settings_loads_with_password(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.database_name == "finsignal_dev"
     assert settings.database_user == "postgres"
     assert settings.database_password.get_secret_value() == "supersecret"
+    assert settings.log_level == "INFO"
+    assert settings.log_format is None
+    assert settings.request_id_header == "X-Request-ID"
 
 
 def test_settings_masks_password() -> None:
@@ -116,3 +119,62 @@ def test_settings_special_characters_in_password() -> None:
     assert sync_url.host == "localhost"
     assert sync_url.port == 5432
     assert sync_url.database == "test_db"
+
+
+def test_settings_environment_validation() -> None:
+    """Verify allowed environment profiles and rejection of invalid values."""
+    for env in ("development", "testing", "production"):
+        s = Settings(
+            environment=env,
+            database_password=SecretStr("pw"),
+            _env_file=None,
+        )
+        assert s.environment == env
+
+    with pytest.raises(ValidationError):
+        Settings(
+            environment="staging",
+            database_password=SecretStr("pw"),
+            _env_file=None,
+        )
+
+
+def test_settings_log_level_validation() -> None:
+    """Verify log_level uppercase normalization and rejection of invalid levels."""
+    s = Settings(
+        log_level="debug",
+        database_password=SecretStr("pw"),
+        _env_file=None,
+    )
+    assert s.log_level == "DEBUG"
+
+    with pytest.raises(ValidationError):
+        Settings(
+            log_level="INVALID_LEVEL",
+            database_password=SecretStr("pw"),
+            _env_file=None,
+        )
+
+
+def test_settings_log_format_validation() -> None:
+    """Verify log_format accepts text, json, or None."""
+    s_text = Settings(
+        log_format="text",
+        database_password=SecretStr("pw"),
+        _env_file=None,
+    )
+    assert s_text.log_format == "text"
+
+    s_json = Settings(
+        log_format="json",
+        database_password=SecretStr("pw"),
+        _env_file=None,
+    )
+    assert s_json.log_format == "json"
+
+    with pytest.raises(ValidationError):
+        Settings(
+            log_format="xml",
+            database_password=SecretStr("pw"),
+            _env_file=None,
+        )

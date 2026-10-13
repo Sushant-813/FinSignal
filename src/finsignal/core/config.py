@@ -1,8 +1,9 @@
 """Application configuration management using Pydantic Settings."""
 
 from functools import lru_cache
+from typing import Literal
 
-from pydantic import AliasChoices, Field, SecretStr
+from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import URL
 
@@ -11,10 +12,28 @@ class Settings(BaseSettings):
     """FinSignal application settings."""
 
     app_name: str = "FinSignal"
-    environment: str = "development"
+    environment: Literal["development", "testing", "production"] = "development"
     debug: bool = False
     host: str = "127.0.0.1"
     port: int = 8000
+
+    # Logging settings
+    log_level: str = "INFO"
+    log_format: Literal["text", "json"] | None = None
+
+    # Request correlation
+    request_id_header: str = "X-Request-ID"
+
+    @field_validator("log_level")
+    @classmethod
+    def validate_log_level(cls, v: str) -> str:
+        """Validate and normalize log level string."""
+        normalized = v.upper()
+        allowed = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+        if normalized not in allowed:
+            msg = f"Invalid log level: '{v}'. Must be one of {allowed}"
+            raise ValueError(msg)
+        return normalized
 
     # Database settings with dual alias support (POSTGRES_* and DATABASE_*)
     database_host: str = Field(

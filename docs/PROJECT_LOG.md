@@ -5,7 +5,7 @@
 **Scope:** Backend + ML  
 **Status:** Active Development Log  
 **Version:** 1.0.0  
-**Last Updated:** 2026-10-04
+**Last Updated:** 2026-10-13
 
 ---
 
@@ -819,6 +819,51 @@ Frontend work should begin as a new documented phase rather than being mixed int
 ---
 
 # 23. Change Log
+
+## 2026-10-13 — Phase 1 Backend Architecture & Core Structure
+
+### Objective
+Implement Phase 1 Backend Architecture & Core Structure establishing a testable, secure modular-monolith foundation.
+
+### Work Completed
+- Extended `Settings` in `core/config.py` with environment profiles (`development`, `testing`, `production`), normalized log levels, log formats (`text`, `json`), and configurable request ID header name (`request_id_header`, defaulting to `"X-Request-ID"`).
+- Created contextual logging subsystem in `core/logging.py` featuring `request_id_ctx` (ContextVar), `RequestIdFilter`, human-readable `TextFormatter`, structured single-line `JsonFormatter`, and idempotent `setup_logging()`.
+- Implemented pure ASGI `RequestIdMiddleware` in `core/middleware.py` with strict regex validation (`^[a-zA-Z0-9_-]{1,64}$`), UUID fallback, header de-duplication, latency measurement (`X-Process-Time`), context variable cleanup in `finally`, pre-response-start sanitized 500 fallback, and mid-stream exception propagation.
+- Defined minimal `FinSignalError` hierarchy in `common/exceptions.py` (`NotFoundError`, `ConflictError`, `ValidationError`, `AuthenticationError`, `AuthorizationError`, `InfrastructureError`) with validated error code format (`^[A-Z0-9_]{3,64}$`) and strict isolation of public messages/details from private `internal_context`.
+- Defined standard error response payload models in `common/responses.py` (`ErrorPayload`, `ErrorResponse`).
+- Implemented centralized exception handlers in `common/handlers.py` for `FinSignalError`, `RequestValidationError` (safe descriptions and sanitized key paths), `SQLAlchemyError` (safe 500 responses without query/credential leakage), and `StarletteHTTPException` (allowlisted messages preserving protocol headers).
+- Created versioned routing structure in `api/router.py` and `api/v1/system.py`, mounting `/health` and `/ready` probes at both root and `/api/v1` for contract preservation.
+- Wired middleware, logging, exception handlers, and database lifecycle resources cleanly through `create_app()` factory in `main.py`.
+- Developed comprehensive test coverage across configuration, logging, pure ASGI middleware edge cases, exception handlers, and security sanitization.
+
+### Audit & Resolved Findings
+Following initial implementation, a comprehensive senior security review and code audit was conducted:
+- **P2-1 (Versioned Probe Coverage):** Parametrized tests in `tests/api/test_health.py` to cover both root and versioned routes (`/health` & `/api/v1/health`, `/ready` & `/api/v1/ready`) in connected and disconnected database states.
+- **P2-2 (Configurable Request ID Wiring):** Added integration test in `tests/api/test_request_id.py` verifying `Settings(request_id_header="X-Correlation-ID") → create_app() → RequestIdMiddleware` wiring, ensuring valid custom headers are preserved, missing/malformed IDs regenerate under the custom header name, and duplicate headers are stripped.
+- **P2-3 (Production Logging Setup):** Added unit tests in `tests/unit/test_logging.py` verifying that `setup_logging()` selects `JsonFormatter` in production profile and honors explicit format overrides, with an autouse fixture ensuring root logger state isolation across tests.
+- **P3-1 (Location Sanitization):** Added focused test in `tests/api/test_errors.py` with synthetic validation errors carrying non-alphanumeric location tokens (e.g. `<script>`), verifying they are stripped via `FIELD_NAME_REGEX` and safely fall back to `"payload"` or valid prefix identifiers.
+- **Diagnostic Note:** Investigated an editor LSP warning (`Pyrefly(bad-argument-type)` on `Field(..., gt=0)`); determined it is an upstream Pyrefly false positive when matching `annotated_types.SupportsGt`. Confirmed the source code is standard Pydantic v2, unmodified, and verified clean by the project's configured strict Mypy type checker.
+
+### Validation
+- 49 automated tests passing (`uv run pytest -v`).
+- Ruff linter passing with zero warnings or errors (`uv run ruff check .`).
+- Ruff formatter check passing (`uv run ruff format --check .`, 30 files formatted).
+- Strict mypy passing across all 27 source files (`uv run mypy src tests`).
+- Alembic database migration status verified clean at `0001_initial_baseline (head)` (`uv run alembic current`).
+- Phase 0 invariants, database session lifecycles, and health/readiness contracts preserved.
+
+### Decisions
+- Handled unexpected pre-start exceptions inside `RequestIdMiddleware` with sanitized HTTP 500 fallback, and re-raise mid-stream exceptions cleanly.
+- Strict separation between public exception details and internal diagnostic metadata; private sentinel values and raw internal context dictionaries are never leaked to client responses or routine logs.
+- Retained ADR-063 as `PROPOSED` without premature filesystem scaffolding or schema migrations.
+
+### Result
+Phase 1 Backend Architecture & Core Structure is fully verified, operational, and clean. All acceptance criteria are satisfied.
+
+### Follow-up
+Proceed to Phase 2 (Data Foundation & Schema Design) when authorized.
+
+---
 
 ## 2026-10-04
 
