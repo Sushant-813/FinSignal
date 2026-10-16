@@ -1963,6 +1963,8 @@ GET    /api/v1/investigations/{investigation_id}/ai-summary
 ```text
 GET    /health
 GET    /ready
+GET    /api/v1/health
+GET    /api/v1/ready
 ```
 
 This list is the initial API surface, not a requirement to implement every endpoint simultaneously.

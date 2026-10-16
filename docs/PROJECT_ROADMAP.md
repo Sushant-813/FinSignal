@@ -328,6 +328,10 @@ audit_events
 - transaction semantics are verified;
 - no derived risk data is stored directly on raw transactions.
 
+## Status
+
+`NOT STARTED`
+
 ---
 
 # 8. Phase 3 — Authentication & RBAC

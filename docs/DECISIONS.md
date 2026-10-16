@@ -5,7 +5,7 @@
 **Scope:** Backend + ML  
 **Status:** Planning / Implementation-Ready  
 **Version:** 1.0.0  
-**Last Updated:** 2026-10-04
+**Last Updated:** 2026-10-17
 
 ---
 
@@ -1570,6 +1570,45 @@ Database credentials (e.g. passwords containing reserved URI characters such as 
 ## Decision
 
 Use SQLAlchemy's structured `URL.create()` API for generating runtime (`postgresql+asyncpg`) and migration (`postgresql+psycopg`) connection URLs. This guarantees proper percent-encoding of credential values while preserving exact credentials during downstream database engine connection.
+
+---
+
+# ADR-063 — Progressive Domain Module and Schema Realization Without Premature Scaffolding
+
+**Status:** PROPOSED
+
+## Context
+
+Phase 1 (Backend Architecture & Core Structure) establishes the modular-monolith foundation, including application configuration, structured logging, request ID tracking, error handling hierarchies, and baseline system probe endpoints. The architecture specifies sixteen logical domain and feature modules (`auth`, `users`, `accounts`, `merchants`, `devices`, `locations`, `transactions`, `ingestion`, `analytics`, `features`, `risk`, `investigations`, `evidence`, `ai`, `dataset`, and `common`).
+
+A common architectural question during early foundational phases is whether to generate empty placeholder packages (stub directories and inert `__init__.py` files) and dummy schema migrations for all future modules upfront. In a system following incremental phase-gated delivery (Phase 2 for Database & Domain Models, Phase 3 for Authentication & RBAC, Phase 4 for Transactions, etc.), premature scaffolding creates empty namespace bloat, complicates static type checking and import linting, and risks committing placeholder migrations before domain entities are fully specified.
+
+## Decision
+
+Retain domain module directory creation and database schema migrations strictly for their designated implementation phases:
+
+1. Do not create empty filesystem scaffolding or placeholder directories for domain modules ahead of their scheduled roadmap phase.
+2. Do not author speculative database schema migrations ahead of Phase 2 domain model definitions.
+3. Realize each domain module package (`auth/`, `accounts/`, `transactions/`, etc.) and its corresponding database migrations only when active implementation of that domain begins in its scheduled phase.
+
+## Rationale
+
+- **Clean Namespace & Linting:** Avoids empty packages that pollute import auto-completion, generate empty-file linter warnings, or require artificial type-checker exclusions.
+- **Schema Integrity:** Ensures database migrations strictly reflect validated, tested SQLAlchemy domain models created in Phase 2 rather than speculative stub tables.
+- **Phase Alignment:** Preserves the incremental verification guarantees of the project roadmap, where every phase transitions from a clean baseline to verified reality.
+- **Simplicity:** Aligns with core architectural principles (ADR-004, ADR-055, and PRD Principle 8) emphasizing simplicity over premature structure.
+
+## Consequences
+
+- Domain modules are introduced incrementally as their corresponding phases commence.
+- Test suites, type checking, and linters evaluate only active, fully realized code.
+- Developers must not scaffold empty module directories or migrations in advance of authorized work.
+
+## Scope
+
+- This decision **proposes** the phased realization discipline for remaining backend and ML modules.
+- This decision **does not** alter the logical module boundaries defined in ADR-004 or the module allocation described in the roadmap.
+- This decision **does not** authorize Phase 2 implementation, database schema modifications, or directory creation ahead of formal phase authorization.
 
 ---
 
