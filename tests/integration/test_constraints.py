@@ -36,11 +36,16 @@ def get_admin_connection_params() -> dict[str, str | int]:
         os.environ.get("POSTGRES_USER") or env_vals.get("POSTGRES_USER") or "postgres"
     )
 
-    # If env var is set to conftest default 'test_password', prioritize .env if present
-    pw = os.environ.get("POSTGRES_PASSWORD") or os.environ.get("DATABASE_PASSWORD")
-    if (not pw or pw == "test_password") and env_vals.get("POSTGRES_PASSWORD"):
-        pw = env_vals["POSTGRES_PASSWORD"]
-    elif not pw:
+    # Prioritize explicit non-default environment variables, then .env, then test_password fallback
+    dotenv_pw = env_vals.get("POSTGRES_PASSWORD")
+    env_override_pw = os.environ.get("POSTGRES_PASSWORD") or os.environ.get(
+        "DATABASE_PASSWORD"
+    )
+    if env_override_pw and env_override_pw != "test_password":
+        pw = env_override_pw
+    elif dotenv_pw:
+        pw = dotenv_pw
+    else:
         pw = "test_password"
 
     return {
