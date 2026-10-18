@@ -1515,6 +1515,9 @@ Adopt a dual-layer deduplication design:
    ```
 2. For standalone/manual transactions where `dataset_import_id IS NULL`, enforce application-level idempotency within the transaction domain service using account, external_id, and occurred_at checks inside an atomic transaction.
 
+> [!NOTE]
+> Pre-implementation review of Phase 2 identified that partial index `uq_transactions_import_ext_id` cannot prevent duplicate transactions across repeated import batches or multi-version datasets. A comprehensive canonical identity and import-provenance model has been drafted in **ADR-064 (PROPOSED)**. ADR-058 remains `ACCEPTED` until ADR-064 is formally accepted.
+
 ---
 
 # ADR-059 — Model Artifact Integrity Verification via SHA-256
@@ -1612,6 +1615,71 @@ Retain domain module directory creation and database schema migrations strictly 
 
 ---
 
+# ADR-064 — Canonical Transaction Identity & Import-Level Row Provenance
+
+**Status:** PROPOSED
+
+## Context
+
+During the pre-implementation architectural review of Phase 2, critical limitations were identified in the transaction deduplication and identity model specified in ADR-058:
+
+1. **Import-Scoped Duplicate Failure:** ADR-058 specified a partial unique index `(dataset_import_id, external_transaction_id) WHERE dataset_import_id IS NOT NULL`. Because `dataset_import_id` is unique per import job, ingesting the same CSV twice (or ingesting multiple dataset versions containing overlapping historical transactions) resulted in duplicate canonical transaction rows with different primary keys, corrupting financial metrics and analytics.
+2. **Account Scope Requirement:** Synthetic transaction identifiers (`TXN_[0-9]{8}`) and external bank transaction references are unique per customer account, not globally unique across all accounts or multi-source environments.
+3. **Loss of Import Provenance:** Merging identical transactions into a single canonical row without an intermediary ledger destroys import lineage, preventing audits from knowing which CSV files, upload jobs, or row ordinals referenced a transaction.
+4. **Ambiguity in Idempotency Boundaries:** The system previously conflated HTTP transport idempotency (`Idempotency-Key`), byte-identical file deduplication (`file_hash`), canonical transaction natural identity, and import-row lineage.
+5. **Standalone Transactions:** Direct API creation of individual transactions must remain supported without requiring dummy batch import records.
+6. **Risk of Silent Data Overwrites:** Retrying or re-importing modified payloads risked silently updating or overwriting raw financial records, violating transaction immutability.
+
+## Decision
+
+Adopt canonical transaction identity scoped by source namespace, canonical account, and external transaction ID, paired with an explicit row-level provenance ledger (`transaction_import_records`):
+
+1. **Canonical Natural Key:** Enforce canonical transaction identity at the database layer via composite unique constraint:
+   ```sql
+   CONSTRAINT uq_transactions_canonical_id
+       UNIQUE (source_namespace, account_id, external_transaction_id);
+   ```
+2. **Pre-matching Account Resolution:** Ingestion pipelines must resolve incoming external account identifiers to internal canonical `accounts.id` before evaluating transaction identity. Missing accounts cause row rejection, not partial transaction creation.
+3. **Source Namespace Isolation:** Introduce `source_namespace VARCHAR(64) NOT NULL DEFAULT 'SYNTHETIC'` to isolate synthetic generation runs from future external bank or partner ingestions.
+4. **Nullable First-Seen Import Reference:** Retain `transactions.first_seen_import_id UUID NULL REFERENCES dataset_imports(id) ON DELETE RESTRICT`. Standalone transactions created via direct API endpoints store `NULL`, preserving standalone support without synthetic import jobs.
+5. **Import Provenance Ledger (`transaction_import_records`):** Expand Phase 2 Option C scope from 11 to 12 operational tables by adding `transaction_import_records`:
+   - Enforce `UNIQUE (dataset_import_id, source_row_number)` for exact row provenance.
+   - Record row processing outcomes using an explicit vocabulary:
+     - `INSERTED`: New canonical transaction inserted into `transactions` (`transaction_id` references new `transactions.id`).
+     - `MATCHED_EXISTING`: Row matched an existing identical canonical transaction; linked to existing `transaction_id` without creating duplicates.
+     - `DUPLICATE_IN_IMPORT`: Duplicate natural key within the same CSV payload; linked to the canonical `transaction_id` inserted by the first row.
+     - `QUARANTINED`: Row matched an existing transaction key but had materially conflicting payload attributes (`transaction_id` is `NULL`; source row remains traceable via `dataset_import_id`, `source_row_number`, and `row_hash`).
+     - `REJECTED`: Row failed syntax, schema, account resolution, or check constraints (`transaction_id` is `NULL`).
+   - Track `row_hash` (SHA-256) for auditability.
+6. **Strict Material Conflict Quarantine:** When an incoming row matches `(source_namespace, account_id, external_transaction_id)` but differs materially in core financial attributes (`amount`, `currency`, `occurred_at`, `account_id`, `direction`, `transaction_type`, `counterparty_account_id`):
+   - Never update or overwrite existing canonical transaction records.
+   - Record an error in `dataset_import_errors` with persisted `error_code = 'MATERIAL_CONFLICT'`.
+   - Record the row in `transaction_import_records` with `outcome = 'QUARANTINED'` and `transaction_id = NULL`.
+7. **Four Distinct Deduplication Boundaries:**
+   - *HTTP Request Transport:* Enforced via `Idempotency-Key` header on API endpoints (ephemeral cache/storage).
+   - *Byte-Identical File Deduplication & Concurrency:* Enforced via `dataset_imports.file_hash` (SHA-256). Storing `file_hash` alone and relying solely on a partial unique index on active statuses (`PENDING`, `PROCESSING`) cannot prevent duplicate imports under fast-completion race conditions. Concurrency safety is guaranteed by a **transaction-scoped PostgreSQL advisory lock** acquired before lookup and held through record creation:
+     ```sql
+     SELECT pg_advisory_xact_lock(('x' || substring(:file_hash FROM 1 FOR 16))::bit(64)::bigint);
+     ```
+     - *Precedence:* An applicable `COMPLETED` import takes precedence and returns its summary (`HTTP 200 OK`). An active `PENDING` or `PROCESSING` import returns `HTTP 409 Conflict` (`IMPORT_IN_PROGRESS`). A new attempt (`status = 'PENDING'`) is created **only when no applicable completed import exists** and retry policy permits it (e.g. prior attempts reached terminal status `FAILED`).
+     - *Failure & Timeout:* Bounded by `SET LOCAL lock_timeout = '5s'`. Failures immediately roll back and return a transient error (`503` or `408`); an unsuccessful registration is never reported as successful.
+     - *Secondary Safeguard:* `CREATE UNIQUE INDEX uq_dataset_imports_active_hash ON dataset_imports (file_hash) WHERE status IN ('PENDING', 'PROCESSING');` is retained as a defense-in-depth database constraint.
+     - *Nullable Hashes:* Nullable `file_hash` uploads bypass locking and file deduplication.
+   - *Canonical Natural Identity:* Enforced via `uq_transactions_canonical_id` on `transactions`.
+   - *Import Row Provenance:* Enforced via `transaction_import_records`.
+8. **Row-Level Idempotent Failure Recovery:** Failed or interrupted imports must reconcile committed row ordinals against `transaction_import_records` for that `dataset_import_id` rather than naively resuming from `MAX(source_row_number) + 1` (which skips rows when batch inserts fail out-of-order).
+9. **Supercession Policy:** This ADR is PROPOSED. When formally accepted, it will supersede ADR-058. Until accepted, ADR-058 remains `ACCEPTED`.
+
+## Consequences
+
+- Re-importing identical CSVs or overlapping dataset versions no longer creates duplicate transaction rows.
+- Complete auditability and lineage are retained across all import jobs and individual rows.
+- Canonical transactions remain strictly immutable; conflicting updates are safely quarantined for human review.
+- Phase 2 operational scope is precisely bounded at 12 tables (users, accounts, merchants, devices, account_devices, locations, transactions, transaction_import_records, dataset_versions, dataset_imports, dataset_import_errors, audit_events).
+- Clear behavioral contracts are established for future synthetic generator and ingestion worker implementations.
+
+---
+
 # 4. Decision Dependency Map
 
 ```text
@@ -1693,6 +1761,24 @@ The following decisions remain intentionally open until implementation provides 
 10. Exact rate-limiting implementation defaults.
 11. Exact background-job strategy if batch processing becomes slow.
 12. Exact frontend architecture after Backend + ML completion.
+13. Exact retention window for completed-file re-upload deduplication (whether HTTP 200 summary return applies perpetually or is bounded by an expiration window such as 30/90 days).
+14. Policy for differing contextual metadata (`merchant_id`, `device_id`, `location_id`, `category`, `payment_method`, `channel`) when canonical transaction identity and core material fields match.
+
+### Detailed Open Decision: Contextual Metadata Divergence on Canonical Match (Phase 2 Ingestion Checkpoint)
+
+- **Status:** OPEN (Decision pending explicit project-owner authorization; no candidate is adopted).
+- **Question:** How should the ingestion engine handle an incoming transaction row that matches an existing canonical transaction key `(source_namespace, account_id, external_transaction_id)` and matches all seven core material fields (`account_id`, `amount`, `currency`, `occurred_at`, `transaction_type`, `direction`, `counterparty_account_id`), but differs in optional contextual metadata (`merchant_id`, `device_id`, `location_id`, `category`, `payment_method`, `channel`)?
+- **Why it matters:** Canonical transactions in `transactions` are strictly immutable and must never be silently overwritten. If a subsequent import or secondary feed provides contradictory or newly enriched contextual attributes (such as a different merchant or device identifier), the system must follow a documented architectural policy rather than unverified assumptions.
+- **Required Information:** Frequency of conflicting or enriched contextual attributes across real-world / synthetic data feeds; investigation requirements for tracking multiple conflicting device/merchant observations for a single payment event.
+- **Resolution Phase:** Phase 2 (Ingestion Service implementation) prior to operationalizing `transaction_import_records` processing.
+- **Trade-Off & Fidelity Analysis:**
+  - `transaction_import_records.row_hash` is a one-way cryptographic SHA-256 digest. It provides tamper-evident proof that a source payload differed and enables verification against external raw files.
+  - However, `row_hash` **cannot reconstruct, recover, or query the alternate contextual plaintext values** (`merchant_id`, `device_id`, `location_id`, etc.).
+  - If Candidate 1 is selected, the documentation must honestly record that divergent contextual metadata from subsequent imports is discarded from relational storage and is **not queryable by investigators or feature pipelines**.
+- **Candidate Approaches:**
+  1. *Immutable Canonical Preservation with Hash Provenance (Lossy Contextual Fidelity):* Treat the row as `MATCHED_EXISTING`, link `transaction_id` to the canonical row, preserve initial canonical metadata strictly unchanged, and rely on `transaction_import_records.row_hash` to record that a divergence existed. (Alternate contextual values are not preserved in relational storage).
+  2. *Strict Material Expansion (Quarantine):* Expand the material conflict definition to include contextual metadata, quarantining any row where merchant, device, location, or channel diverges. (Eliminates silent data loss, but risks high false-positive quarantine volume).
+  3. *Multi-Observation Context Ledger (Full Relational Fidelity):* Defer contextual attributes to dedicated child observation tables (e.g. `transaction_context_observations`) so multiple sightings can be accumulated without mutating the canonical transaction fact. (Full fidelity, but adds schema complexity beyond Phase 2 Option C 12-table boundary).
 
 ### Detailed Open Decision: Sparse/New-Account Baseline Strategy (Phase 6 Resolution Checkpoint)
 

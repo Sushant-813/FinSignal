@@ -463,6 +463,58 @@ Invalid rows should be:
 
 ---
 
+# 12.1 Transaction Identity, Ingestion Deduplication & Provenance Tests (TG-06)
+
+Data ingestion tests must verify the canonical transaction identity and row-level provenance contracts established in `DATABASE_DESIGN.md` and `API_GUIDELINES.md`:
+
+### 12.1.1 Canonical Transaction Identity
+- **Natural Key Scope:** Verification that natural identity is enforced by `CONSTRAINT uq_transactions_canonical_id UNIQUE (source_namespace, account_id, external_transaction_id)`.
+- **Pre-matching Account Resolution:** Test that raw import rows resolve `source_account_id` to internal canonical `accounts.id` prior to evaluating transaction identity. Missing accounts must cause row rejection, not partial transaction insertion.
+- **Standalone Transactions:** Creation of standalone transactions via direct API endpoints must set `first_seen_import_id = NULL` and adhere to the same natural key constraint without requiring an associated batch import.
+
+### 12.1.2 Repeated Import Linking & Row Provenance
+- **Cross-Import Re-ingestion:** Ingesting a CSV with transactions that already exist in `transactions` under the same `(source_namespace, account_id, external_transaction_id)` must:
+  - Not duplicate rows in the `transactions` table.
+  - Insert row provenance entries in `transaction_import_records` with `outcome = 'MATCHED_EXISTING'` and `transaction_id` referencing the existing canonical transaction.
+  - Not overwrite or alter any existing canonical attributes (`first_seen_import_id`, `occurred_at`, `amount`, etc.).
+- **Intra-Import Duplicate Handling:** When the same natural key appears more than once within a single CSV payload:
+  - The first valid row is inserted into `transactions` and recorded in `transaction_import_records` as `outcome = 'INSERTED'`.
+  - Subsequent occurrences in the same import are recorded in `transaction_import_records` as `outcome = 'DUPLICATE_IN_IMPORT'`, with `transaction_id` linked to the canonical transaction, and must not cause primary key or unique constraint violations.
+
+### 12.1.3 Material Conflict Quarantine
+- **Conflict Detection:** When an incoming row matches `(source_namespace, account_id, external_transaction_id)` but differs materially in any of:
+  - `amount` (outside exact monetary equivalence);
+  - `currency` (case-insensitive string mismatch);
+  - `occurred_at` (UTC timestamp divergence);
+  - `account_id` (divergent resolved account);
+  - `direction` (`DEBIT` vs `CREDIT`);
+  - `transaction_type` (classification divergence);
+  - `counterparty_account_id` (divergent counterparty);
+- **Quarantine Invariant:** The pipeline must:
+  - Never overwrite the existing canonical transaction row.
+  - Record an error in `dataset_import_errors` with persisted `error_code = 'MATERIAL_CONFLICT'`.
+  - Record an entry in `transaction_import_records` with `outcome = 'QUARANTINED'` and `transaction_id = NULL`.
+  - Increment `dataset_imports.invalid_rows` and continue processing remaining rows.
+  - Ensure the quarantined row remains traceable via `dataset_import_id`, `source_row_number`, and `row_hash` in `transaction_import_records`.
+
+### 12.1.4 File-Level Deduplication, Advisory Lock & Concurrency Tests
+- **Transaction-Scoped Advisory Lock Acquisition:** Verify that `POST /api/v1/datasets/imports` acquires a transaction-scoped PostgreSQL advisory lock (`pg_advisory_xact_lock`) derived deterministically from the SHA-256 `file_hash` before querying `dataset_imports`, and holds it through `dataset_imports` record creation.
+- **Fast-Completion Race Condition Test:** Simulate concurrent requests A and B with identical `file_hash`:
+  - Request A acquires the advisory lock, creates a `PENDING` record, processes rows, updates status to `COMPLETED`, and commits.
+  - Request B, waiting on the advisory lock, unblocks upon A's commit, executes its lookup within the lock, observes status `COMPLETED`, and returns `HTTP 200 OK` with A's summary without inserting a duplicate `dataset_imports` record.
+- **Concurrent Identical Upload Serialization:** Simulate two simultaneous upload requests for the same file: verify that the advisory lock serializes registration, exactly one import record is created, and the concurrent request receives `HTTP 409 Conflict` (`IMPORT_IN_PROGRESS`) without database unique constraint crashes.
+- **Completed vs. Failed Precedence Test:** Seed database with a historical `FAILED` import and a subsequent `COMPLETED` import for the same `file_hash`: verify that re-uploading the file returns `HTTP 200 OK` with the completed summary. A new import attempt (`status = 'PENDING'`) is created only when **no applicable completed import exists** for that file hash.
+- **Failed Import Retry Test:** When only a terminal `FAILED` import exists for `file_hash`, verify that re-uploading the file acquires the lock, creates a new `dataset_imports` attempt with status `PENDING`, and preserves the historical failed attempt intact.
+- **Advisory Lock Timeout & Rollback Test:** Simulate lock acquisition contention exceeding `lock_timeout`: verify that the registration transaction immediately rolls back, no partial record is inserted, the API returns a transient error (`HTTP 503` or `408`), and the failed registration is not reported as successful.
+- **Nullable File Hash Test:** Uploading an unhashed file (`file_hash = NULL`) bypasses advisory locking and file-level deduplication, allowing concurrent execution without constraint violations.
+- **Different Content Re-Upload:** Uploading a distinct file (differing `file_hash`) containing overlapping transaction identities proceeds to normal row-by-row processing and records `MATCHED_EXISTING` provenance.
+
+### 12.1.5 Row-Level Idempotent Failure Recovery
+- **Crash / Resumption Verification:** If an import worker crashes mid-file, the resumption routine must not rely on `MAX(source_row_number) + 1` (which skips rows when batch inserts fail out-of-order).
+- **Exact Set Reconciliation:** Resumption must query `transaction_import_records` for the specific `dataset_import_id` to determine exactly which `source_row_number` ordinals were committed, processing only uncommitted rows. Duplicate and quarantined rows remain fully auditable in `transaction_import_records` even without a canonical transaction link.
+
+---
+
 # 13. Data Quality Testing
 
 Data-quality tests should verify both row-level and dataset-level properties.
@@ -542,6 +594,19 @@ Tests should validate approximate behavior such as:
 - fraud scenarios are present.
 
 Exact percentages should use tolerances rather than brittle equality where stochastic generation is intended.
+
+---
+
+## 14.4 Generator Identity Stability & Version Continuity Contracts
+
+> [!NOTE]
+> Synthetic dataset generation scripts do not yet exist in the codebase. The following contracts govern future generator development and testing.
+
+Future generator unit and integration tests must verify:
+- **Identifier Stability Across Versions:** When a dataset version is generated with an explicit seed, re-generating or appending subsequent versions (e.g., `v1` vs `v2`) must preserve identical `transaction_id` and `account_id` strings for identical simulated historical events.
+- **Account-Scoped Determinism:** Synthetic transaction IDs (`TXN_[0-9]{8}`) must remain unique per account within the generator output.
+- **Synthetic Namespace Isolation:** The generator must assign or default its output namespace to `SYNTHETIC`, keeping external IDs decoupled from internal database UUIDs.
+- **Seed Determinism:** Generating the dataset twice with the exact same seed and configuration must yield bitwise-identical CSV outputs, ensuring reproducible evaluation benchmarks.
 
 ---
 

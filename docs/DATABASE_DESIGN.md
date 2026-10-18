@@ -175,7 +175,9 @@ erDiagram
     LOCATIONS ||--o{ TRANSACTIONS : occurs_at
 
     DATASET_VERSIONS ||--o{ DATASET_IMPORTS : contains
-    DATASET_IMPORTS ||--o{ TRANSACTIONS : imports
+    DATASET_IMPORTS ||--o{ TRANSACTIONS : "first seen in"
+    DATASET_IMPORTS ||--o{ TRANSACTION_IMPORT_RECORDS : tracks
+    TRANSACTIONS ||--o{ TRANSACTION_IMPORT_RECORDS : references
 
     TRANSACTIONS ||--o{ RISK_ANALYSES : evaluated_by
     MODEL_VERSIONS ||--o{ RISK_ANALYSES : produces
@@ -364,9 +366,10 @@ A transaction represents an observed financial event associated with an account.
 | Column | Type | Null | Description |
 |---|---|---:|---|
 | `id` | UUID | No | Internal primary key |
+| `source_namespace` | VARCHAR(64) | No | Source system or generation contract namespace (default 'SYNTHETIC') |
 | `external_transaction_id` | VARCHAR(128) | No | Source transaction identifier |
-| `dataset_import_id` | UUID | Yes | Import lineage |
-| `account_id` | UUID | No | Primary account associated with transaction |
+| `first_seen_import_id` | UUID | Yes | Initial import observation (FK to dataset_imports; null for standalone transactions) |
+| `account_id` | UUID | No | Canonical account associated with transaction |
 | `counterparty_account_id` | UUID | Yes | Other account for account-to-account transfers |
 | `merchant_id` | UUID | Yes | Merchant reference |
 | `device_id` | UUID | Yes | Device used |
@@ -438,36 +441,54 @@ This avoids accidental double counting.
 
 ---
 
-## 7.3 Transaction Integrity and Idempotency Rules
+## 7.3 Transaction Integrity and Canonical Identity Rules
 
-Examples of database/application checks:
+### Integrity Constraints
 
-```text
-amount > 0
-currency has exactly three characters
-direction IN ('DEBIT', 'CREDIT')
+```sql
+CONSTRAINT chk_transactions_amount_positive
+    CHECK (amount > 0)
+
+CONSTRAINT chk_transactions_direction
+    CHECK (direction IN ('DEBIT', 'CREDIT'))
+
+CONSTRAINT chk_transactions_currency_format
+    CHECK (currency ~ '^[A-Z]{3}$')
 ```
 
-Additional conditional rules:
+Conditional business rules enforced across application and domain boundaries:
 
 ```text
 TRANSFER -> counterparty_account_id IS NOT NULL
 non-TRANSFER -> counterparty_account_id may be NULL
 ```
 
-### Ingestion Idempotency & Deduplication
+### Canonical Identity & Ingestion Deduplication
 
-To prevent duplicate transaction ingestion under concurrent or re-tried requests:
+To establish one persistent canonical transaction across multiple imports and guarantee concurrency safety without silent data loss:
 
-1. **Batch Import Ingestion (`dataset_import_id IS NOT NULL`):**
-   A partial unique index enforces uniqueness of the external transaction identifier within an import batch:
+1. **Canonical Identity Contract:**
+   A logical transaction is uniquely identified by the tuple:
    ```sql
-   CREATE UNIQUE INDEX uq_transactions_import_ext_id
-       ON transactions (dataset_import_id, external_transaction_id)
-       WHERE dataset_import_id IS NOT NULL;
+   CONSTRAINT uq_transactions_canonical_id
+       UNIQUE (source_namespace, account_id, external_transaction_id)
    ```
-2. **Standalone / Manual Ingestion (`dataset_import_id IS NULL`):**
-   PostgreSQL treats `NULL` values as distinct in standard unique constraints. Standalone or directly injected transactions without an import batch rely on application-level idempotency checks (verifying `account_id`, `external_transaction_id`, and `occurred_at`) within an atomic transaction.
+   - `source_namespace`: Identifies the originating source system, rail, or generator contract (e.g. `'SYNTHETIC'`).
+   - `account_id`: The canonical internal account UUID. The ingestion pipeline **must resolve source accounts to internal canonical accounts before identity matching**.
+   - `external_transaction_id`: The source-assigned transaction identifier, guaranteed unique per account within the specified namespace.
+
+2. **Resolution and Conflict Quarantine Policy:**
+   When an incoming row matches an existing `(source_namespace, account_id, external_transaction_id)`:
+   - **Normalized Equivalence Comparison:** Compare material transaction fields against the canonical row. Normalization rules require:
+     - Timestamps normalized to UTC `TIMESTAMPTZ`.
+     - Strings trimmed of leading/trailing whitespace.
+     - Monetary amounts evaluated as exact `Decimal(18,2)`.
+     - Enumerations (currency, direction, transaction_type) compared in uppercase.
+   - **Equivalent Payload (`MATCHED_EXISTING`):** If all material fields (`account_id`, `amount`, `currency`, `occurred_at`, `transaction_type`, `direction`, `counterparty_account_id`) match the existing canonical row, the existing `transactions.id` is reused. A row observation is recorded in `transaction_import_records` with outcome `MATCHED_EXISTING`. Canonical transaction facts are **never overwritten**.
+   - **Conflicting Payload (`QUARANTINED`):** If material fields differ, the canonical transaction row is preserved unchanged. The incoming row is quarantined with outcome `QUARANTINED` in `transaction_import_records` (with `transaction_id = NULL`), and a row-level conflict error is recorded in `dataset_import_errors` with `error_code = 'MATERIAL_CONFLICT'`. Conflicting data is **never silently ignored or overwritten**.
+
+3. **Standalone and Manual Ingestion:**
+   Transactions submitted outside batch imports (`first_seen_import_id IS NULL`) are subject to the exact same `uq_transactions_canonical_id` constraint, providing complete database-enforced concurrency safety without relying on race-condition-prone application-level pre-checks.
 
 Merchant/device/location references remain nullable because not every transaction necessarily contains those attributes.
 
@@ -515,6 +536,7 @@ Represents an actual ingestion attempt.
 | `dataset_version_id` | UUID | Yes | Dataset version |
 | `initiated_by` | UUID | Yes | User who initiated import |
 | `filename` | VARCHAR(255) | Yes | Uploaded filename |
+| `file_hash` | VARCHAR(64) | Yes | SHA-256 digest of file payload for upload deduplication |
 | `source_type` | VARCHAR(32) | No | CSV, GENERATED, etc. |
 | `status` | VARCHAR(32) | No | PENDING, PROCESSING, COMPLETED, FAILED |
 | `total_rows` | INTEGER | No | Rows received |
@@ -525,6 +547,55 @@ Represents an actual ingestion attempt.
 | `created_at` | TIMESTAMPTZ | No | Record creation |
 
 This table provides ingestion-level lineage and operational visibility.
+
+### Upload Concurrency, Advisory Locking & Deduplication
+
+Storing `file_hash` alone does not provide concurrency safety against simultaneous uploads of identical files. Furthermore, a partial unique index on active statuses (`PENDING`, `PROCESSING`) alone cannot prevent duplicate imports under fast-completion race conditions: if Request A inserts an active import and transitions to `COMPLETED` before concurrent Request B attempts its insert, Request A's row exits the partial index predicate, allowing Request B's insert to succeed and creating a duplicate import.
+
+To guarantee strict concurrency serialization, the ingestion service enforces a **transaction-scoped PostgreSQL advisory lock** paired with a secondary partial unique index:
+
+#### 1. Transaction-Scoped Advisory Lock
+When a file with a non-null `file_hash` is uploaded, the registration service opens a database transaction and immediately acquires an advisory lock derived deterministically from the first 16 hex characters of the SHA-256 hash:
+
+```sql
+SELECT pg_advisory_xact_lock(('x' || substring(:file_hash FROM 1 FOR 16))::bit(64)::bigint);
+```
+
+**Lock Lifecycle & Ingestion Sequence:**
+1. **Acquire Lock First:** The lock is acquired inside the registration transaction before executing any queries against `dataset_imports`. Concurrent uploads of the identical file serialize at the database level.
+2. **Lookup Existing Import:** Within the lock boundary, query existing import records for the `file_hash`:
+   ```sql
+   SELECT id, status, total_rows, valid_rows, invalid_rows
+   FROM dataset_imports
+   WHERE file_hash = :file_hash
+   ORDER BY created_at DESC;
+   ```
+3. **Completed vs. Failed Precedence:**
+   - **Applicable Completed Import Takes Precedence:** If any existing import with the matching hash has status `COMPLETED` (within the applicable retention window), it takes precedence regardless of whether historical failed attempts exist. The transaction commits (releasing the lock), and the API returns `HTTP 200 OK` with the existing completed import summary without reparsing.
+   - **In-Progress Active Import:** If an existing import has status `PENDING` or `PROCESSING`, the transaction commits/aborts (releasing the lock), and the API returns `HTTP 409 Conflict` with error code `IMPORT_IN_PROGRESS`.
+   - **Failed Import Retry:** A new import attempt (`dataset_imports` row with status `PENDING`) is permitted **only when no applicable completed import exists** and the documented retry policy allows it (e.g. prior attempts reached terminal status `FAILED`). The previous failed record is preserved for audit lineage.
+   - **New File:** If no record exists, a new `dataset_imports` row is inserted with status `PENDING`.
+4. **Held Through Insert:** The advisory lock is held continuously through both the lookup and the insertion of the new `dataset_imports` record within the same transaction. Committing the transaction commits the registration and automatically releases the lock.
+
+#### 2. Lock Failure, Timeout & Error Behavior
+- Lock acquisition must be bounded by a local timeout:
+  ```sql
+  SET LOCAL lock_timeout = '5s';
+  ```
+- If the lock cannot be acquired within the timeout or if any query/insert fails, the transaction immediately rolls back and PostgreSQL releases all transaction locks.
+- An unsuccessful registration must **never** be treated or reported as successful. The service catches the lock acquisition failure or database error and returns a transient error (e.g. `HTTP 503 Service Unavailable` or `HTTP 408 Request Timeout`) with an appropriate retry header.
+
+#### 3. Nullable Hash Handling
+`file_hash` is nullable (`VARCHAR(64) NULL`). If an upload does not compute a hash (e.g. unhashed streaming ingestion), advisory lock acquisition and file lookup are bypassed, allowing concurrent unhashed uploads without constraint.
+
+#### 4. Secondary Partial Unique Index Safeguard
+As a defense-in-depth safeguard against out-of-band direct inserts or un-locked background workers, the database enforces:
+```sql
+CREATE UNIQUE INDEX uq_dataset_imports_active_hash
+    ON dataset_imports (file_hash)
+    WHERE status IN ('PENDING', 'PROCESSING');
+```
+This index guarantees that even if application-level lock acquisition is bypassed, the database layer prevents concurrent active imports for the same file.
 
 ---
 
@@ -538,15 +609,72 @@ Stores validation failures without storing unnecessary sensitive raw data.
 |---|---|---:|---|
 | `id` | UUID | No | Primary key |
 | `dataset_import_id` | UUID | No | Import reference |
-| `row_number` | INTEGER | Yes | Source row |
-| `field_name` | VARCHAR(128) | Yes | Invalid field |
-| `error_code` | VARCHAR(64) | No | Machine-readable error |
+| `row_number` | INTEGER | Yes | Source row ordinal |
+| `field_name` | VARCHAR(128) | Yes | Invalid field name |
+| `error_code` | VARCHAR(64) | No | Machine-readable error code |
 | `message` | TEXT | No | Human-readable description |
 | `created_at` | TIMESTAMPTZ | No | Error timestamp |
 
 Raw field values should not be persisted by default.
 
 This avoids turning validation logs into an accidental sensitive-data store.
+
+---
+
+## 8.4 `transaction_import_records`
+
+Maintains row-level provenance and observation history across multiple dataset imports.
+
+This table records each appearance of a transaction row in an import without modifying the canonical, immutable transaction record in `transactions`.
+
+### Columns
+
+| Column | Type | Null | Description |
+|---|---|---:|---|
+| `id` | UUID | No | Internal primary key |
+| `dataset_import_id` | UUID | No | Ingestion attempt reference (FK to dataset_imports) |
+| `source_row_number` | INTEGER | No | 1-indexed row position within the source import file |
+| `transaction_id` | UUID | Yes | Canonical transaction reference (FK to transactions; null if quarantined or structurally invalid) |
+| `row_hash` | VARCHAR(64) | Yes | SHA-256 digest of normalized row values for change diagnostics |
+| `outcome` | VARCHAR(32) | No | Controlled observation outcome |
+| `created_at` | TIMESTAMPTZ | No | Observation timestamp |
+
+### Constraints
+
+Primary key:
+```text
+id
+```
+
+Unique constraint:
+```sql
+CONSTRAINT uq_import_records_row
+    UNIQUE (dataset_import_id, source_row_number)
+```
+
+Foreign keys:
+```sql
+CONSTRAINT fk_import_records_import
+    FOREIGN KEY (dataset_import_id) REFERENCES dataset_imports(id) ON DELETE RESTRICT
+
+CONSTRAINT fk_import_records_transaction
+    FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE RESTRICT
+```
+
+### Outcome Vocabulary
+
+Controlled outcome values:
+- `INSERTED`: New canonical transaction created and associated (`transaction_id` references new `transactions.id`).
+- `MATCHED_EXISTING`: Existing canonical transaction matched; material fields verified equivalent (`transaction_id` references existing `transactions.id`).
+- `DUPLICATE_IN_IMPORT`: Multiple rows with the same identity appeared within the same source file; canonical record reused (`transaction_id` references canonical `transactions.id`).
+- `QUARANTINED`: Incoming row reused existing identity but carried conflicting material values; quarantined without modifying canonical row (`transaction_id` is `NULL`; the source row remains traceable via `dataset_import_id`, `source_row_number`, and `row_hash`).
+- `REJECTED`: Row failed structural validation or account resolution (`transaction_id` is `NULL`).
+
+### Idempotent Import Recovery
+
+If an import fails midway, recovery must be row-level and idempotent:
+- The importer must **not** assume contiguous progress via a naive `MAX(source_row_number) + 1` query.
+- When resuming an existing `dataset_import_id`, the ingestion engine queries already-recorded row numbers in `transaction_import_records` for that import. Incomplete, failed, or unvisited rows are reprocessed safely within transactional chunks.
 
 ---
 
@@ -867,8 +995,14 @@ transactions.device_id
 transactions.location_id
     -> locations.id
 
-transactions.dataset_import_id
+transactions.first_seen_import_id
     -> dataset_imports.id
+
+transaction_import_records.dataset_import_id
+    -> dataset_imports.id
+
+transaction_import_records.transaction_id
+    -> transactions.id
 
 dataset_imports.dataset_version_id
     -> dataset_versions.id
@@ -928,26 +1062,46 @@ Indexes must support actual application access patterns rather than being create
 Recommended:
 
 ```text
+transactions(source_namespace, account_id, external_transaction_id) UNIQUE
 transactions(account_id, occurred_at)
 transactions(occurred_at)
 transactions(merchant_id, occurred_at)
 transactions(device_id, occurred_at)
 transactions(location_id, occurred_at)
-transactions(dataset_import_id)
+transactions(first_seen_import_id)
 ```
 
 These support:
 
+- canonical natural key uniqueness and fast lookup
 - account history
 - time-window analysis
 - merchant analysis
 - device analysis
 - location analysis
-- ingestion tracing
+- origin import tracing
+
+## 15.2 Ingestion & Provenance Indexes
+
+Recommended:
+
+```text
+dataset_imports(file_hash) WHERE status IN ('PENDING', 'PROCESSING') UNIQUE
+transaction_import_records(dataset_import_id, source_row_number) UNIQUE
+transaction_import_records(transaction_id)
+transaction_import_records(dataset_import_id, outcome)
+```
+
+These support:
+
+- in-progress upload concurrency deduplication and race prevention
+- row-level uniqueness per import
+- reverse lookup from canonical transaction to all observing imports
+- recovery querying for incomplete rows during import resumption
 
 ---
 
-## 15.2 Risk Indexes
+## 15.3 Risk Indexes
 
 Recommended:
 
@@ -959,7 +1113,7 @@ risk_analyses(risk_level, created_at)
 
 ---
 
-## 15.3 Investigation Indexes
+## 15.4 Investigation Indexes
 
 Recommended:
 
@@ -1040,6 +1194,7 @@ locations
 transactions
 dataset_versions
 dataset_imports
+transaction_import_records
 
 
 DERIVED INTELLIGENCE
@@ -1341,18 +1496,14 @@ Database schema changes will be managed through versioned migrations.
 Recommended structure:
 
 ```text
-V1__create_users.sql
-V2__create_reference_entities.sql
-V3__create_transactions.sql
-V4__create_dataset_lineage.sql
-V5__create_risk_tables.sql
-V6__create_investigation_tables.sql
-V7__create_ai_tables.sql
-V8__create_audit_tables.sql
-V9__add_indexes_and_constraints.sql
+0001_initial_baseline.py
+0002_core_operational_schema.py
+0003_intelligence_models.py (Phase 7/8)
+0004_investigation_models.py (Phase 9)
+0005_ai_models.py (Phase 10)
 ```
 
-The exact migration grouping may differ during implementation.
+Migrations are executed via Alembic with the sync `psycopg` driver using dynamic application configuration (`Settings.sync_database_url`).
 
 Migrations must be:
 
@@ -1534,6 +1685,7 @@ None of these are required for the MVP schema.
 | `dataset_versions` | Dataset lineage | Ingestion |
 | `dataset_imports` | Import execution tracking | Ingestion |
 | `dataset_import_errors` | Validation failures | Ingestion |
+| `transaction_import_records` | Import-level row provenance & canonical linking | Ingestion |
 | `model_versions` | Model lineage | Intelligence |
 | `risk_analyses` | Transaction risk results | Intelligence |
 | `risk_factors` | Structured explanations | Intelligence |
@@ -1542,6 +1694,8 @@ None of these are required for the MVP schema.
 | `investigation_evidence` | Investigation evidence | Investigation |
 | `ai_summaries` | AI-generated summaries | AI |
 | `audit_events` | Important system/user actions | Governance |
+
+*Note on Phase Sequencing (per proposed ADR-063 Option C and proposed ADR-064):* Phase 2 operational core implements 12 tables (`users`, `accounts`, `merchants`, `devices`, `account_devices`, `locations`, `transactions`, `dataset_versions`, `dataset_imports`, `dataset_import_errors`, `transaction_import_records`, `audit_events`). Intelligence, Investigation, and AI tables are realized in their respective scheduled roadmap phases.
 
 ---
 
@@ -1601,7 +1755,7 @@ The following should be finalized during implementation rather than prematurely:
 
 1. Exact PostgreSQL version.
 2. UUID generation extension/mechanism.
-3. Flyway migration grouping.
+3. Alembic migration revision structure.
 4. Exact controlled-value representation:
    - PostgreSQL enums
    - VARCHAR + CHECK constraints

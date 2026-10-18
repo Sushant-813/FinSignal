@@ -283,7 +283,9 @@ common
 
 Build the persistent domain model.
 
-## Primary Entities
+## Primary Entities (Phase 2 — Option C: 12 Operational Tables)
+
+Per proposed ADR-063 and ADR-064, Phase 2 implements the 12 core operational and raw tables. Intelligence, investigation, and AI summary entities are deferred to their corresponding capability phases (Phases 6, 7, and 8).
 
 ```text
 users
@@ -293,25 +295,28 @@ devices
 account_devices
 locations
 transactions
+transaction_import_records
 dataset_versions
 dataset_imports
 dataset_import_errors
-model_versions
-risk_analyses
-risk_factors
-investigations
-investigation_transactions
-investigation_evidence
-ai_summaries
 audit_events
 ```
 
+*(Deferred to Phase 6: `model_versions`, `risk_analyses`, `risk_factors`)*  
+*(Deferred to Phase 7: `investigations`, `investigation_transactions`, `investigation_evidence`)*  
+*(Deferred to Phase 8: `ai_summaries`)*
+
 ## Key Tasks
 
-- implement SQLAlchemy models;
-- implement migrations;
-- define foreign keys;
-- define constraints;
+- implement SQLAlchemy models for the 12 operational tables;
+- implement Alembic migrations;
+- define foreign keys and database constraints;
+- implement canonical transaction identity scoped by `(source_namespace, account_id, external_transaction_id)`;
+- implement `transaction_import_records` for import row provenance and canonical linking;
+- support standalone transaction persistence (`first_seen_import_id = NULL`);
+- implement material conflict quarantine and error logging (`dataset_import_errors`);
+- implement transaction-scoped advisory locking and upload concurrency indexing (`dataset_imports`);
+- implement row-level idempotent recovery without naive `MAX + 1` skip;
 - define indexes;
 - establish timestamp conventions;
 - implement transaction representation;
@@ -322,8 +327,9 @@ audit_events
 ## Exit Criteria
 
 - clean database migrations succeed;
-- domain entities persist correctly;
+- domain entities persist correctly across all 12 operational tables;
 - foreign keys and constraints work;
+- canonical transaction identity and row provenance constraints verified;
 - repository tests pass;
 - transaction semantics are verified;
 - no derived risk data is stored directly on raw transactions.

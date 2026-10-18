@@ -277,30 +277,35 @@ Implement the modular-monolith structure establishing a testable, secure foundat
 
 ### Objective
 
-Implement the PostgreSQL domain model.
+Implement the PostgreSQL domain model for Phase 2 (Option C: 12 Operational Tables per proposed ADR-063 and ADR-064).
 
-### Primary Areas
+### Primary Areas (12 Operational Tables)
 
 - users;
 - accounts;
 - merchants;
 - devices;
-- account-device relationships;
+- account-device relationships (`account_devices`);
 - locations;
 - transactions;
-- dataset imports;
-- model versions;
-- risk analyses;
-- risk factors;
-- investigations;
-- investigation transactions;
-- evidence;
-- AI summaries;
-- audit events.
+- transaction import records (`transaction_import_records`);
+- dataset versions (`dataset_versions`);
+- dataset imports (`dataset_imports`);
+- dataset import errors (`dataset_import_errors`);
+- audit events (`audit_events`).
+
+*(Intelligence, investigation, and AI entities deferred to Phases 6, 7, and 8 per proposed ADR-063).*
 
 ### Important Constraints
 
-- transaction immutability;
+- canonical transaction identity: `CONSTRAINT uq_transactions_canonical_id UNIQUE (source_namespace, account_id, external_transaction_id)`;
+- source accounts resolved to internal canonical `account_id` before transaction identity matching;
+- transaction immutability: never overwrite or update canonical transaction attributes;
+- import row-level provenance via `transaction_import_records` (`INSERTED`, `MATCHED_EXISTING`, `DUPLICATE_IN_IMPORT`, `QUARANTINED`, `REJECTED`);
+- nullable initial import reference: `first_seen_import_id UUID NULL` to support standalone transactions;
+- material conflict quarantine: conflicting payload attributes written to `dataset_import_errors` and marked `QUARANTINED`, never overwriting canonical rows;
+- file re-upload handling: byte-identical completed uploads return existing summary (HTTP 200); in-progress identical uploads return HTTP 409 (`IMPORT_IN_PROGRESS`);
+- row-level idempotent failure recovery without naive `MAX + 1` skip;
 - valid foreign keys;
 - valid transfer counterparties;
 - deterministic ordering;
@@ -312,6 +317,7 @@ Implement the PostgreSQL domain model.
 - migration tests;
 - repository tests;
 - constraint tests;
+- canonical identity and import provenance tests (TG-06);
 - transaction persistence tests.
 
 ### Status
@@ -810,6 +816,36 @@ Frontend work should begin as a new documented phase rather than being mixed int
 ---
 
 # 23. Change Log
+
+## 2026-10-18 — Phase 2 Canonical Transaction Identity & Ingestion Contract Review
+
+### Objective
+Complete pre-implementation architectural review of transaction identity, import provenance, duplicate handling, and file-level deduplication boundaries prior to Phase 2 schema implementation.
+
+### Work Completed
+- Evaluated `PHASE2_IDENTITY_CONTRACT_PROPOSAL.md` against existing architecture and repository contracts.
+- Adopted canonical transaction identity scoped by `(source_namespace, account_id, external_transaction_id)`.
+- Replaced partial uniqueness index in `DATABASE_DESIGN.md` with explicit natural composite unique constraint `uq_transactions_canonical_id`.
+- Decoupled internal synthetic transactions from external systems by introducing `source_namespace VARCHAR(64) NOT NULL DEFAULT 'SYNTHETIC'`.
+- Preserved standalone transaction support by keeping `transactions.first_seen_import_id` nullable (`UUID NULL REFERENCES dataset_imports(id) ON DELETE RESTRICT`).
+- Added `transaction_import_records` table to capture import-level row provenance, execution outcomes (`INSERTED`, `MATCHED_EXISTING`, `DUPLICATE_IN_IMPORT`, `QUARANTINED`, `REJECTED`), raw payload checksums, and canonical transaction associations.
+- Expanded Phase 2 Option C scope from 11 to 12 operational tables (`DATABASE_DESIGN.md`, `PROJECT_ROADMAP.md`, `PROJECT_LOG.md`).
+- Established strict material conflict quarantine: rows matching existing canonical identity but diverging in monetary amount, currency, timestamp, account, direction, transaction type, or counterparty are never overwritten; they are logged to `dataset_import_errors` with `error_code = 'MATERIAL_CONFLICT'` and recorded in `transaction_import_records` with `outcome = 'QUARANTINED'` (`transaction_id = NULL`).
+- Specified file re-upload and concurrency policy: enforced transaction-scoped PostgreSQL advisory lock (`pg_advisory_xact_lock`) keyed from file hash held across lookup and record creation to eliminate fast-completion races; applicable completed imports take precedence and return HTTP 200 summary; concurrent in-progress uploads return HTTP 409 (`IMPORT_IN_PROGRESS`); failed file re-uploads create a new import attempt only when no applicable completed import exists; retained `uq_dataset_imports_active_hash` partial unique index as secondary safeguard; recorded open decision on completed-file retention window and contextual metadata divergence.
+- Defined row-level idempotent recovery: failed imports reconcile committed row ordinals via `transaction_import_records` rather than resuming from naive `MAX(source_row_number) + 1`.
+- Specified future generator contracts in `DATASET_SPECIFICATION.md` and `TESTING_STRATEGY.md` (version continuity, ID stability across seeds and accounts, synthetic namespace isolation), with explicit note that generator implementation does not yet exist.
+- Prepared ADR-064 (*Canonical Transaction Identity Across Dataset Imports*) as `PROPOSED`. Retained ADR-058 as `ACCEPTED` with cross-reference note pending formal acceptance of ADR-064.
+
+### Validation
+- Pure documentation review and update across `DATABASE_DESIGN.md`, `DATASET_SPECIFICATION.md`, `API_GUIDELINES.md`, `TESTING_STRATEGY.md`, `PROJECT_ROADMAP.md`, `PROJECT_LOG.md`, and `DECISIONS.md`.
+- No code, migration, or test implementation files were modified.
+- Existing automated test suite verified intact: 49 passing tests (`uv run pytest -v`).
+- Linter and type checker clean (`ruff check`, `ruff format --check`, strict `mypy`).
+
+### Status
+Documentation aligned. Ready for ADR-064 formal review and Phase 2 database model implementation upon authorization.
+
+---
 
 ## 2026-10-13 — Phase 1 Backend Architecture & Core Structure
 

@@ -514,11 +514,11 @@ Transactions are the central dataset entity.
 
 | Field | Description |
 |---|---|
-| `transaction_id` | Unique transaction identifier |
-| `account_id` | Account performing the transaction |
-| `timestamp` | Transaction timestamp |
-| `amount` | Transaction amount |
-| `currency` | Currency |
+| `transaction_id` | Source transaction identifier (maps to `transactions.external_transaction_id`; format: `TXN_[0-9]{8}`) |
+| `account_id` | Source account identifier (resolved to canonical internal `account_id` during ingestion) |
+| `timestamp` | Transaction timestamp (ISO-8601 UTC; maps to `transactions.occurred_at`) |
+| `amount` | Transaction amount (positive decimal) |
+| `currency` | Currency (ISO-4217, default 'INR') |
 | `transaction_type` | Transaction type |
 | `merchant_id` | Merchant reference where applicable |
 | `category` | Transaction category |
@@ -526,6 +526,13 @@ Transactions are the central dataset entity.
 | `device_id` | Device reference |
 | `payment_method` | Payment method |
 | `channel` | Transaction channel |
+
+### Identity & Namespace Contract
+
+1. **Source Namespace:** All synthetic transactions belong to the default namespace: `source_namespace = 'SYNTHETIC'`.
+2. **Identifier Scope:** `transaction_id` is guaranteed unique per account within the `'SYNTHETIC'` namespace.
+3. **Internal Key Decoupling:** `transaction_id` is an external business identifier and must not be confused with FinSignal's internal database UUID primary key (`transactions.id`).
+4. **Account Resolution Precondition:** During ingestion, source account identifiers (`account_id` in the CSV) must be resolved to internal canonical account UUIDs prior to transaction identity matching.
 
 ---
 
@@ -1366,6 +1373,15 @@ A dataset version should ideally record:
 - Fraud rate
 - Scenario distribution
 
+### Version Continuity & ID Stability Contracts
+
+For future Phase 4 synthetic generator implementation:
+- **Seed Determinism:** Given identical configuration and seed, generator output must be byte-for-byte and ID-for-ID reproducible.
+- **Cross-Version Identity Continuity:** When logical transactions are carried forward into a revised population or incremental extension (e.g. from `dataset-v1.0` to `dataset-v1.1`), existing events must preserve their stable `transaction_id`.
+- **New Event Generation:** Newly introduced transactions must receive newly allocated, non-colliding `transaction_id` values.
+- **No Coincidental Continuity:** Continuity must never be inferred from coincidental attributes (e.g. same amount or timestamp) or physical row position in CSV files.
+- **Implementation Status Notice:** The synthetic generator does not yet exist in the codebase. These continuity rules represent explicit architectural design contracts to be implemented and verified during Phase 4, not claims of existing code behavior.
+
 ---
 
 # 55. Generator Requirements
@@ -1376,7 +1392,7 @@ The synthetic data generator should:
 2. Support deterministic seeds.
 3. Generate related entities.
 4. Generate account-specific behavior.
-5. Generate realistic transactions.
+5. Generate realistic transactions with stable `TXN_[0-9]{8}` identifiers.
 6. Generate legitimate unusual events.
 7. Generate fraud/anomaly scenarios.
 8. Generate multi-transaction scenarios.
@@ -1384,6 +1400,7 @@ The synthetic data generator should:
 10. Validate generated data.
 11. Produce dataset statistics.
 12. Support small development datasets and larger evaluation datasets.
+13. Maintain identity continuity for carried-forward transactions across incremental versions.
 
 ---
 
