@@ -1498,7 +1498,7 @@ Static precomputed generation fields (such as `account_age_days` in CSV files) m
 
 # ADR-058 — Transaction Ingestion Idempotency & Deduplication
 
-**Status:** ACCEPTED
+**Status:** SUPERSEDED by ADR-064
 
 ## Context
 
@@ -1516,7 +1516,7 @@ Adopt a dual-layer deduplication design:
 2. For standalone/manual transactions where `dataset_import_id IS NULL`, enforce application-level idempotency within the transaction domain service using account, external_id, and occurred_at checks inside an atomic transaction.
 
 > [!NOTE]
-> Pre-implementation review of Phase 2 identified that partial index `uq_transactions_import_ext_id` cannot prevent duplicate transactions across repeated import batches or multi-version datasets. A comprehensive canonical identity and import-provenance model has been drafted in **ADR-064 (PROPOSED)**. ADR-058 remains `ACCEPTED` until ADR-064 is formally accepted.
+> **Superseded by ADR-064:** Following the Phase 2 implementation authorization and schema migration `0002_core_operational_schema`, ADR-058 has been formally superseded by ADR-064. Transaction uniqueness is now enforced at the database layer via canonical composite natural key `uq_transactions_canonical_id (source_namespace, account_id, external_transaction_id)` with row-level observation provenance tracked in `transaction_import_records`, replacing the earlier import-scoped partial index.
 
 ---
 
@@ -1578,7 +1578,7 @@ Use SQLAlchemy's structured `URL.create()` API for generating runtime (`postgres
 
 # ADR-063 — Progressive Domain Module and Schema Realization Without Premature Scaffolding
 
-**Status:** PROPOSED
+**Status:** ACCEPTED
 
 ## Context
 
@@ -1609,15 +1609,15 @@ Retain domain module directory creation and database schema migrations strictly 
 
 ## Scope
 
-- This decision **proposes** the phased realization discipline for remaining backend and ML modules.
+- This decision governs the phased realization discipline for remaining backend and ML modules.
 - This decision **does not** alter the logical module boundaries defined in ADR-004 or the module allocation described in the roadmap.
-- This decision **does not** authorize Phase 2 implementation, database schema modifications, or directory creation ahead of formal phase authorization.
+- Formally accepted following Phase 2 Option C implementation authorization.
 
 ---
 
 # ADR-064 — Canonical Transaction Identity & Import-Level Row Provenance
 
-**Status:** PROPOSED
+**Status:** ACCEPTED (Supersedes ADR-058)
 
 ## Context
 
@@ -1668,7 +1668,7 @@ Adopt canonical transaction identity scoped by source namespace, canonical accou
    - *Canonical Natural Identity:* Enforced via `uq_transactions_canonical_id` on `transactions`.
    - *Import Row Provenance:* Enforced via `transaction_import_records`.
 8. **Row-Level Idempotent Failure Recovery:** Failed or interrupted imports must reconcile committed row ordinals against `transaction_import_records` for that `dataset_import_id` rather than naively resuming from `MAX(source_row_number) + 1` (which skips rows when batch inserts fail out-of-order).
-9. **Supercession Policy:** This ADR is PROPOSED. When formally accepted, it will supersede ADR-058. Until accepted, ADR-058 remains `ACCEPTED`.
+9. **Supercession Policy:** This ADR formally supersedes ADR-058 following implementation authorization and schema migration `0002_core_operational_schema`.
 
 ## Consequences
 

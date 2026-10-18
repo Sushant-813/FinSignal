@@ -454,13 +454,16 @@ CONSTRAINT chk_transactions_direction
 
 CONSTRAINT chk_transactions_currency_format
     CHECK (currency ~ '^[A-Z]{3}$')
+
+CONSTRAINT chk_transfers_counterparty_required
+    CHECK (transaction_type != 'TRANSFER' OR counterparty_account_id IS NOT NULL)
 ```
 
 Conditional business rules enforced across application and domain boundaries:
 
 ```text
 TRANSFER -> counterparty_account_id IS NOT NULL
-non-TRANSFER -> counterparty_account_id may be NULL
+non-TRANSFER -> counterparty_account_id may be NULL (database constraint allows non-null counterparty on non-transfers; business policy remains open)
 ```
 
 ### Canonical Identity & Ingestion Deduplication
@@ -543,10 +546,10 @@ Represents an actual ingestion attempt.
 | `valid_rows` | INTEGER | No | Valid rows |
 | `invalid_rows` | INTEGER | No | Invalid rows |
 | `started_at` | TIMESTAMPTZ | No | Processing start |
-| `completed_at` | TIMESTAMPTZ | Yes | Processing completion |
+| `completed_at` | TIMESTAMPTZ | Yes | Terminal processing completion (populated on COMPLETED and FAILED; NULL while in-progress) |
 | `created_at` | TIMESTAMPTZ | No | Record creation |
 
-This table provides ingestion-level lineage and operational visibility.
+This table provides ingestion-level lineage and operational visibility. `completed_at` is populated whenever processing reaches a terminal outcome (`COMPLETED` or `FAILED`); job-level error diagnostics are recorded in `dataset_import_errors` with `row_number = NULL`.
 
 ### Upload Concurrency, Advisory Locking & Deduplication
 
@@ -1695,7 +1698,7 @@ None of these are required for the MVP schema.
 | `ai_summaries` | AI-generated summaries | AI |
 | `audit_events` | Important system/user actions | Governance |
 
-*Note on Phase Sequencing (per proposed ADR-063 Option C and proposed ADR-064):* Phase 2 operational core implements 12 tables (`users`, `accounts`, `merchants`, `devices`, `account_devices`, `locations`, `transactions`, `dataset_versions`, `dataset_imports`, `dataset_import_errors`, `transaction_import_records`, `audit_events`). Intelligence, Investigation, and AI tables are realized in their respective scheduled roadmap phases.
+*Note on Phase Sequencing (per accepted ADR-063 Option C and accepted ADR-064):* Phase 2 operational core implements 12 tables (`users`, `accounts`, `merchants`, `devices`, `account_devices`, `locations`, `transactions`, `dataset_versions`, `dataset_imports`, `dataset_import_errors`, `transaction_import_records`, `audit_events`). Intelligence, Investigation, and AI tables are realized in their respective scheduled roadmap phases.
 
 ---
 

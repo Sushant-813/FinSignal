@@ -908,7 +908,56 @@ FinSignal now has an implementation-ready documentation foundation covering the 
 
 ### Next
 
-Begin Phase 0 implementation after repository setup and documentation review.
+## 2026-10-18 — Phase 2: Database & Domain Models
+
+### Objective
+Implement Phase 2: Database & Domain Models of FinSignal adopting Candidate Option C (12 Operational Tables per approved ADR-063 and ADR-064).
+
+### Work Completed
+- **Declarative Mixin Hierarchy:** Implemented granular mixins in `common/models.py` (`UUIDPrimaryKeyMixin`, `CreatedAtMixin`, `UpdatedAtMixin`), strictly restricting `updated_at` to the 4 mutable entities (`users`, `accounts`, `merchants`, `devices`). Preserved natural composite primary key `(account_id, device_id)` and observation timestamps on `account_devices` without synthetic ID or generic timestamp pollution.
+- **12 Operational Domain Models:** Implemented typed SQLAlchemy 2.0 declarative models across modular domain packages:
+  - `users.models.User`: UUID PK, unique email, role check constraint (`ADMIN`, `ANALYST`, `INVESTIGATOR`), active state.
+  - `locations.models.Location`: city, state, country, optional geographic coordinates, immutable creation timestamp.
+  - `merchants.models.Merchant`: external merchant ID, merchant name, merchant category, location reference.
+  - `devices.models.Device`: external device ID, device type, operating system, first seen timestamp.
+  - `accounts.models.Account` & `AccountDevice`: account classification, customer age, home location reference, status, and account-device association with `is_primary` indicator.
+  - `dataset.models.DatasetVersion`: version tag, source type (`SYNTHETIC`, `IMPORTED`), generator version, seed, configuration JSONB, fraud rate.
+  - `dataset.models.DatasetImport`: ingestion tracking, file hash, status vocabulary, row counters, started/completed timestamps, and partial unique index `uq_dataset_imports_active_hash` on active uploads.
+  - `dataset.models.DatasetImportError`: row-level and job-level error diagnostics with nullable `row_number`.
+  - `transactions.models.Transaction`: financial event fact with `source_namespace VARCHAR(64) NOT NULL DEFAULT 'SYNTHETIC'`, `external_transaction_id`, nullable `first_seen_import_id` for standalone support, account references, monetary amount `NUMERIC(18,2)`, currency `CHAR(3)`, direction, and transfer counterparty constraints.
+  - `transactions.models.TransactionImportRecord`: row-level provenance ledger with composite uniqueness `uq_import_records_row (dataset_import_id, source_row_number)` and five controlled outcomes (`INSERTED`, `MATCHED_EXISTING`, `DUPLICATE_IN_IMPORT`, `QUARANTINED`, `REJECTED`).
+  - `audit.models.AuditEvent`: append-only audit trail with actor user reference, action, entity type/ID, metadata JSONB, and created_at timestamp.
+- **Database Schema Migration:** Authored and verified Alembic revision `0002_core_operational_schema.py` creating the 12 operational tables, foreign keys with `ON DELETE RESTRICT`, primary keys, composite unique constraints, check constraints, and performance indexes.
+- **Canonical Transaction Identity & Integrity Constraints:** Enforced natural key uniqueness via `CONSTRAINT uq_transactions_canonical_id UNIQUE (source_namespace, account_id, external_transaction_id)` with all three participating columns strictly `NOT NULL`. Enforced positive amounts, uppercase 3-letter currency regex, direction enums, distinct transfer counterparties (`account_id != counterparty_account_id`), and required transfer counterparties (`transaction_type != 'TRANSFER' OR counterparty_account_id IS NOT NULL`).
+- **Deterministic Row-Hash Utilities:** Implemented isolated canonical serialization in `transactions/hashing.py`:
+  - Strict monetary scale representation (accepts `Decimal` and fixed-point `str` with exact scale of 2; rejects floats and excess scale; no silent rounding).
+  - Explicit Unicode NFC normalization across all text fields.
+  - Timezone-aware timestamp UTC normalization with microsecond precision and `Z` suffix (naive datetimes rejected).
+  - Exact 15-key sorted JSON serialization producing verified test vector digest: `1a5a4a225797715e7a1c98c6901285120cb4857df19d4ca7eb3f53f5646f686b`.
+  - Advisory-lock key derivation helper and upload concurrency deferred to Phase 5.
+- **Alembic Environment Wiring:** Updated `migrations/env.py` to import all domain models for full `Base.metadata` registration, and enhanced `get_url()` to respect dynamically passed database URLs in testing.
+- **Governance & ADR Lifecycle:**
+  - Formally superseded ADR-058 (`SUPERSEDED by ADR-064`).
+  - Formally accepted ADR-063 (Option C / progressive module realization without premature scaffolding).
+  - Formally accepted ADR-064 (canonical natural transaction identity and `transaction_import_records` provenance ledger).
+  - Reconciled `DATABASE_DESIGN.md` and `PROJECT_ROADMAP.md` (Phase 2 marked `COMPLETED`).
+
+### Validation Results
+- **82 automated tests collected and passed** (`uv run pytest -v`):
+  - 49 pre-existing tests preserved intact across API, database isolation, configuration, exception, and logging suites.
+  - 33 new Phase 2 tests (12 canonical row-hash normalization tests in `test_hashing.py`, 10 declarative model metadata tests in `test_models.py`, and 11 constraint/migration integration tests in `test_constraints.py`).
+- **Disposable PostgreSQL Database Validation:** Verified schema creation, foreign key restrictions, unique constraints, check constraints, partial active-import indexes, and persistence rollback atomicity on a freshly provisioned ephemeral PostgreSQL test database.
+- **Migration Roundtrip Safety:** Verified clean `alembic upgrade head -> downgrade base -> upgrade head` execution on disposable test database with strict safety preconditions preventing execution against non-test databases.
+- **Static Analysis:**
+  - Ruff linter: 0 errors across entire repository (`uv run ruff check .`).
+  - Ruff formatter: 100% compliant (`uv run ruff format --check .`).
+  - Strict mypy: 0 errors across all 48 source files (`uv run mypy src tests`).
+
+### Remaining Open Decisions
+- Contextual metadata divergence policy on canonical match (lossy canonical preservation vs quarantine vs observation child table).
+- Completed-file deduplication retention window (perpetual vs sliding window).
+- Non-transfer counterparty business rule (whether non-transfers should be prohibited from holding counterparties at the DB constraint level).
+- Ingestion worker recovery service and automated fencing implementation (deferred to Phase 5).
 
 ---
 

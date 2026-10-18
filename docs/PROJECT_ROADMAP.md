@@ -285,7 +285,7 @@ Build the persistent domain model.
 
 ## Primary Entities (Phase 2 — Option C: 12 Operational Tables)
 
-Per proposed ADR-063 and ADR-064, Phase 2 implements the 12 core operational and raw tables. Intelligence, investigation, and AI summary entities are deferred to their corresponding capability phases (Phases 6, 7, and 8).
+Per accepted ADR-063 and ADR-064, Phase 2 implements the 12 core operational and raw tables. Intelligence, investigation, and AI summary entities are deferred to their corresponding capability phases (Phases 6, 7, and 8).
 
 ```text
 users
@@ -336,7 +336,9 @@ audit_events
 
 ## Status
 
-`NOT STARTED`
+`COMPLETED`
+
+Implemented 12 operational tables, declarative models, Alembic migration `0002_core_operational_schema`, canonical transaction identity constraints, `transaction_import_records` provenance ledger, deterministic row-hash utilities, and comprehensive tests (82 passing across unit and disposable database integration suites).
 
 ---
 

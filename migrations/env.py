@@ -5,6 +5,15 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
+# Import all domain models to ensure Base.metadata is fully populated
+import finsignal.accounts.models  # noqa: F401
+import finsignal.audit.models  # noqa: F401
+import finsignal.dataset.models  # noqa: F401
+import finsignal.devices.models  # noqa: F401
+import finsignal.locations.models  # noqa: F401
+import finsignal.merchants.models  # noqa: F401
+import finsignal.transactions.models  # noqa: F401
+import finsignal.users.models  # noqa: F401
 from finsignal.core.config import get_settings
 from finsignal.core.database import Base
 
@@ -23,7 +32,10 @@ target_metadata = Base.metadata
 
 
 def get_url() -> str:
-    """Dynamically obtain the sync database URL from application settings."""
+    """Dynamically obtain the sync database URL from alembic config or application settings."""
+    cfg_url = config.get_main_option("sqlalchemy.url")
+    if cfg_url:
+        return cfg_url
     return get_settings().sync_database_url
 
 
