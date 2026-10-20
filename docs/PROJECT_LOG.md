@@ -957,7 +957,40 @@ Implement Phase 2: Database & Domain Models of FinSignal adopting Candidate Opti
 - Contextual metadata divergence policy on canonical match (lossy canonical preservation vs quarantine vs observation child table).
 - Completed-file deduplication retention window (perpetual vs sliding window).
 - Non-transfer counterparty business rule (whether non-transfers should be prohibited from holding counterparties at the DB constraint level).
-- Ingestion worker recovery service and automated fencing implementation (deferred to Phase 5).
+---
+
+## 2026-10-20 — Phase 3: Authentication & Role-Based Access Control (RBAC)
+
+### Objective
+Establish the security boundary for FinSignal, implementing secure user registration, Argon2id password hashing, JWT access token issuance/validation, user persistence, role-based access control, and public authentication endpoints prior to exposing transaction analysis features.
+
+### Work Completed
+- **Stage 1 — Dependencies & Configuration:** Configured `argon2-cffi`, `PyJWT`, and `email-validator` in `pyproject.toml`. Extended `core.config.Settings` with `jwt_secret_key` (SecretStr), `jwt_algorithm` (HS256), and `access_token_expire_minutes` (30m).
+- **Stage 2 — Security Primitives (`auth.security`):** Implemented Argon2id password hashing (`hash_password`, `verify_password`, `verify_dummy_password`) and JWT access token handling (`create_access_token`, `decode_access_token`). Enforced algorithm whitelisting (strictly HS256), canonical lowercase UUID subject format, and strict expiration/iat verification without leaking internal tokens or secrets in exception contexts.
+- **Stage 3 — Persistence & Schemas (`users.repository`, `auth.schemas`):** Implemented `UserRepository` providing async CRUD (`create`, `get_by_id`, `get_by_email`) with NFC Unicode and trimmed email normalization. Authored strict Pydantic v2 schemas: `RegisterRequest` (12-128 chars, extra="forbid"), `LoginRequest` (extra="forbid"), `TokenResponse` (bearer, expires_in), `UserResponse` (sanitized public fields only, stripping sensitive hashes), and `LogoutResponse`.
+- **Stage 4 — Authentication Service (`auth.service`):** Implemented `AuthService` handling registration with server-authoritative `ANALYST` role assignment, dummy password hash verification to mitigate timing discrepancies for unknown users, and structured driver diagnostic classification (`_is_email_unique_violation`) translating PostgreSQL unique_violation `23505` to client-safe `ConflictError("STATE_CONFLICT")` while performing safe session rollback.
+- **Stage 5 — Authentication Dependencies & RBAC (`auth.dependencies`):** Implemented FastAPI dependencies using `Annotated`: `get_current_user` (Bearer extraction via `HTTPBearer(auto_error=False)` returning HTTP 401 `AuthenticationError` on missing/invalid credentials, authoritative DB lookup, inactive check), and composable RBAC `RoleChecker` / `require_roles("ADMIN", "ANALYST", "INVESTIGATOR")`. Does not rely on token claims for authorization: user status and roles are authoritatively queried from PostgreSQL on every request.
+- **Stage 6 — Authentication API Endpoints (`api.v1.auth`):** Mounted versioned routes under `/api/v1/auth`:
+  - `POST /register`: creates `ANALYST` user, returns HTTP 201 `UserResponse`.
+  - `POST /login`: authenticates credentials, returns HTTP 200 `TokenResponse`.
+  - `GET /me`: protected endpoint returning current user's public profile from DB.
+  - `POST /logout`: protected endpoint requiring valid authentication and returning stateless confirmation `LogoutResponse`.
+- **Stage 7 — Automated Security & Integration Testing:** Added targeted integration tests on disposable PostgreSQL databases covering concurrent duplicate registration races, account deactivation/deletion enforcement on live routes, algorithm substitution/tampering defenses, and request-id correlation.
+
+### Validation Results
+- **205 automated tests collected and passed** (`uv run pytest`):
+  - 82 pre-existing Phase 0, 1, 2 tests preserved.
+  - 123 Phase 3 tests across security primitives, hashing, schemas, repositories, service, dependencies, RBAC, and integration endpoints.
+- **Static Analysis & Tooling:**
+  - Ruff check: 0 errors (`uv run ruff check .`).
+  - Ruff format: 100% compliant across 69 files (`uv run ruff format --check .`).
+  - Strict mypy: 0 errors across 65 source files (`uv run mypy src tests`).
+- **Disposable PostgreSQL Integration:** Verified end-to-end HTTP request/response flows, database session rollbacks, constraint enforcement, and dynamic role propagation on ephemeral live databases.
+
+### Residual Risks & Next-Step Items
+- **Deferred Rate Limiting:** Brute-force protection on `POST /api/v1/auth/login` and account creation abuse protection on `POST /api/v1/auth/register` were deferred per Phase 3 specifications and must be prioritized before public internet exposure.
+- **Alembic Path Separator Cleanup:** 14 test-time Alembic deprecation warnings (`No path_separator found in configuration...`) noted for cleanup in future configuration refactoring.
+- **Duplicate Registration Error Contract:** API returns `code="STATE_CONFLICT"` (HTTP 409) under the centralized exception hierarchy; documentation reconciled.
 
 ---
 

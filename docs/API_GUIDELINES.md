@@ -228,6 +228,8 @@ password
 password_hash
 ```
 
+Duplicate registration attempts return `409 Conflict` with error code `STATE_CONFLICT`.
+
 ---
 
 ## 9.2 Login

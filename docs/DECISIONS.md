@@ -270,7 +270,7 @@ Use JWT-based authentication.
 - role claims or server-side role resolution;
 - protected endpoints.
 
-Logout/token invalidation behavior must be implemented according to the security design rather than assuming JWTs are automatically revocable.
+Logout/token invalidation behavior is implemented following the stateless Option A design: access tokens have short lifetimes (default 30m) and the client discards the token upon logout. No server-side token revocation table or blacklist is maintained. Calling `POST /api/v1/auth/logout` requires authentication and returns a standard confirmation without revoking the token server-side.
 
 ---
 

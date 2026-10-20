@@ -127,6 +127,7 @@ def test_settings_environment_validation() -> None:
         s = Settings(
             environment=env,
             database_password=SecretStr("pw"),
+            jwt_secret_key=SecretStr("a" * 32),
             _env_file=None,
         )
         assert s.environment == env
@@ -135,6 +136,7 @@ def test_settings_environment_validation() -> None:
         Settings(
             environment="staging",
             database_password=SecretStr("pw"),
+            jwt_secret_key=SecretStr("a" * 32),
             _env_file=None,
         )
 
@@ -178,3 +180,97 @@ def test_settings_log_format_validation() -> None:
             database_password=SecretStr("pw"),
             _env_file=None,
         )
+
+
+def test_settings_jwt_defaults() -> None:
+    """Verify default values and masking for JWT settings."""
+    settings = Settings(
+        database_password=SecretStr("pw"),
+        _env_file=None,
+    )
+    assert settings.jwt_algorithm == "HS256"
+    assert settings.access_token_expire_minutes == 30
+    assert "dev-insecure-jwt" not in repr(settings.jwt_secret_key)
+    assert "**********" in str(settings.jwt_secret_key)
+
+
+def test_settings_jwt_algorithm_restriction() -> None:
+    """Verify jwt_algorithm strictly enforces HS256 and rejects other algorithms."""
+    with pytest.raises(ValidationError):
+        Settings(
+            jwt_algorithm="RS256",
+            database_password=SecretStr("pw"),
+            _env_file=None,
+        )
+
+    with pytest.raises(ValidationError):
+        Settings(
+            jwt_algorithm="none",
+            database_password=SecretStr("pw"),
+            _env_file=None,
+        )
+
+
+def test_settings_jwt_token_expire_bounds() -> None:
+    """Verify access_token_expire_minutes boundaries (1 to 1440)."""
+    with pytest.raises(ValidationError):
+        Settings(
+            access_token_expire_minutes=0,
+            database_password=SecretStr("pw"),
+            _env_file=None,
+        )
+
+    with pytest.raises(ValidationError):
+        Settings(
+            access_token_expire_minutes=1441,
+            database_password=SecretStr("pw"),
+            _env_file=None,
+        )
+
+    s = Settings(
+        access_token_expire_minutes=60,
+        database_password=SecretStr("pw"),
+        _env_file=None,
+    )
+    assert s.access_token_expire_minutes == 60
+
+
+def test_settings_jwt_production_requires_explicit_strong_secret() -> None:
+    """Verify production rejects dev fallback and weak secrets (<32 chars)."""
+    # Dev default rejected in production
+    with pytest.raises(ValidationError, match="cannot use the default dev secret"):
+        Settings(
+            environment="production",
+            database_password=SecretStr("pw"),
+            _env_file=None,
+        )
+
+    # Weak secret (<32 chars) rejected in production
+    with pytest.raises(ValidationError, match="at least 32 characters long"):
+        Settings(
+            environment="production",
+            jwt_secret_key=SecretStr("short_secret_under_32_chars"),
+            database_password=SecretStr("pw"),
+            _env_file=None,
+        )
+
+    # Strong secret (>=32 chars) accepted in production
+    strong_key = "a" * 32
+    prod_settings = Settings(
+        environment="production",
+        jwt_secret_key=SecretStr(strong_key),
+        database_password=SecretStr("pw"),
+        _env_file=None,
+    )
+    assert prod_settings.jwt_secret_key.get_secret_value() == strong_key
+
+
+def test_settings_jwt_secret_alias_support() -> None:
+    """Verify secret_key alias binds to jwt_secret_key."""
+    s = Settings.model_validate(
+        {
+            "secret_key": "custom_secret_key_for_testing_12345",
+            "database_password": "pw",
+        }
+    )
+    assert s.jwt_secret_key.get_secret_value() == "custom_secret_key_for_testing_12345"

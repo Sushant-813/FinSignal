@@ -151,6 +151,7 @@ def test_setup_logging_production_environment_selects_json_formatter() -> None:
     settings = Settings(
         environment="production",
         database_password=SecretStr("pw"),
+        jwt_secret_key=SecretStr("a" * 32),
         _env_file=None,
     )
     setup_logging(settings)
@@ -187,6 +188,7 @@ def test_setup_logging_explicit_text_format_in_production() -> None:
         environment="production",
         log_format="text",
         database_password=SecretStr("pw"),
+        jwt_secret_key=SecretStr("a" * 32),
         _env_file=None,
     )
     setup_logging(settings)

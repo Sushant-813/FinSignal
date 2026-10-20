@@ -3,7 +3,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import AliasChoices, Field, SecretStr, field_validator
+from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import URL
 
@@ -58,7 +58,45 @@ class Settings(BaseSettings):
         description="PostgreSQL password (strictly required, never logged)",
     )
 
+    # JWT authentication settings
+    jwt_secret_key: SecretStr = Field(
+        default=SecretStr("dev-insecure-jwt-secret-key-for-testing-only-32chars"),
+        validation_alias=AliasChoices("jwt_secret_key", "secret_key"),
+        description="Cryptographic secret key for signing JWT tokens",
+    )
+    jwt_algorithm: Literal["HS256"] = "HS256"
+    access_token_expire_minutes: int = Field(
+        default=30,
+        ge=1,
+        le=1440,
+        description="Access token validity window in minutes",
+    )
+
     cors_origins: list[str] = ["http://localhost:3000"]
+
+    @model_validator(mode="after")
+    def validate_jwt_secret(self) -> "Settings":
+        """Validate JWT signing secret strength and prevent hardcoded fallbacks in production."""
+        secret = self.jwt_secret_key.get_secret_value()
+        dev_default = "dev-insecure-jwt-secret-key-for-testing-only-32chars"
+        if self.environment == "production":
+            if secret == dev_default:
+                msg = (
+                    "In production, 'jwt_secret_key' must be explicitly configured "
+                    "and cannot use the default dev secret."
+                )
+                raise ValueError(msg)
+            if len(secret) < 32:
+                msg = "In production, 'jwt_secret_key' must be at least 32 characters long."
+                raise ValueError(msg)
+        elif (
+            self.environment == "development"
+            and secret != dev_default
+            and len(secret) < 32
+        ):
+            msg = "'jwt_secret_key' must be at least 32 characters long."
+            raise ValueError(msg)
+        return self
 
     model_config = SettingsConfigDict(
         env_file=".env",

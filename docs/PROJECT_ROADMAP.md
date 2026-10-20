@@ -386,8 +386,19 @@ INVESTIGATOR
 
 - protected endpoints require valid authentication;
 - role permissions work;
-- object-level authorization is enforced;
 - security tests pass.
+
+## Status
+
+`COMPLETED`
+
+- Implemented Argon2id password hashing, dummy password verification to mitigate timing discrepancies for unknown users, and HS256 JWT access token issuance/validation.
+- Implemented `UserRepository` and strict Pydantic v2 auth request/response schemas with normalized email handling.
+- Implemented `AuthService` handling registration with server-authoritative `ANALYST` role assignment and race-condition-safe email uniqueness translation.
+- Implemented FastAPI `get_current_user` dependency and composable `require_roles("ADMIN", "ANALYST", "INVESTIGATOR")` RBAC with authoritative PostgreSQL state resolution.
+- Implemented versioned authentication endpoints under `/api/v1/auth` (`/register`, `/login`, `/me`, `/logout`) with standardized error envelopes and authenticated stateless logout.
+- Verified test suite: 205 passed, 14 warnings (Alembic `path_separator` deprecation warnings documented as cleanup work).
+- Residual Risk / Next-Step: Rate limiting deferred to future phase (brute-force exposure on `/login` and account creation abuse on `/register` recorded as explicit production risk).
 
 ---
 
