@@ -254,6 +254,66 @@ transaction_timestamp - account.created_at
 
 This avoids storing a value that can become stale.
 
+### Namespace-Scoped Account Identity Contract (ADR-065 Decision D)
+
+1. **Composite External Identity:** Accounts are externally identified by the tuple `(source_namespace, external_account_id)`.
+2. **Current Schema State:** In migration `0002_core_operational_schema.py`, the `accounts` table contains `external_account_id VARCHAR(128) NULL` indexed via non-unique index `ix_accounts_external_account_id`. The table does **not** yet contain `source_namespace`.
+3. **Future Schema Migration Prerequisites (Checkpoint P4.0):**
+   - **Staged Migration Pattern:** To avoid silent data corruption and prevent migration failures on existing databases, the migration must follow a staged sequence:
+     - *Stage 1 (Nullable Column Addition):* Add `source_namespace VARCHAR(64) NULL` to both `accounts` and `dataset_imports`.
+     - *Stage 2 (Account Reconciliation & Preflight Safeguards):*
+       - **Case 1 (Unambiguous Ledger):** Accounts whose linked transactions all share exactly one distinct namespace (`HAVING count(DISTINCT source_namespace) = 1`):
+         ```sql
+         WITH account_namespaces AS (
+             SELECT account_id, min(source_namespace) AS resolved_namespace
+             FROM transactions
+             GROUP BY account_id
+             HAVING count(DISTINCT source_namespace) = 1
+         )
+         UPDATE accounts a
+         SET source_namespace = an.resolved_namespace
+         FROM account_namespaces an
+         WHERE a.id = an.account_id AND a.source_namespace IS NULL;
+         ```
+       - **Case 2 (Contaminated / Multi-Namespace Accounts):** Accounts linked to transactions spanning multiple namespaces (`HAVING count(DISTINCT source_namespace) > 1`):
+         ```sql
+         SELECT account_id, count(DISTINCT source_namespace) AS ns_count, array_agg(DISTINCT source_namespace) AS namespaces
+         FROM transactions
+         GROUP BY account_id
+         HAVING count(DISTINCT source_namespace) > 1;
+         ```
+         Preflight queries must **halt the migration** for manual operator remediation. Never assign a namespace nondeterministically via an unconstrained join.
+       - **Case 3 (System / Internal Accounts):** Accounts with no transactions and `external_account_id IS NULL` are assigned default `'SYNTHETIC'`.
+       - **Case 4 (Ambiguous Legacy External Accounts):** Accounts with no transactions but populated `external_account_id` cannot have their provenance proven from the database ledger. Preflight checks must flag these rows for operator confirmation or assignment to an explicit quarantine namespace (e.g. `'LEGACY_UNRESOLVED'`).
+       - **Case 5 (Post-Reconciliation Collisions):** Preflight must assert zero duplicate `(source_namespace, external_account_id)` pairs before index creation:
+         ```sql
+         SELECT source_namespace, external_account_id, count(*)
+         FROM accounts
+         WHERE external_account_id IS NOT NULL AND source_namespace IS NOT NULL
+         GROUP BY source_namespace, external_account_id
+         HAVING count(*) > 1;
+         ```
+     - *Stage 3 (Constraint Transition):* Alter column to `NOT NULL` (with `server_default='SYNTHETIC'` for newly inserted synthetic entities).
+     - *Stage 4 (Partial Unique Index Creation):*
+       ```sql
+       CREATE UNIQUE INDEX uq_accounts_namespace_external_id
+       ON accounts (source_namespace, external_account_id)
+       WHERE external_account_id IS NOT NULL;
+       ```
+   - **Conditional Backfill Caveat:** While unit/integration tests create accounts with `external_account_id = NULL`, repository code alone cannot prove the contents of existing development, staging, or production databases. A blanket `SYNTHETIC` backfill is conditional on verifying that existing data is exclusively synthetic.
+4. **Transaction-Account Namespace Consistency:**
+   - Invariant: `transaction.source_namespace == account.source_namespace`.
+   - *Enforcement Strategy Comparison:*
+
+| Strategy | Invariant Guarantee | Bypass Risks | Schema / Operational Impact |
+|:---|:---|:---|:---|
+| **Option C1: Application-Level Enforcement** | Enforced for all writes executing through verified application domain / ingestion services. | Direct SQL queries, migration scripts, data-repair tools, and bulk `COPY` operations bypass validation. | Zero schema changes; keeps simple single-column FK `transactions.account_id -> accounts.id`. |
+| **Option C2: Database Composite Foreign Key** | 100% database-enforced relational referential integrity. Structurally guarantees no transaction can point to an account in another namespace. | Zero relational bypass risk. (Does not enforce business logic, user authorization, or audit logging). | Requires `UNIQUE (id, source_namespace)` on `accounts` and composite FK `FOREIGN KEY (account_id, source_namespace) REFERENCES accounts (id, source_namespace)` on `transactions`. Supersedes or coordinates with single-column FK. |
+| **Option C3: Layered Enforcement (Recommended)** | Application-level validation provides user-friendly error diagnostics (`NAMESPACE_MISMATCH`); database composite FK provides an immutable structural relational backstop. | Zero relational bypass risk. | Combines developer-friendly error handling with absolute financial relational integrity. |
+
+   - *Architecture Recommendation:* Layered Enforcement (Option C3) is recommended for FinSignal because financial ledger immutability requires database-level guarantees against out-of-band corruption. If the database composite FK is deferred to a later milestone, the trade-off (application-only enforcement leaving direct SQL bypass risks) must be explicitly acknowledged and covered by end-to-end integration tests.
+5. **Pre-Implementation Constraint & Execution Order:** No schema migration is authorized by this design documentation alone. Checkpoint P4.0 (Account & Import Namespace Migration) must be authored, reviewed, and applied as a dedicated implementation task **prior to Checkpoint P4.1 account generation** and P4.4 transaction ingestion.
+
 ---
 
 ## 6.3 `merchants`
@@ -479,16 +539,18 @@ To establish one persistent canonical transaction across multiple imports and gu
    - `source_namespace`: Identifies the originating source system, rail, or generator contract (e.g. `'SYNTHETIC'`).
    - `account_id`: The canonical internal account UUID. The ingestion pipeline **must resolve source accounts to internal canonical accounts before identity matching**.
    - `external_transaction_id`: The source-assigned transaction identifier, guaranteed unique per account within the specified namespace.
+   - **Account Resolution Contract (ADR-065 Decision D):** Pre-matching account resolution resolves incoming source account strings using `(source_namespace, external_account_id)`. The current operational schema (`0002_core_operational_schema.py`) indexes `accounts.external_account_id` non-uniquely and lacks `source_namespace`; an authorized schema migration adding `accounts.source_namespace` with `UNIQUE (source_namespace, external_account_id)` is a required prerequisite before transaction ingestion implementation.
 
-2. **Resolution and Conflict Quarantine Policy:**
+2. **Resolution and Conflict Quarantine Policy (ADR-064 & ADR-065):**
    When an incoming row matches an existing `(source_namespace, account_id, external_transaction_id)`:
    - **Normalized Equivalence Comparison:** Compare material transaction fields against the canonical row. Normalization rules require:
      - Timestamps normalized to UTC `TIMESTAMPTZ`.
      - Strings trimmed of leading/trailing whitespace.
      - Monetary amounts evaluated as exact `Decimal(18,2)`.
      - Enumerations (currency, direction, transaction_type) compared in uppercase.
-   - **Equivalent Payload (`MATCHED_EXISTING`):** If all material fields (`account_id`, `amount`, `currency`, `occurred_at`, `transaction_type`, `direction`, `counterparty_account_id`) match the existing canonical row, the existing `transactions.id` is reused. A row observation is recorded in `transaction_import_records` with outcome `MATCHED_EXISTING`. Canonical transaction facts are **never overwritten**.
-   - **Conflicting Payload (`QUARANTINED`):** If material fields differ, the canonical transaction row is preserved unchanged. The incoming row is quarantined with outcome `QUARANTINED` in `transaction_import_records` (with `transaction_id = NULL`), and a row-level conflict error is recorded in `dataset_import_errors` with `error_code = 'MATERIAL_CONFLICT'`. Conflicting data is **never silently ignored or overwritten**.
+   - **Equivalent Payload (`MATCHED_EXISTING`):** If all seven core material fields (`account_id`, `amount`, `currency`, `occurred_at`, `transaction_type`, `direction`, `counterparty_account_id`) match the existing canonical row, the existing `transactions.id` is reused. A row observation is recorded in `transaction_import_records` with outcome `MATCHED_EXISTING`. Canonical transaction facts are **never overwritten**.
+   - **Contextual Metadata Divergence (`MATCHED_EXISTING` with Lossy Relational Context):** Per ADR-065 Decision A, if the seven core material fields match the canonical transaction but one or more contextual fields differ (`merchant_id`, `device_id`, `location_id`, `category`, `payment_method`, `channel`), the canonical record in `transactions` is preserved strictly unchanged. The incoming row is recorded in `transaction_import_records` with outcome `MATCHED_EXISTING` and `row_hash` computed over the complete normalized 15-key row payload. The alternate contextual plaintext values are not stored in relational storage and cannot be reconstructed from `row_hash`. Contextual differences do not constitute a `MATERIAL_CONFLICT`.
+   - **Conflicting Payload (`QUARANTINED`):** If any of the seven core material fields differ, the canonical transaction row is preserved unchanged. The incoming row is quarantined with outcome `QUARANTINED` in `transaction_import_records` (with `transaction_id = NULL`), and a row-level conflict error is recorded in `dataset_import_errors` with `error_code = 'MATERIAL_CONFLICT'`. Conflicting data is **never silently ignored or overwritten**.
 
 3. **Standalone and Manual Ingestion:**
    Transactions submitted outside batch imports (`first_seen_import_id IS NULL`) are subject to the exact same `uq_transactions_canonical_id` constraint, providing complete database-enforced concurrency safety without relying on race-condition-prone application-level pre-checks.
@@ -536,6 +598,7 @@ Represents an actual ingestion attempt.
 | Column | Type | Null | Description |
 |---|---|---:|---|
 | `id` | UUID | No | Primary key |
+| `source_namespace` | VARCHAR(64) | No | Source namespace partition (planned in Checkpoint P4.0; defaults to 'SYNTHETIC') |
 | `dataset_version_id` | UUID | Yes | Dataset version |
 | `initiated_by` | UUID | Yes | User who initiated import |
 | `filename` | VARCHAR(255) | Yes | Uploaded filename |
@@ -551,32 +614,54 @@ Represents an actual ingestion attempt.
 
 This table provides ingestion-level lineage and operational visibility. `completed_at` is populated whenever processing reaches a terminal outcome (`COMPLETED` or `FAILED`); job-level error diagnostics are recorded in `dataset_import_errors` with `row_number = NULL`.
 
-### Upload Concurrency, Advisory Locking & Deduplication
+### Upload Concurrency, Advisory Locking & Namespace-Scoped Deduplication
 
-Storing `file_hash` alone does not provide concurrency safety against simultaneous uploads of identical files. Furthermore, a partial unique index on active statuses (`PENDING`, `PROCESSING`) alone cannot prevent duplicate imports under fast-completion race conditions: if Request A inserts an active import and transitions to `COMPLETED` before concurrent Request B attempts its insert, Request A's row exits the partial index predicate, allowing Request B's insert to succeed and creating a duplicate import.
+Deduplication must never be global on `file_hash` alone. If identical file bytes are uploaded under different logical namespaces (e.g., initial upload under `SYNTHETIC` versus subsequent upload under `PUBLIC_DATASET_A`), global deduplication would mistakenly collapse them and return the `SYNTHETIC` summary to the `PUBLIC_DATASET_A` caller without ingesting any transactions into the target namespace.
+
+Deduplication is therefore strictly scoped to `(source_namespace, file_hash)`.
+
+Furthermore, storing `file_hash` alone does not provide concurrency safety against simultaneous uploads of identical files. A partial unique index on active statuses (`PENDING`, `PROCESSING`) alone cannot prevent duplicate imports under fast-completion race conditions: if Request A inserts an active import and transitions to `COMPLETED` before concurrent Request B attempts its insert, Request A's row exits the partial index predicate, allowing Request B's insert to succeed and creating a duplicate import.
 
 To guarantee strict concurrency serialization, the ingestion service enforces a **transaction-scoped PostgreSQL advisory lock** paired with a secondary partial unique index:
 
 #### 1. Transaction-Scoped Advisory Lock
-When a file with a non-null `file_hash` is uploaded, the registration service opens a database transaction and immediately acquires an advisory lock derived deterministically from the first 16 hex characters of the SHA-256 hash:
+When a file with a non-null `file_hash` is uploaded to a target `source_namespace`, the registration service opens a database transaction and immediately acquires an advisory lock.
 
+**Key Derivation Contract:**
+To prevent database dialect and type-casting ambiguities, the application service (Python) deterministically derives the 64-bit signed integer lock key by computing the SHA-256 digest over the UTF-8 byte sequence `(source_namespace || ':' || file_hash)` and extracting the first 8 bytes as a signed big-endian integer:
+```python
+key_bytes = hashlib.sha256(f"{source_namespace}:{file_hash}".encode("utf-8")).digest()[:8]
+lock_key = int.from_bytes(key_bytes, byteorder="big", signed=True)
+```
+The registration transaction acquires the lock via:
 ```sql
-SELECT pg_advisory_xact_lock(('x' || substring(:file_hash FROM 1 FOR 16))::bit(64)::bigint);
+SELECT pg_advisory_xact_lock(:lock_key);
 ```
 
+**Pure SQL Alternative (PostgreSQL 16+):**
+For direct SQL execution or standalone migration scripts, the equivalent PostgreSQL expression hex-encodes the `bytea` digest before bit casting:
+```sql
+SELECT pg_advisory_xact_lock(
+    ('x' || substring(encode(sha256((:source_namespace || ':' || :file_hash)::bytea), 'hex') FROM 1 FOR 16))::bit(64)::bigint
+);
+```
+
+**Collision Behavior & Integrity Boundary:**
+A 64-bit advisory lock key space has negligible collision probability under normal operation. If a hash collision occurs between two distinct `(source_namespace, file_hash)` uploads, it produces only a brief serial execution delay while one request waits for the other transaction to commit or abort. The advisory lock acts strictly as a concurrency serializer; actual deduplication status is governed by the database query `WHERE source_namespace = :source_namespace AND file_hash = :file_hash` and the partial unique index `uq_dataset_imports_active_hash`.
+
 **Lock Lifecycle & Ingestion Sequence:**
-1. **Acquire Lock First:** The lock is acquired inside the registration transaction before executing any queries against `dataset_imports`. Concurrent uploads of the identical file serialize at the database level.
-2. **Lookup Existing Import:** Within the lock boundary, query existing import records for the `file_hash`:
+1. **Acquire Lock First:** The lock is acquired inside the registration transaction before executing any queries against `dataset_imports`. Concurrent uploads of the identical file targeting the same namespace serialize at the database level. Uploads to different namespaces do not serialize.
+2. **Lookup Existing Import:** Within the lock boundary, query existing import records for `(source_namespace, file_hash)`:
    ```sql
    SELECT id, status, total_rows, valid_rows, invalid_rows
    FROM dataset_imports
-   WHERE file_hash = :file_hash
+   WHERE source_namespace = :source_namespace AND file_hash = :file_hash
    ORDER BY created_at DESC;
    ```
 3. **Completed vs. Failed Precedence:**
-   - **Applicable Completed Import Takes Precedence:** If any existing import with the matching hash has status `COMPLETED` (within the applicable retention window), it takes precedence regardless of whether historical failed attempts exist. The transaction commits (releasing the lock), and the API returns `HTTP 200 OK` with the existing completed import summary without reparsing.
-   - **In-Progress Active Import:** If an existing import has status `PENDING` or `PROCESSING`, the transaction commits/aborts (releasing the lock), and the API returns `HTTP 409 Conflict` with error code `IMPORT_IN_PROGRESS`.
-   - **Failed Import Retry:** A new import attempt (`dataset_imports` row with status `PENDING`) is permitted **only when no applicable completed import exists** and the documented retry policy allows it (e.g. prior attempts reached terminal status `FAILED`). The previous failed record is preserved for audit lineage.
+   - **Applicable Completed Import Takes Precedence (Perpetual Deduplication):** If any existing import with matching `(source_namespace, file_hash)` has status `COMPLETED`, it takes precedence indefinitely (per ADR-065). The transaction commits (releasing the lock), and the API returns `HTTP 200 OK` with the existing completed import summary without reparsing. Explicit reprocessing is a separate administrative workflow that requires explicit authorization and auditing, and cannot bypass canonical uniqueness.
+   - **In-Progress Active Import:** If an existing import has status `PENDING` or `PROCESSING` within that namespace, the transaction commits/aborts (releasing the lock), and the API returns `HTTP 409 Conflict` with error code `IMPORT_IN_PROGRESS`.
+   - **Failed Import Retry:** A new import attempt (`dataset_imports` row with status `PENDING`) is permitted **only when no applicable completed import exists** in that namespace and the documented retry policy allows it (e.g. prior attempts reached terminal status `FAILED`). The previous failed record is preserved for audit lineage.
    - **New File:** If no record exists, a new `dataset_imports` row is inserted with status `PENDING`.
 4. **Held Through Insert:** The advisory lock is held continuously through both the lookup and the insertion of the new `dataset_imports` record within the same transaction. Committing the transaction commits the registration and automatically releases the lock.
 
@@ -595,10 +680,31 @@ SELECT pg_advisory_xact_lock(('x' || substring(:file_hash FROM 1 FOR 16))::bit(6
 As a defense-in-depth safeguard against out-of-band direct inserts or un-locked background workers, the database enforces:
 ```sql
 CREATE UNIQUE INDEX uq_dataset_imports_active_hash
-    ON dataset_imports (file_hash)
+    ON dataset_imports (source_namespace, file_hash)
     WHERE status IN ('PENDING', 'PROCESSING');
 ```
-This index guarantees that even if application-level lock acquisition is bypassed, the database layer prevents concurrent active imports for the same file.
+This index guarantees that even if application-level lock acquisition is bypassed, the database layer prevents concurrent active imports for the same file within the same namespace.
+
+#### 5. Dataset Imports Namespace Migration & Backfill Strategy (Checkpoint P4.0)
+Legacy `dataset_imports` records require a defensible reconciliation procedure prior to setting `source_namespace NOT NULL`:
+- **Case I1 (Unambiguous Ledger):** Imports linked to transactions that all share exactly one distinct namespace (via `transactions.first_seen_import_id` or `transaction_import_records`):
+  ```sql
+  WITH import_namespaces AS (
+      SELECT first_seen_import_id AS import_id, min(source_namespace) AS resolved_namespace
+      FROM transactions
+      WHERE first_seen_import_id IS NOT NULL
+      GROUP BY first_seen_import_id
+      HAVING count(DISTINCT source_namespace) = 1
+  )
+  UPDATE dataset_imports di
+  SET source_namespace = in_ns.resolved_namespace
+  FROM import_namespaces in_ns
+  WHERE di.id = in_ns.import_id AND di.source_namespace IS NULL;
+  ```
+- **Case I2 (Contaminated Imports):** Imports whose linked transactions span multiple distinct namespaces must be flagged by preflight queries and halted for operator investigation.
+- **Case I3 (Synthetic Version Metadata):** Imports linked to `dataset_versions` where `source_type == 'SYNTHETIC'` and generator configuration is present are assigned `'SYNTHETIC'`.
+- **Case I4 (Unlinked / External Imports):** Imports with no linked transactions and no version metadata cannot have their provenance automatically proven; preflight checks must require operator confirmation or assignment to an explicit legacy partition.
+- **Case I5 (Active Import Safeguard):** Migrations must be executed during an authorized maintenance window where zero imports have status `PENDING` or `PROCESSING`.
 
 ---
 

@@ -755,6 +755,10 @@ The ingestion system must:
 9. Validate monetary values.
 10. Produce data-quality results.
 11. Prevent invalid data from silently entering the production dataset.
+12. Handle contextual metadata divergence per ADR-065 Decision A: preserve immutable canonical records, record `MATCHED_EXISTING` with `row_hash` provenance, and isolate material conflicts strictly to core fields.
+13. Enforce namespace-scoped perpetual completed-file deduplication under transaction-scoped composite advisory locks per ADR-065 Decision C (`(source_namespace, file_hash)`), reserving reprocessing as an exceptional, auditable administrative action.
+14. Pre-condition on reference entities: Reference entities (`locations`, `merchants`, `devices`, `accounts`) must be generated and populated before transaction ingestion can validate foreign references.
+15. Account and dataset-import namespace migration dependency (ADR-065 Decision D): Enforce namespace-scoped account resolution using `(source_namespace, external_account_id)` with verified transaction-account namespace consistency. An approved Alembic migration adding `source_namespace` to `accounts` and `dataset_imports` with a unique constraint `UNIQUE (source_namespace, external_account_id)` when non-null, accompanied by staged migration preflight, duplicate checks, conditional reconciliation, and layered consistency enforcement (Option C3), is an explicit prerequisite (Checkpoint P4.0) before reference-entity account generation (Checkpoint P4.1) and transaction ingestion (Checkpoint P4.4) are operationalized.
 
 ---
 

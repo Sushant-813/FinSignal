@@ -994,6 +994,42 @@ Establish the security boundary for FinSignal, implementing secure user registra
 
 ---
 
+## 2026-10-20 — Phase 4 Preflight & Synthetic Dataset Observation Policies (ADR-065 Proposed)
+
+### Objective
+Execute Phase 4 preflight review, inspect repository state against ADR-064, evaluate unresolved architectural decisions, and synchronize project specifications with project-owner policy selections prior to generator and ingestion implementation.
+
+### Work Completed
+- **Repository Verification:** Verified clean working tree, verified 205 passing tests with 14 Alembic deprecation warnings, identified local dev database at revision `0001_initial_baseline` while migration head is `0002_core_operational_schema`.
+- **Policy Selection Review:** Reviewed project owner's selected policies:
+  - *Decision A:* Candidate 1 — preserve canonical immutable facts and record `row_hash` provenance in `transaction_import_records` with outcome `MATCHED_EXISTING`; alternate contextual plaintext values are not stored in relational storage and cannot be reconstructed from one-way SHA-256 hashes.
+  - *Decision B:* Deterministic synthetic business identifiers (`ACC_[0-9]{6}`, `TXN_[0-9]{8}`, etc.), strict reproducibility tuple `(seed, generator_version, config)`, progressive prefix determinism through isolated per-entity PRNG streams, and explicit namespace isolation (`source_namespace`).
+  - *Decision C:* Namespace-scoped perpetual completed-file deduplication `(source_namespace, file_hash)`, preserving namespace isolation so identical files uploaded under different namespaces (e.g. `SYNTHETIC` vs `PUBLIC_DATASET_A`) remain distinct import identities. Composite advisory locking prevents concurrent active imports within the same namespace.
+  - *Decision D:* Namespace-scoped account identity `(source_namespace, external_account_id)` with verified transaction-account namespace agreement.
+- **Follow-Up Technical Review & Refinements:**
+  - *Finding A (Advisory Lock Key Derivation):* Specified Python-level derivation of 64-bit signed integer key (`hashlib.sha256(f"{source_namespace}:{file_hash}".encode("utf-8")).digest()[:8]`) and corrected the pure-PostgreSQL SQL alternative using `encode(sha256(...), 'hex')`. Clarified hash collision behavior.
+  - *Finding B (Account Namespace Backfill):* Documented staged migration pattern across 5 distinct legacy account cases. Unambiguous reconciliation query with `HAVING count(DISTINCT source_namespace) = 1`; multi-namespace accounts (`> 1`) halt migration for operator remediation.
+  - *Finding C (Dataset Imports Backfill):* Defined 5 distinct legacy import cases (I1–I5) with reconciliation from linked transactions, version metadata, or quarantine.
+  - *Finding D (Namespace Consistency Enforcement):* Evaluated Option C1 (application-level), Option C2 (DB composite foreign key), and Option C3 (layered enforcement). Recommended Option C3 for financial relational integrity, qualified the scope of database protection (relational referential integrity vs application/audit rules), and explained coordination with the existing single-column FK.
+  - *Finding E (Phase 4 Sequencing):* Corrected dependency sequence so that Checkpoint P4.0 (Account & Import Namespace Migration) precedes Checkpoint P4.1 (Reference Entity & Synthetic Generator Core), ensuring the database schema is namespace-ready before account entities are generated or persisted.
+  - *Finding F (Constraint Verification):* Confirmed actual canonical transaction constraint name is `uq_transactions_canonical_id` across migrations, models, tests, and documentation.
+- **ADR-065 Drafting:** Drafted and refined ADR-065 (`Synthetic Dataset Identity and Import Observation Policies`) in `docs/DECISIONS.md` covering Decisions A, B, C, and D under `PROPOSED — awaiting project-owner approval` status.
+- **Documentation Synchronization:** Updated `docs/DECISIONS.md`, `docs/DATABASE_DESIGN.md`, `docs/API_GUIDELINES.md`, `docs/DATASET_SPECIFICATION.md`, `docs/TRD.md`, and `docs/PROJECT_ROADMAP.md` ensuring full consistency across contextual conflict handling, namespace-scoped file deduplication, synthetic identity, and staged account identity migration contracts.
+- **Migration Dependency Documented:** Identified that `accounts.external_account_id` currently has a non-unique index and lacks `source_namespace`; recorded the required future Alembic migration (adding `source_namespace` to `accounts` and `dataset_imports` with partial unique index), duplicate preflight, and conditional backfill as prerequisite Checkpoint P4.0 before reference-entity account generation and transaction ingestion.
+- **Safety Confirmation:** Confirmed that no application source code, tests, configuration files, or database migrations were modified, and no git commits were created.
+
+### Result
+Documentation baseline is technically defensible, mathematically unambiguous, and synchronized across all specifications with the project owner's four selected architectural choices and refined technical safeguards.
+
+### Next Steps
+1. Project owner reviews and formally approves ADR-065 final wording.
+2. Synchronize local dev database via `uv run alembic upgrade head`.
+3. Design, review, test, and apply Checkpoint P4.0 (Account & Import Namespace Staged Migration) before generating reference entities.
+4. Proceed to Checkpoint P4.1 (Synthetic Generator Core & Reference Entities: `locations`, `merchants`, `devices`, `accounts`).
+5. Proceed to Checkpoints P4.2 through P4.6.
+
+---
+
 # 24. Log Maintenance Rules
 
 The project log should be updated when:

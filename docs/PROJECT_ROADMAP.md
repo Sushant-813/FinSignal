@@ -453,6 +453,14 @@ Then full-scale generation.
 - cleaning;
 - import error reporting.
 
+## Implementation Constraints & Policies (ADR-065)
+
+- **Contextual Divergence:** Candidate 1 — canonical transactions are immutable; contextual differences record `MATCHED_EXISTING` with `row_hash` provenance; alternate contextual plaintext is lossy and not stored in relational storage; `MATERIAL_CONFLICT` is strictly reserved for the 7 core material fields.
+- **Deterministic Synthetic Identity:** Business IDs are deterministic (`ACC_[0-9]{6}`, `TXN_[0-9]{8}`, etc.); PRNG streams are isolated; baseline namespace is `SYNTHETIC`; unrelated experiments require distinct namespaces.
+- **Namespace-Scoped File Deduplication:** Completed uploads return existing summaries indefinitely within their target namespace `(source_namespace, file_hash)`; reprocessing is an exceptional, audited administrative workflow.
+- **Namespace-Scoped Account Identity (Decision D):** Account identity is `(source_namespace, external_account_id)`. An approved schema migration adding `source_namespace` to `accounts` and `dataset_imports`, accompanied by staged migration preflight, duplicate checks, conditional reconciliation, and layered consistency validation (Option C3), must precede reference-entity account generation (P4.1) and transaction ingestion (P4.4).
+- **Reference Entity Prerequisite:** Reference entities (`locations`, `merchants`, `devices`, `accounts`) must be generated and populated before transaction ingestion foreign-key resolution.
+
 ## Fraud Scenarios
 
 ```text
@@ -464,6 +472,16 @@ F005 High Transaction Velocity
 F006 Account Takeover
 F007 Behavioral Spending Shift
 ```
+
+## Implementation Checkpoints
+
+- **Checkpoint P4.0 (Pre-Generation Prerequisite):** Account & Import Namespace Migration (author staged migration adding `source_namespace` to `accounts` and `dataset_imports`, duplicate preflight, conditional reconciliation, and `UNIQUE (source_namespace, external_account_id)` partial index prior to P4.1 account generation and P4.4 ingestion).
+- **Checkpoint P4.1:** Synthetic Generator Core & Reference Entities (`locations`, `merchants`, `devices`, `accounts`).
+- **Checkpoint P4.2:** Legitimate Behavioral Synthesis & Fraud Scenarios (F001–F007).
+- **Checkpoint P4.3:** Scale Verification, Isolated Ground Truth & CSV Exporters (5k, 50k, 250k).
+- **Checkpoint P4.4:** Ingestion Engine & Canonical Provenance Ledger (`transaction_import_records`).
+- **Checkpoint P4.5:** Advisory Locking, File Deduplication & Dataset Import API (`/api/v1/datasets/imports`).
+- **Checkpoint P4.6:** Recovery Engine, Security Hardening & Scale Verification.
 
 ## Exit Criteria
 

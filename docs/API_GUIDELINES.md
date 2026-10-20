@@ -1406,37 +1406,50 @@ A canonical transaction is uniquely identified across all imports and APIs by:
 ```text
 (source_namespace, account_id, external_transaction_id)
 ```
-- **Namespace:** Identifies the origin system or generator contract (default: `'SYNTHETIC'`).
-- **Account Resolution:** Incoming source account identifiers must be resolved to canonical internal `account_id` UUIDs before transaction identity matching is evaluated.
+- **Namespace:** Identifies the origin system or generator contract (default: `'SYNTHETIC'`). Non-synthetic imports must supply an explicit namespace; a default must never silently misclassify external feeds.
+- **Account Resolution (ADR-065 Decision D):** Incoming source account identifiers are resolved deterministically using `(source_namespace, external_account_id)`. Missing or ambiguous account references cause immediate row rejection (`ACCOUNT_NOT_FOUND` or `AMBIGUOUS_ACCOUNT_REFERENCE`); the ingestion service must never arbitrarily select an account.
+- **Namespace Consistency:** The transaction's `source_namespace` must strictly agree with the referenced account's `source_namespace`.
 - **External Transaction ID:** The source-assigned identifier, guaranteed unique per account within the source namespace.
 
 ### 47.2 Material Equivalence vs Conflict Quarantine
 When an incoming row matches an existing `(source_namespace, account_id, external_transaction_id)`:
 1. **Normalization:** Timestamps are normalized to UTC `TIMESTAMPTZ`, string fields trimmed, monetary amounts parsed as exact `Decimal(18,2)`, and codes uppercased.
 2. **Equivalent Row:** If all material attributes (`account_id`, `amount`, `currency`, `occurred_at`, `transaction_type`, `direction`, `counterparty_account_id`) match the canonical transaction, the existing canonical record is reused. The observation is recorded in `transaction_import_records` with outcome `MATCHED_EXISTING` (or `DUPLICATE_IN_IMPORT` if repeated within the same file). The canonical transaction is **never overwritten**.
-3. **Material Conflict:** If any material attribute differs, the canonical transaction row is preserved strictly unchanged. The incoming row is quarantined with outcome `QUARANTINED` in `transaction_import_records` (with `transaction_id = NULL`), and a row-level error is recorded in `dataset_import_errors` with persisted `error_code = 'MATERIAL_CONFLICT'`. (When exposed via direct synchronous transactional endpoints, this condition maps to the public API error code `TRANSACTION_IDENTITY_CONFLICT` with HTTP 409 Conflict). Conflicting data is **never silently applied or overwritten**.
+3. **Contextual Metadata Divergence:** Per ADR-065 Decision A, if all seven core material attributes match the canonical transaction, but one or more contextual fields differ (`merchant_id`, `device_id`, `location_id`, `category`, `payment_method`, `channel`), the canonical record is preserved strictly unchanged in `transactions`. The incoming row is recorded in `transaction_import_records` with outcome `MATCHED_EXISTING` and `row_hash` computed over the complete normalized 15-key payload. It does **not** trigger `MATERIAL_CONFLICT` or `QUARANTINED`. Alternate contextual plaintext is not retained in relational storage and cannot be reconstructed from `row_hash`.
+4. **Material Conflict:** If any of the seven core material attributes differ, the canonical transaction row is preserved strictly unchanged. The incoming row is quarantined with outcome `QUARANTINED` in `transaction_import_records` (with `transaction_id = NULL`), and a row-level error is recorded in `dataset_import_errors` with persisted `error_code = 'MATERIAL_CONFLICT'`. (When exposed via direct synchronous transactional endpoints, this condition maps to the public API error code `TRANSACTION_IDENTITY_CONFLICT` with HTTP 409 Conflict). Conflicting data is **never silently applied or overwritten**.
 
 ### 47.3 Repeated File Upload & Concurrency Policy
-When an identical file payload is uploaded (verified via SHA-256 `file_hash`):
+When a file payload is uploaded to a specified `source_namespace` (verified via SHA-256 `file_hash`):
 
-1. **Transaction-Scoped Advisory Lock:** Storing `file_hash` alone and relying solely on a partial unique index on active statuses (`PENDING`, `PROCESSING`) cannot prevent duplicate imports if Request A completes quickly and transitions to `COMPLETED` before Request B attempts its insertion. To eliminate all read-then-insert race conditions, the ingestion registration endpoint opens a database transaction and immediately acquires a transaction-scoped PostgreSQL advisory lock derived deterministically from the file hash:
-   ```sql
-   SELECT pg_advisory_xact_lock(('x' || substring(:file_hash FROM 1 FOR 16))::bit(64)::bigint);
-   ```
-   This lock is acquired *before* querying existing imports and held continuously through lookup and creation of a new `dataset_imports` record within the same transaction.
+1. **Namespace-Scoped Deduplication Scope:** Deduplication is strictly scoped to `(source_namespace, file_hash)`. Uploading identical file bytes under different source namespaces (e.g., initial upload under `SYNTHETIC` versus subsequent upload under `PUBLIC_DATASET_A`) represents distinct import identities that are ingested independently into their respective namespaces. Deduplication must never be global on `file_hash` alone.
 
-2. **Completed vs. Failed Precedence:**
-   - **Applicable Completed Import Takes Precedence:** If any existing import with the matching `file_hash` has status `COMPLETED` (within the applicable deduplication retention window), it takes precedence over historical failed attempts. The API commits the transaction (releasing the lock) and returns `HTTP 200 OK` with the existing completed import summary rather than executing redundant parsing or generating duplicate rows. (The duration of this deduplication retention window is an open decision recorded in `DECISIONS.md`).
-   - **Active In-Progress Import:** If an existing import has status `PENDING` or `PROCESSING`, the API returns `HTTP 409 Conflict` with machine-readable error code `IMPORT_IN_PROGRESS`, preventing concurrent ingestion of identical files.
-   - **Failed Import Retry:** A new import attempt (`dataset_imports` row with status `PENDING`) is permitted **only when no applicable completed import exists** and the documented retry policy allows it (e.g. prior attempts reached terminal status `FAILED`). The previous failed record is preserved for audit lineage.
+2. **Transaction-Scoped Advisory Lock:** Storing `file_hash` alone and relying solely on a partial unique index on active statuses (`PENDING`, `PROCESSING`) cannot prevent duplicate imports if Request A completes quickly and transitions to `COMPLETED` before Request B attempts its insertion. To eliminate all read-then-insert race conditions, the ingestion registration endpoint opens a database transaction and immediately acquires a transaction-scoped PostgreSQL advisory lock.
+   - *Application Key Derivation (Python):* The 64-bit signed integer key is computed in Python by hashing `(source_namespace || ':' || file_hash)` via SHA-256 and taking the first 8 bytes as a signed big-endian integer:
+     ```python
+     key_bytes = hashlib.sha256(f"{source_namespace}:{file_hash}".encode("utf-8")).digest()[:8]
+     lock_key = int.from_bytes(key_bytes, byteorder="big", signed=True)
+     ```
+     Acquired via: `SELECT pg_advisory_xact_lock(:lock_key);`.
+   - *Pure SQL Alternative (PostgreSQL 16+):*
+     ```sql
+     SELECT pg_advisory_xact_lock(('x' || substring(encode(sha256((:source_namespace || ':' || :file_hash)::bytea), 'hex') FROM 1 FOR 16))::bit(64)::bigint);
+     ```
+   - *Collision Semantics:* A 64-bit advisory lock key space has negligible collision probability. If two distinct uploads produce a hash collision, it causes a brief serial queuing delay; correctness is strictly guaranteed by the query `WHERE source_namespace = :source_namespace AND file_hash = :file_hash` and the partial unique index `uq_dataset_imports_active_hash`.
+   - This lock is acquired *before* querying existing imports and held continuously through lookup and creation of a new `dataset_imports` record within the same transaction. Uploads targeting different namespaces do not serialize.
 
-3. **Lock Timeout & Failure Behavior:** Lock acquisition is bounded by `SET LOCAL lock_timeout = '5s'`. If the lock cannot be acquired or an error occurs during lookup/insert, the transaction immediately rolls back and releases the lock. An unsuccessful registration is **never** reported as successful; the endpoint returns a transient failure (e.g. `HTTP 503 Service Unavailable` or `HTTP 408 Request Timeout`).
+3. **Completed vs. Failed Precedence & Perpetual Retention:**
+   - **Applicable Completed Import Takes Precedence (Perpetual Deduplication):** If any existing import with matching `(source_namespace, file_hash)` has status `COMPLETED`, it takes precedence indefinitely (per ADR-065). The API commits the transaction (releasing the lock) and returns `HTTP 200 OK` with the existing completed import summary rather than executing redundant parsing or generating duplicate rows.
+   - **Administrative Reprocessing Safeguards:** An explicit reprocessing workflow cannot bypass advisory locking, active import conflict behavior (`HTTP 409`), canonical transaction uniqueness, or the row-level recovery contract. Any future reprocessing request must be restricted to `ADMIN`, explicitly audited in `audit_events`, and create a new import attempt record. The exact API parameter or command shape remains unspecified until its request/response and authorization contract is formally designed; undocumented bypass flags are strictly forbidden.
+   - **Active In-Progress Import:** If an existing import has status `PENDING` or `PROCESSING` within the target namespace, the API returns `HTTP 409 Conflict` with machine-readable error code `IMPORT_IN_PROGRESS`, preventing concurrent ingestion of identical files in the same namespace.
+   - **Failed Import Retry:** A new import attempt (`dataset_imports` row with status `PENDING`) is permitted **only when no applicable completed import exists** in that namespace and the documented retry policy allows it (e.g. prior attempts reached terminal status `FAILED`). The previous failed record is preserved for audit lineage.
 
-4. **Secondary Partial Unique Index Safeguard:** As a secondary defense-in-depth database constraint, `uq_dataset_imports_active_hash` on `dataset_imports(file_hash) WHERE status IN ('PENDING', 'PROCESSING')` prevents concurrent active rows even if application locking is bypassed.
+4. **Lock Timeout & Failure Behavior:** Lock acquisition is bounded by `SET LOCAL lock_timeout = '5s'`. If the lock cannot be acquired or an error occurs during lookup/insert, the transaction immediately rolls back and releases the lock. An unsuccessful registration is **never** reported as successful; the endpoint returns a transient failure (e.g. `HTTP 503 Service Unavailable` or `HTTP 408 Request Timeout`).
 
-5. **Nullable Hash Handling:** If an upload does not supply or compute a `file_hash` (`NULL`), advisory locking and file lookup are bypassed, allowing unhashed uploads without constraint.
+5. **Secondary Partial Unique Index Safeguard:** As a secondary defense-in-depth database constraint, `uq_dataset_imports_active_hash` on `dataset_imports(source_namespace, file_hash) WHERE status IN ('PENDING', 'PROCESSING')` prevents concurrent active rows even if application locking is bypassed.
 
-6. **Intentional Re-analysis:** Re-evaluating previously imported transactions against newer ML models or rules must use explicit re-analysis endpoints (e.g. `POST /api/v1/transactions/{id}/risk/analyze`), never re-uploading duplicate raw files.
+6. **Nullable Hash Handling:** If an upload does not supply or compute a `file_hash` (`NULL`), advisory locking and file lookup are bypassed, allowing unhashed uploads without constraint.
+
+7. **Intentional Re-analysis:** Re-evaluating previously imported transactions against newer ML models or rules must use explicit re-analysis endpoints (e.g. `POST /api/v1/transactions/{id}/risk/analyze`), never re-uploading duplicate raw files.
 
 ### 47.4 Idempotent Import Recovery
 If an import fails midway, resuming that import attempt must use row-level idempotent tracking against `transaction_import_records`. The recovery engine does not assume contiguous row completion (`MAX + 1`); it queries unvisited or failed row ordinals within that `dataset_import_id` and safely reprocesses them without skipping or duplicating data. Duplicate and quarantined rows remain fully traceable via `dataset_import_id`, `source_row_number`, and `row_hash` in `transaction_import_records` even when `transaction_id` is null.

@@ -1680,6 +1680,143 @@ Adopt canonical transaction identity scoped by source namespace, canonical accou
 
 ---
 
+# ADR-065 — Synthetic Dataset Identity and Import Observation Policies
+
+**Status:** PROPOSED — awaiting project-owner approval
+**Date:** 2026-10-20
+**Related decisions:** ADR-008, ADR-013, ADR-014, ADR-029, ADR-063, ADR-064
+
+## Context
+
+Phase 4 introduces a deterministic synthetic transaction generator and CSV ingestion workflow. The existing canonical transaction identity and provenance contract is defined by ADR-064. Three remaining policies must be explicit before ingestion behavior is implemented: contextual metadata divergence on canonical matches, stable generator identity across reproducible dataset runs, and the handling of byte-identical completed-file re-uploads.
+
+## Decision A — Contextual Metadata Divergence
+
+When an incoming row matches the canonical natural key `(source_namespace, account_id, external_transaction_id)` and all seven core material fields match the canonical transaction, but one or more contextual fields differ (`merchant_id`, `device_id`, `location_id`, `category`, `payment_method`, or `channel`):
+
+1. **Preserve Canonical Fact:** Preserve the canonical transaction exactly as first stored in `transactions`. Do not update or overwrite it.
+2. **Provenance Linkage:** Record the incoming row in `transaction_import_records` with `outcome = 'MATCHED_EXISTING'` and link `transaction_id` to the existing canonical transaction UUID.
+3. **Cryptographic Fingerprint:** Calculate `row_hash` from the documented normalized, ordered 15-key source-row representation (per `transactions.hashing`), including the contextual fields. The hash serves as tamper-evident provenance evidence, not a reversible copy of the row.
+4. **Material Conflict Isolation:** Do not classify a contextual-only difference as `MATERIAL_CONFLICT`; that outcome remains strictly reserved for divergence in the seven core material fields defined by ADR-064 (`account_id`, `amount`, `currency`, `occurred_at`, `transaction_type`, `direction`, `counterparty_account_id`).
+5. **Acknowledge Lossy Relational Storage:** Explicitly accept the architectural limitation that alternate contextual plaintext is not stored in relational storage and cannot be reconstructed from `row_hash`. It is only recoverable if the original source CSV file is retained externally and can be matched to the import and row ordinal.
+6. **Semantic Precision:** Do not claim the incoming row is fully identical to the canonical row. `MATCHED_EXISTING` signifies that the canonical financial identity and core material facts match; contextual divergence may still exist.
+
+### Consequences
+
+- Preserves the current 12-table operational schema and immutable-fact principle (ADR-008) without requiring premature schema expansion.
+- Discards alternate contextual values from SQL queryability; downstream ML feature pipelines and investigators query only the canonical transaction's original context.
+- If future investigation requirements necessitate multi-source contextual history, revisit this decision through a new ADR and schema review.
+
+## Decision B — Stable Synthetic Identity and Reproducibility
+
+1. **Deterministic Business Identifiers:** Generated business identifiers are deterministic strings and independent of internal database UUIDs. Initial formats:
+   - Accounts: `ACC_[0-9]{6}`
+   - Transactions: `TXN_[0-9]{8}`
+   - Merchants: `MERCH_[0-9]{5}`
+   - Devices: `DEV_[0-9]{6}`
+   - Locations: `LOC_[0-9]{3}`
+2. **Source Namespace Standard:** The baseline synthetic source namespace is `SYNTHETIC`. The namespace is part of canonical transaction identity through ADR-064.
+3. **Strict Reproducibility Contract:** Identical `(seed, generator_version, complete configuration)` inputs must produce byte-identical output for the same supported runtime/dependency contract. The generator must not depend on global PRNG state, uncontrolled iteration order, wall-clock timestamps, or non-deterministic identifiers. Independent seeded random streams must be used.
+4. **Progressive Prefix Determinism:** Progressive dataset sizes (100 accounts / ~5,000 txns; 1,000 accounts / ~50,000 txns; 5,000 accounts / ~250,000 txns) are expected to preserve the logical records in the smaller dataset as a strict prefix/subset of the larger dataset **only if this property is explicitly supported by the generator design and tests**. Do not assume that seeding one global PRNG automatically guarantees prefix stability when the target size changes. Use stable per-entity/per-account random streams or another documented deterministic construction.
+5. **Namespace Isolation for Experiments:** Distinct seeds or logically different experiments must not reuse the same `(source_namespace, account_id, external_transaction_id)` key for unrelated transactions in a shared database. Use a distinct namespace (e.g. `source_namespace = 'SYNTHETIC_EXP2'`) for each concurrently coexisting logical dataset/experiment, or isolate runs in separate databases. The namespace must be explicit in generator configuration and import metadata; do not silently infer it from a seed.
+6. **Idempotent Re-generation & Re-import:** Re-running the same logical dataset with the same namespace preserves business identifiers and safely matches existing canonical transactions. Database UUIDs and import-job UUIDs are generated by persistence and are not part of the generator's deterministic output.
+7. **Ground Truth Isolation:** Ground-truth identifiers link to generated business transaction identifiers without adding labels to the production transaction CSV. Ground truth remains a separate artifact (`transactions_ground_truth.csv`) per ADR-013/ADR-014.
+
+### Consequences
+
+- Deterministic regeneration and idempotent re-import are supported without schema changes.
+- Operators must intentionally isolate unrelated synthetic experiments to prevent canonical key collisions.
+
+## Decision C — Perpetual Completed-File Deduplication and Explicit Reprocessing
+
+1. **Namespace-Scoped Perpetual Deduplication:** A completed import with the same non-null SHA-256 `file_hash` within the specified target `source_namespace` remains eligible for the completed-import fast path indefinitely (`(source_namespace, file_hash)`). The API returns the existing completed import summary (`HTTP 200 OK`) unless a separately authorized reprocessing workflow is explicitly requested.
+2. **Namespace Isolation for Uploads:** Deduplication must never be global on `file_hash` alone. Identical file bytes uploaded under different logical namespaces (e.g., initial upload under `SYNTHETIC` versus subsequent upload under `PUBLIC_DATASET_A`) represent distinct import identities and must be ingested independently into their respective namespaces. Returning a `SYNTHETIC` summary to a `PUBLIC_DATASET_A` upload violates namespace isolation.
+3. **Advisory Lock & Concurrency Precedence:**
+   - The transaction-scoped advisory lock, active-import check, and completed-import lookup must all operate over the identical composite logical deduplication identity `(source_namespace, file_hash)`.
+   - *Key Derivation Contract:* The 64-bit signed integer lock key is derived in the application service (Python) by computing the SHA-256 digest over the unambiguous UTF-8 byte sequence `(source_namespace || ':' || file_hash)` and taking the first 8 bytes as a signed big-endian 64-bit integer:
+     ```python
+     key_bytes = hashlib.sha256(f"{source_namespace}:{file_hash}".encode("utf-8")).digest()[:8]
+     lock_key = int.from_bytes(key_bytes, byteorder="big", signed=True)
+     ```
+     The registration transaction acquires the lock via `SELECT pg_advisory_xact_lock(:lock_key);`.
+   - *Pure SQL Alternative (PostgreSQL 16+):* For standalone migration scripts or direct database clients, the equivalent PostgreSQL expression requires hex-encoding the `bytea` digest before bit conversion:
+     ```sql
+     SELECT pg_advisory_xact_lock(
+         ('x' || substring(encode(sha256((:source_namespace || ':' || :file_hash)::bytea), 'hex') FROM 1 FOR 16))::bit(64)::bigint
+     );
+     ```
+   - *Collision Behavior:* Because the lock key space is 64 bits, hash collisions between distinct `(source_namespace, file_hash)` tuples are statistically rare. If a collision occurs, it merely causes a brief serial queuing delay between those two specific upload transactions. Advisory locking serializes the check-and-insert sequence; actual duplicate determination is strictly governed by the SQL query `WHERE source_namespace = :source_namespace AND file_hash = :file_hash` and the partial unique index `uq_dataset_imports_active_hash`.
+   - *Active Conflict Response:* An identical upload targeting the same namespace whose import is currently `PENDING` or `PROCESSING` returns `HTTP 409 Conflict` with `IMPORT_IN_PROGRESS`.
+4. **Failure Recovery Preservation:** A failed or interrupted import follows the retry/recovery contract in ADR-064. Perpetual completed-file deduplication must not prevent recovery of an import that never reached `COMPLETED`.
+5. **Immutability Protection:** Reprocessing must never bypass `uq_transactions_canonical_id`, overwrite canonical transactions, or mark a failed registration as successful.
+6. **Administrative Authorization & Auditing:** Any future explicit reprocessing workflow must be restricted to `ADMIN`, require an explicit request and audit event (`audit_events`), retain the original import record, and create a distinct import attempt if reprocessing is approved. Rows matching existing canonical transactions will create new row-provenance records in `transaction_import_records` for that attempt; they will not create duplicate canonical transaction facts in `transactions`.
+7. **Unspecified Reprocessing Shape:** The API parameter or command shape for force reprocessing is **not specified by this ADR** and must be designed before implementation. Do not add `force_reprocess=true` merely as an undocumented bypass. Define how the actor, reason, prior completed import, and new import attempt are audited.
+8. **Separation of Deduplication from Data Retention:** This decision does not prescribe deleting import provenance or uploaded source files. File retention and data-retention policy remain separate operational concerns.
+
+## Decision D — Namespace-Scoped Account Identity
+
+1. **Schema Attribute Addition:** Add `source_namespace VARCHAR(64) NOT NULL DEFAULT 'SYNTHETIC'` to both `accounts` and `dataset_imports` in a separately approved schema migration (Checkpoint P4.0).
+2. **Composite Account Identity:** Define account external identity as `(source_namespace, external_account_id)`.
+3. **Database Uniqueness Constraint:** Enforce uniqueness for this pair when `external_account_id` is non-null via a partial unique index:
+   ```sql
+   CREATE UNIQUE INDEX uq_accounts_namespace_external_id
+   ON accounts (source_namespace, external_account_id)
+   WHERE external_account_id IS NOT NULL;
+   ```
+4. **Deterministic Ingestion Resolution:** Use the target import's explicit `source_namespace` to resolve external account IDs during ingestion. An importer must never select an arbitrary account when a reference is missing or ambiguous; missing accounts cause row rejection (`ACCOUNT_NOT_FOUND` or `AMBIGUOUS_ACCOUNT_REFERENCE`).
+5. **Explicit Namespace Propagation:** The baseline synthetic dataset may use `SYNTHETIC`, but external or partner data sources must supply an explicit namespace. A default must not silently misclassify non-synthetic records.
+6. **Staged Migration & Unambiguous Reconciliation:**
+   - A blanket backfill of legacy records to `SYNTHETIC` is **conditional**. While repository tests create accounts with `external_account_id = NULL`, data-level provenance cannot be proven from code alone for existing development, staging, or production databases.
+   - The migration must follow a staged execution pattern:
+     - *Stage 1 (Nullable Columns):* Add `source_namespace VARCHAR(64) NULL` to `accounts` and `dataset_imports`.
+     - *Stage 2 (Account Reconciliation & Preflight Safeguards):*
+       - **Case 1 (Unambiguous Ledger):** For accounts whose linked transactions all share exactly one distinct namespace (`HAVING count(DISTINCT source_namespace) = 1`), backfill `accounts.source_namespace` from `transactions.source_namespace`.
+       - **Case 2 (Contaminated / Multi-Namespace Accounts):** For accounts linked to transactions spanning multiple namespaces (`HAVING count(DISTINCT source_namespace) > 1`), preflight queries must **halt the migration** for manual operator remediation. Never assign a namespace nondeterministically via an unconstrained join.
+       - **Case 3 (System / Internal Accounts):** Accounts with no transactions and `external_account_id IS NULL` are assigned default `'SYNTHETIC'`.
+       - **Case 4 (Ambiguous Legacy External Accounts):** Accounts with no transactions but populated `external_account_id` cannot have their provenance proven from the ledger. Preflight checks must flag these rows for operator confirmation or assignment to an explicit quarantine namespace (e.g. `'LEGACY_UNRESOLVED'`).
+       - **Case 5 (Post-Reconciliation Collisions):** Preflight must assert zero duplicate `(source_namespace, external_account_id)` pairs before index creation.
+     - *Stage 3 (Dataset Import Reconciliation):*
+       - **Case I1 (Unambiguous Ledger):** For imports whose linked transactions all share exactly one distinct namespace (`first_seen_import_id` or `transaction_import_records`), backfill `dataset_imports.source_namespace` from transactions.
+       - **Case I2 (Contaminated Imports):** Imports whose linked transactions disagree on namespace halt migration for operator review.
+       - **Case I3 (Synthetic Version Metadata):** Imports linked to `dataset_versions` with synthetic configuration are assigned `'SYNTHETIC'`.
+       - **Case I4 (Unlinked / External Imports):** Imports lacking transactions or version metadata require explicit operator mapping or assignment to a legacy namespace.
+       - **Case I5 (Active Imports):** Migrations must be executed during a maintenance window with zero active imports (`PENDING`, `PROCESSING`).
+     - *Stage 4 (Constraint Transition & Indexing):* Set `source_namespace NOT NULL` (with `server_default='SYNTHETIC'`) and create partial unique indexes `uq_accounts_namespace_external_id` and `uq_dataset_imports_active_hash`.
+7. **Transaction-Account Namespace Consistency:**
+   - The platform evaluates three enforcement tiers for `transaction.source_namespace == account.source_namespace`:
+     - *Option C1 (Application-Level):* Validated in ingestion and domain services prior to insertion. Keeps simple single-column FK `transactions.account_id -> accounts.id`. Trade-off: direct SQL, maintenance scripts, and bulk data operations bypass application validation.
+     - *Option C2 (PostgreSQL Composite Foreign Key):* Requires `UNIQUE (id, source_namespace)` on `accounts` and composite FK `FOREIGN KEY (account_id, source_namespace) REFERENCES accounts (id, source_namespace)` on `transactions`.
+     - *Option C3 (Layered Enforcement — Recommended):* Application validation returns rich diagnostics (`NAMESPACE_MISMATCH`) before insert; database composite FK provides an immutable relational structural backstop.
+   - *Scope of Database Guarantee:* A composite foreign key guarantees **relational referential integrity** (no transaction row can ever reference an account in another namespace, even via direct SQL). It does *not* replace application-level validation for developer-friendly error messages, user authorization, audit logging, or business logic.
+   - *Foreign-Key Coordination:* The composite foreign key can cleanly supersede the existing single-column FK `fk_transactions_account_id_accounts`, or both can be retained.
+8. **No Premature Migration:** No schema migration is authorized by this ADR text alone. The migration must be designed, reviewed, tested, and applied in a separate implementation step.
+
+### Consequences
+
+- Different data sources and synthetic experiments can reuse the same external account ID without conflating accounts.
+- Requires an Alembic schema migration and explicit namespace propagation through reference-entity import, dataset import tracking, and transaction ingestion.
+
+### Cross-Cutting Consequences
+
+- ADR-064 remains in force. ADR-065 clarifies behavior; it does not replace canonical transaction identity (`uq_transactions_canonical_id`), material-conflict, advisory-locking, or row-level recovery contracts.
+- No new operational table is introduced by these policies.
+- The account namespace column, dataset import namespace column, and uniqueness constraints require a future migration; they are not present in the current schema (`0002_core_operational_schema.py`).
+- File-level idempotency, canonical transaction identity, row-level provenance, and explicit reprocessing are separate concepts and must remain separately documented and tested.
+
+### Implementation Prerequisites & Execution Order
+
+Phase 4 execution must follow a strict, dependency-ordered sequence:
+
+1. **ADR-065 Formal Approval:** Project owner reviews and formally approves ADR-065.
+2. **Local Database Alignment:** Synchronize local development database with `0002_core_operational_schema` (`uv run alembic upgrade head`).
+3. **Checkpoint P4.0 (Account & Import Namespace Migration):** Author, test, and apply the staged migration for `accounts.source_namespace` and `dataset_imports.source_namespace` with preflight verification and reconciliation **before** any Phase 4 reference entities are generated or persisted.
+4. **Checkpoint P4.1 (Reference Entity & Synthetic Generator Core):** Implement generator core and reference entities (`locations`, `merchants`, `devices`, `accounts`), conforming to the namespace-scoped schema from inception.
+5. **Checkpoint P4.2–P4.3:** Behavioral synthesis, fraud scenarios, scale verification, and isolated ground-truth export.
+6. **Checkpoint P4.4 (Transaction Ingestion):** Implement transaction ingestion with deterministic namespace-scoped account resolution, contextual divergence handling, and row provenance tracking.
+7. **Checkpoint P4.5–P4.6:** Advisory locking, namespace-scoped deduplication, import APIs, and recovery engine.
+
+---
+
 # 4. Decision Dependency Map
 
 ```text
@@ -1761,24 +1898,24 @@ The following decisions remain intentionally open until implementation provides 
 10. Exact rate-limiting implementation defaults.
 11. Exact background-job strategy if batch processing becomes slow.
 12. Exact frontend architecture after Backend + ML completion.
-13. Exact retention window for completed-file re-upload deduplication (whether HTTP 200 summary return applies perpetually or is bounded by an expiration window such as 30/90 days).
-14. Policy for differing contextual metadata (`merchant_id`, `device_id`, `location_id`, `category`, `payment_method`, `channel`) when canonical transaction identity and core material fields match.
+13. Exact retention window for completed-file re-upload deduplication — Resolved via ADR-065 (Perpetual retention for byte-identical files with separately authorized administrative reprocessing).
+14. Policy for differing contextual metadata on canonical match — Resolved via ADR-065 (Candidate 1: Immutable canonical preservation with row-hash provenance).
+15. Account external identifier uniqueness and namespace resolution contract — Policy selected via proposed ADR-065 Decision D (Namespace-Scoped Account Identity `(source_namespace, external_account_id)`); schema migration and existing data backfill pending implementation authorization.
 
-### Detailed Open Decision: Contextual Metadata Divergence on Canonical Match (Phase 2 Ingestion Checkpoint)
+### Resolved Decision Note: Contextual Metadata Divergence on Canonical Match
+- **Status:** RESOLVED via proposed ADR-065 (Decision A: Candidate 1 — Immutable Canonical Preservation with Hash Provenance).
+- Canonical transaction facts remain strictly immutable. Alternate contextual values are not stored in relational storage; `transaction_import_records.row_hash` records tamper-evident proof that an alternate payload appeared.
 
-- **Status:** OPEN (Decision pending explicit project-owner authorization; no candidate is adopted).
-- **Question:** How should the ingestion engine handle an incoming transaction row that matches an existing canonical transaction key `(source_namespace, account_id, external_transaction_id)` and matches all seven core material fields (`account_id`, `amount`, `currency`, `occurred_at`, `transaction_type`, `direction`, `counterparty_account_id`), but differs in optional contextual metadata (`merchant_id`, `device_id`, `location_id`, `category`, `payment_method`, `channel`)?
-- **Why it matters:** Canonical transactions in `transactions` are strictly immutable and must never be silently overwritten. If a subsequent import or secondary feed provides contradictory or newly enriched contextual attributes (such as a different merchant or device identifier), the system must follow a documented architectural policy rather than unverified assumptions.
-- **Required Information:** Frequency of conflicting or enriched contextual attributes across real-world / synthetic data feeds; investigation requirements for tracking multiple conflicting device/merchant observations for a single payment event.
-- **Resolution Phase:** Phase 2 (Ingestion Service implementation) prior to operationalizing `transaction_import_records` processing.
-- **Trade-Off & Fidelity Analysis:**
-  - `transaction_import_records.row_hash` is a one-way cryptographic SHA-256 digest. It provides tamper-evident proof that a source payload differed and enables verification against external raw files.
-  - However, `row_hash` **cannot reconstruct, recover, or query the alternate contextual plaintext values** (`merchant_id`, `device_id`, `location_id`, etc.).
-  - If Candidate 1 is selected, the documentation must honestly record that divergent contextual metadata from subsequent imports is discarded from relational storage and is **not queryable by investigators or feature pipelines**.
-- **Candidate Approaches:**
-  1. *Immutable Canonical Preservation with Hash Provenance (Lossy Contextual Fidelity):* Treat the row as `MATCHED_EXISTING`, link `transaction_id` to the canonical row, preserve initial canonical metadata strictly unchanged, and rely on `transaction_import_records.row_hash` to record that a divergence existed. (Alternate contextual values are not preserved in relational storage).
-  2. *Strict Material Expansion (Quarantine):* Expand the material conflict definition to include contextual metadata, quarantining any row where merchant, device, location, or channel diverges. (Eliminates silent data loss, but risks high false-positive quarantine volume).
-  3. *Multi-Observation Context Ledger (Full Relational Fidelity):* Defer contextual attributes to dedicated child observation tables (e.g. `transaction_context_observations`) so multiple sightings can be accumulated without mutating the canonical transaction fact. (Full fidelity, but adds schema complexity beyond Phase 2 Option C 12-table boundary).
+### Resolved Decision Note: Completed Import Deduplication Retention
+- **Status:** RESOLVED via proposed ADR-065 (Decision C: Namespace-Scoped Perpetual Deduplication).
+- Byte-identical files within the same target `source_namespace` (`(source_namespace, file_hash)`) return HTTP 200 with the existing import summary indefinitely. Deduplication is strictly namespace-scoped; identical files uploaded to different namespaces are treated as distinct import identities. Explicit reprocessing is a separate administrative workflow.
+
+### Policy Selection Note: Account External Identifier Uniqueness and Namespace Resolution Contract (ADR-065 Decision D)
+
+- **Status:** POLICY SELECTED via proposed ADR-065 (Decision D: Namespace-Scoped Account Identity `(source_namespace, external_account_id)`).
+- **Architectural Policy:** Incoming source account identifiers must be resolved deterministically using `(source_namespace, external_account_id)`. The transaction's source namespace must agree with the referenced account's source namespace.
+- **Migration Dependency:** The current database schema (`0002_core_operational_schema.py`) does not yet include `accounts.source_namespace`, `dataset_imports.source_namespace`, or the composite unique constraints. An authorized Alembic migration (Checkpoint P4.0), executing a staged execution pattern (nullable column -> duplicate preflight & reconciliation -> NOT NULL & partial unique index), is an explicit prerequisite before reference-entity account generation (Checkpoint P4.1) and transaction ingestion (Checkpoint P4.4). No schema migration is authorized by this policy selection alone.
+
 
 ### Detailed Open Decision: Sparse/New-Account Baseline Strategy (Phase 6 Resolution Checkpoint)
 

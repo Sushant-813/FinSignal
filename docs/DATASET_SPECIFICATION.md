@@ -149,32 +149,46 @@ Purpose:
 
 ---
 
-# 6. Reproducibility
+# 6. Reproducibility & Synthetic Identity Contract
 
-Dataset generation must be deterministic when provided with the same configuration and random seed.
+Dataset generation must be deterministic when provided with the same configuration, random seed, and generator version (per ADR-029 and ADR-065).
 
-Example:
+### 6.1 Reproducibility Tuple
 
+Reproducibility is strictly evaluated over:
 ```text
-Seed: 20261004
+(seed, generator_version, complete configuration)
 ```
+Identical inputs must yield byte-for-byte and hash-for-hash identical CSV files across supported execution environments. The generator must use independent, seeded PRNG instances (`random.Random(seed)`, `np.random.default_rng(seed)`) and must never rely on global PRNG state, dictionary iteration order, or wall-clock timestamps.
 
-The generator should expose configuration for:
+### 6.2 Deterministic Business Identifiers
 
-- Random seed
-- Number of accounts
-- Number of merchants
-- Number of devices
-- Number of locations
-- Number of transactions
-- Fraud rate
-- Dataset time range
-- Scenario distribution
+All generated entities use deterministic business string identifiers, completely decoupled from internal database UUIDs:
+- Accounts: `ACC_[0-9]{6}` (e.g. `ACC_000001`)
+- Transactions: `TXN_[0-9]{8}` (e.g. `TXN_00000001`)
+- Merchants: `MERCH_[0-9]{5}` (e.g. `MERCH_00001`)
+- Devices: `DEV_[0-9]{6}` (e.g. `DEV_000001`)
+- Locations: `LOC_[0-9]{3}` (e.g. `LOC_001`)
+
+### 6.3 Namespace Isolation for Experiments
+
+The default baseline namespace is `source_namespace = 'SYNTHETIC'`. Unrelated experiments or distinct seeds sharing the same PostgreSQL database must configure distinct namespaces (e.g. `source_namespace = 'SYNTHETIC_EXP2'`) or execute in separate databases. This prevents canonical key collisions on `(source_namespace, account_id, external_transaction_id)`. The namespace must be explicit in configuration and import metadata; it must never be silently derived from a seed.
+
+### 6.4 Progressive Prefix Determinism vs Configuration Invariance
+
+- **Configuration Invariance:** The same configuration and seed produce identical CSVs.
+- **Prefix / Subset Stability:** Smaller dataset scales (Stage 1: 100 accounts / ~5,000 txns) are expected to be a strict prefix/subset of larger scales (Stage 2: 1,000 accounts / ~50,000 txns) **only if explicitly guaranteed by generator design and verified by tests**. To avoid global PRNG sequence shifts when scaling account counts, the generator must employ hierarchical, per-entity/per-account independent seeded streams.
+
+### 6.5 Ground Truth Isolation
+
+Production `transactions.csv` must never contain ground-truth columns (`is_fraud`, `fraud_scenario`, `scenario_instance_id`). Ground truth must be exported strictly to a separate artifact (`transactions_ground_truth.csv`) and linked via the deterministic `transaction_id` (`TXN_[0-9]{8}`).
 
 Example conceptual configuration:
 
 ```yaml
 seed: 20261004
+generator_version: "1.0.0"
+source_namespace: "SYNTHETIC"
 
 accounts:
   count: 5000
@@ -532,7 +546,7 @@ Transactions are the central dataset entity.
 1. **Source Namespace:** All synthetic transactions belong to the default namespace: `source_namespace = 'SYNTHETIC'`.
 2. **Identifier Scope:** `transaction_id` is guaranteed unique per account within the `'SYNTHETIC'` namespace.
 3. **Internal Key Decoupling:** `transaction_id` is an external business identifier and must not be confused with FinSignal's internal database UUID primary key (`transactions.id`).
-4. **Account Resolution Precondition:** During ingestion, source account identifiers (`account_id` in the CSV) must be resolved to internal canonical account UUIDs prior to transaction identity matching.
+4. **Namespace-Scoped Account Resolution Precondition (ADR-065 Decision D):** During ingestion, source account identifiers (`account_id` in the CSV, e.g. `ACC_000001`) must be resolved to internal canonical `accounts.id` UUIDs using `(source_namespace, external_account_id)` prior to transaction identity matching. Reference entities (`locations`, `merchants`, `devices`, `accounts`) must be generated and populated before transaction rows are ingested. Missing or ambiguous account references cause immediate row rejection; an importer must never select an arbitrary account.
 
 ---
 
