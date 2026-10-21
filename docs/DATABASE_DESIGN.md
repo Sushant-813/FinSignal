@@ -257,62 +257,19 @@ This avoids storing a value that can become stale.
 ### Namespace-Scoped Account Identity Contract (ADR-065 Decision D)
 
 1. **Composite External Identity:** Accounts are externally identified by the tuple `(source_namespace, external_account_id)`.
-2. **Current Schema State:** In migration `0002_core_operational_schema.py`, the `accounts` table contains `external_account_id VARCHAR(128) NULL` indexed via non-unique index `ix_accounts_external_account_id`. The table does **not** yet contain `source_namespace`.
-3. **Future Schema Migration Prerequisites (Checkpoint P4.0):**
-   - **Staged Migration Pattern:** To avoid silent data corruption and prevent migration failures on existing databases, the migration must follow a staged sequence:
-     - *Stage 1 (Nullable Column Addition):* Add `source_namespace VARCHAR(64) NULL` to both `accounts` and `dataset_imports`.
-     - *Stage 2 (Account Reconciliation & Preflight Safeguards):*
-       - **Case 1 (Unambiguous Ledger):** Accounts whose linked transactions all share exactly one distinct namespace (`HAVING count(DISTINCT source_namespace) = 1`):
-         ```sql
-         WITH account_namespaces AS (
-             SELECT account_id, min(source_namespace) AS resolved_namespace
-             FROM transactions
-             GROUP BY account_id
-             HAVING count(DISTINCT source_namespace) = 1
-         )
-         UPDATE accounts a
-         SET source_namespace = an.resolved_namespace
-         FROM account_namespaces an
-         WHERE a.id = an.account_id AND a.source_namespace IS NULL;
-         ```
-       - **Case 2 (Contaminated / Multi-Namespace Accounts):** Accounts linked to transactions spanning multiple namespaces (`HAVING count(DISTINCT source_namespace) > 1`):
-         ```sql
-         SELECT account_id, count(DISTINCT source_namespace) AS ns_count, array_agg(DISTINCT source_namespace) AS namespaces
-         FROM transactions
-         GROUP BY account_id
-         HAVING count(DISTINCT source_namespace) > 1;
-         ```
-         Preflight queries must **halt the migration** for manual operator remediation. Never assign a namespace nondeterministically via an unconstrained join.
-       - **Case 3 (System / Internal Accounts):** Accounts with no transactions and `external_account_id IS NULL` are assigned default `'SYNTHETIC'`.
-       - **Case 4 (Ambiguous Legacy External Accounts):** Accounts with no transactions but populated `external_account_id` cannot have their provenance proven from the database ledger. Preflight checks must flag these rows for operator confirmation or assignment to an explicit quarantine namespace (e.g. `'LEGACY_UNRESOLVED'`).
-       - **Case 5 (Post-Reconciliation Collisions):** Preflight must assert zero duplicate `(source_namespace, external_account_id)` pairs before index creation:
-         ```sql
-         SELECT source_namespace, external_account_id, count(*)
-         FROM accounts
-         WHERE external_account_id IS NOT NULL AND source_namespace IS NOT NULL
-         GROUP BY source_namespace, external_account_id
-         HAVING count(*) > 1;
-         ```
-     - *Stage 3 (Constraint Transition):* Alter column to `NOT NULL` (with `server_default='SYNTHETIC'` for newly inserted synthetic entities).
-     - *Stage 4 (Partial Unique Index Creation):*
-       ```sql
-       CREATE UNIQUE INDEX uq_accounts_namespace_external_id
-       ON accounts (source_namespace, external_account_id)
-       WHERE external_account_id IS NOT NULL;
-       ```
-   - **Conditional Backfill Caveat:** While unit/integration tests create accounts with `external_account_id = NULL`, repository code alone cannot prove the contents of existing development, staging, or production databases. A blanket `SYNTHETIC` backfill is conditional on verifying that existing data is exclusively synthetic.
+2. **Current Schema State:** Applied in migration `0003_account_import_namespace.py` (Checkpoint P4.0), the `accounts` table contains `source_namespace VARCHAR(64) NOT NULL DEFAULT 'SYNTHETIC'` and `external_account_id VARCHAR(128) NULL`.
+3. **Implemented Schema Constraints (Migration `0003_account_import_namespace.py`):**
+   - **Partial Unique Index:**
+     ```sql
+     CREATE UNIQUE INDEX uq_accounts_namespace_external_id
+     ON accounts (source_namespace, external_account_id)
+     WHERE external_account_id IS NOT NULL;
+     ```
+   - **Composite Key & Foreign Key:** `UNIQUE (id, source_namespace)` on `accounts` backed by composite FK `fk_transactions_account_namespace` on `transactions(account_id, source_namespace) REFERENCES accounts(id, source_namespace)`.
+   - **Staged Migration Preflight Execution:** Migration 0003 implemented five preflight checks and conditional reconciliation queries (unambiguous ledger, multi-namespace contamination guard, internal account defaulting, unprovable account flagging, and collision assertion) before index transition.
 4. **Transaction-Account Namespace Consistency:**
    - Invariant: `transaction.source_namespace == account.source_namespace`.
-   - *Enforcement Strategy Comparison:*
-
-| Strategy | Invariant Guarantee | Bypass Risks | Schema / Operational Impact |
-|:---|:---|:---|:---|
-| **Option C1: Application-Level Enforcement** | Enforced for all writes executing through verified application domain / ingestion services. | Direct SQL queries, migration scripts, data-repair tools, and bulk `COPY` operations bypass validation. | Zero schema changes; keeps simple single-column FK `transactions.account_id -> accounts.id`. |
-| **Option C2: Database Composite Foreign Key** | 100% database-enforced relational referential integrity. Structurally guarantees no transaction can point to an account in another namespace. | Zero relational bypass risk. (Does not enforce business logic, user authorization, or audit logging). | Requires `UNIQUE (id, source_namespace)` on `accounts` and composite FK `FOREIGN KEY (account_id, source_namespace) REFERENCES accounts (id, source_namespace)` on `transactions`. Supersedes or coordinates with single-column FK. |
-| **Option C3: Layered Enforcement (Recommended)** | Application-level validation provides user-friendly error diagnostics (`NAMESPACE_MISMATCH`); database composite FK provides an immutable structural relational backstop. | Zero relational bypass risk. | Combines developer-friendly error handling with absolute financial relational integrity. |
-
-   - *Architecture Recommendation:* Layered Enforcement (Option C3) is recommended for FinSignal because financial ledger immutability requires database-level guarantees against out-of-band corruption. If the database composite FK is deferred to a later milestone, the trade-off (application-only enforcement leaving direct SQL bypass risks) must be explicitly acknowledged and covered by end-to-end integration tests.
-5. **Pre-Implementation Constraint & Execution Order:** No schema migration is authorized by this design documentation alone. Checkpoint P4.0 (Account & Import Namespace Migration) must be authored, reviewed, and applied as a dedicated implementation task **prior to Checkpoint P4.1 account generation** and P4.4 transaction ingestion.
+   - Enforced via **Layered Enforcement (Option C3)**: application-level domain validation returns descriptive `NAMESPACE_MISMATCH` errors, while the composite foreign key `fk_transactions_account_namespace` provides an immutable database-level relational backstop against out-of-band corruption.
 
 ---
 
@@ -539,7 +496,7 @@ To establish one persistent canonical transaction across multiple imports and gu
    - `source_namespace`: Identifies the originating source system, rail, or generator contract (e.g. `'SYNTHETIC'`).
    - `account_id`: The canonical internal account UUID. The ingestion pipeline **must resolve source accounts to internal canonical accounts before identity matching**.
    - `external_transaction_id`: The source-assigned transaction identifier, guaranteed unique per account within the specified namespace.
-   - **Account Resolution Contract (ADR-065 Decision D):** Pre-matching account resolution resolves incoming source account strings using `(source_namespace, external_account_id)`. The current operational schema (`0002_core_operational_schema.py`) indexes `accounts.external_account_id` non-uniquely and lacks `source_namespace`; an authorized schema migration adding `accounts.source_namespace` with `UNIQUE (source_namespace, external_account_id)` is a required prerequisite before transaction ingestion implementation.
+   - **Account Resolution Contract (ADR-065 Decision D):** Pre-matching account resolution resolves incoming source account strings using `(source_namespace, external_account_id)` via index `uq_accounts_namespace_external_id` (implemented in migration `0003_account_import_namespace.py`).
 
 2. **Resolution and Conflict Quarantine Policy (ADR-064 & ADR-065):**
    When an incoming row matches an existing `(source_namespace, account_id, external_transaction_id)`:
@@ -598,7 +555,7 @@ Represents an actual ingestion attempt.
 | Column | Type | Null | Description |
 |---|---|---:|---|
 | `id` | UUID | No | Primary key |
-| `source_namespace` | VARCHAR(64) | No | Source namespace partition (planned in Checkpoint P4.0; defaults to 'SYNTHETIC') |
+| `source_namespace` | VARCHAR(64) | No | Source namespace partition (added in migration `0003_account_import_namespace.py`; defaults to 'SYNTHETIC') |
 | `dataset_version_id` | UUID | Yes | Dataset version |
 | `initiated_by` | UUID | Yes | User who initiated import |
 | `filename` | VARCHAR(255) | Yes | Uploaded filename |
@@ -1607,9 +1564,10 @@ Recommended structure:
 ```text
 0001_initial_baseline.py
 0002_core_operational_schema.py
-0003_intelligence_models.py (Phase 7/8)
-0004_investigation_models.py (Phase 9)
-0005_ai_models.py (Phase 10)
+0003_account_import_namespace.py (Phase 4 / Checkpoint P4.0)
+0004_intelligence_models.py (Phase 7/8)
+0005_investigation_models.py (Phase 9)
+0006_ai_models.py (Phase 10)
 ```
 
 Migrations are executed via Alembic with the sync `psycopg` driver using dynamic application configuration (`Settings.sync_database_url`).

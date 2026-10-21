@@ -158,3 +158,61 @@ def test_audit_events_schema() -> None:
     assert "entity_id" in table.columns
     assert "created_at" in table.columns
     assert "updated_at" not in table.columns
+
+
+def test_accounts_namespace_schema_and_constraints() -> None:
+    """Verify accounts has source_namespace, uq_accounts_id_source_namespace, and partial index."""
+    table = Base.metadata.tables["accounts"]
+    assert "source_namespace" in table.columns
+    assert not table.columns["source_namespace"].nullable
+
+    # Unique constraint (id, source_namespace)
+    uq_names = {c.name for c in table.constraints if isinstance(c, UniqueConstraint)}
+    assert "uq_accounts_id_source_namespace" in uq_names
+    uq = next(
+        c for c in table.constraints if c.name == "uq_accounts_id_source_namespace"
+    )
+    assert isinstance(uq, UniqueConstraint)
+    assert [col.name for col in uq.columns] == ["id", "source_namespace"]
+
+    # Partial unique index uq_accounts_namespace_external_id
+    index_names = {idx.name for idx in table.indexes}
+    assert "uq_accounts_namespace_external_id" in index_names
+    idx = next(
+        idx for idx in table.indexes if idx.name == "uq_accounts_namespace_external_id"
+    )
+    assert idx.unique
+    assert [col.name for col in idx.columns] == [
+        "source_namespace",
+        "external_account_id",
+    ]
+
+
+def test_dataset_imports_namespace_schema_and_index() -> None:
+    """Verify dataset_imports has source_namespace and composite active hash index."""
+    table = Base.metadata.tables["dataset_imports"]
+    assert "source_namespace" in table.columns
+    assert not table.columns["source_namespace"].nullable
+
+    # Composite active hash index (source_namespace, file_hash)
+    index_names = {idx.name for idx in table.indexes}
+    assert "uq_dataset_imports_active_hash" in index_names
+    idx = next(
+        idx for idx in table.indexes if idx.name == "uq_dataset_imports_active_hash"
+    )
+    assert idx.unique
+    assert [col.name for col in idx.columns] == ["source_namespace", "file_hash"]
+
+
+def test_transactions_composite_account_foreign_key() -> None:
+    """Verify transactions has composite FK fk_transactions_account_namespace to accounts."""
+    table = Base.metadata.tables["transactions"]
+    fk_names = {fk.name for fk in table.foreign_key_constraints}
+    assert "fk_transactions_account_namespace" in fk_names
+    fk = next(
+        fk
+        for fk in table.foreign_key_constraints
+        if fk.name == "fk_transactions_account_namespace"
+    )
+    assert [col.name for col in fk.columns] == ["account_id", "source_namespace"]
+    assert [elem.column.name for elem in fk.elements] == ["id", "source_namespace"]

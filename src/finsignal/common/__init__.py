@@ -6,6 +6,7 @@ from finsignal.common.exceptions import (
     ConflictError,
     FinSignalError,
     InfrastructureError,
+    NamespaceMismatchError,
     NotFoundError,
     ValidationError,
 )
@@ -25,6 +26,7 @@ __all__ = [
     "ErrorResponse",
     "FinSignalError",
     "InfrastructureError",
+    "NamespaceMismatchError",
     "NotFoundError",
     "ValidationError",
     "finsignal_exception_handler",

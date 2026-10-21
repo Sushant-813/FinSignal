@@ -1,167 +1,34 @@
 """Integration tests for database constraints, canonical identity, and migrations on disposable DB."""
 
 import os
-import uuid
 from collections.abc import Generator
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-import psycopg
 import pytest
 from alembic import command
 from alembic.config import Config
-from psycopg import sql
-from pydantic import SecretStr
 from sqlalchemy import create_engine, select
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
 
 from finsignal.accounts.models import Account
+from finsignal.common.exceptions import NamespaceMismatchError
 from finsignal.core.config import Settings
 from finsignal.dataset.models import DatasetImport
 from finsignal.transactions.models import Transaction, TransactionImportRecord
+from finsignal.transactions.validation import validate_transaction_account_namespace
+from tests.integration.conftest import (
+    _PROVISIONED_DISPOSABLE_DATABASES,
+    get_admin_connection_params,
+    is_live_postgres_available,
+)
 
-
-def get_admin_connection_params() -> dict[str, str | int]:
-    """Return administrative PostgreSQL connection parameters from settings or environment."""
-    from dotenv import dotenv_values
-
-    env_vals = dotenv_values(".env") if os.path.exists(".env") else {}
-    host = (
-        os.environ.get("POSTGRES_HOST") or env_vals.get("POSTGRES_HOST") or "localhost"
-    )
-    port = int(os.environ.get("POSTGRES_PORT") or env_vals.get("POSTGRES_PORT") or 5432)
-    user = (
-        os.environ.get("POSTGRES_USER") or env_vals.get("POSTGRES_USER") or "postgres"
-    )
-
-    # Prioritize explicit non-default environment variables, then .env, then test_password fallback
-    dotenv_pw = env_vals.get("POSTGRES_PASSWORD")
-    env_override_pw = os.environ.get("POSTGRES_PASSWORD") or os.environ.get(
-        "DATABASE_PASSWORD"
-    )
-    if env_override_pw and env_override_pw != "test_password":
-        pw = env_override_pw
-    elif dotenv_pw:
-        pw = dotenv_pw
-    else:
-        pw = "test_password"
-
-    return {
-        "host": host,
-        "port": port,
-        "user": user,
-        "password": pw,
-    }
-
-
-def is_live_postgres_available() -> bool:
-    """Check if PostgreSQL server is reachable with admin credentials."""
-    params = get_admin_connection_params()
-    try:
-        conn = psycopg.connect(
-            host=params["host"],
-            port=params["port"],
-            user=params["user"],
-            password=params["password"],
-            dbname="postgres",
-            connect_timeout=2,
-        )
-        conn.close()
-        return True
-    except Exception:
-        return False
-
-
-_PROVISIONED_DISPOSABLE_DATABASES: set[str] = set()
-
-
-@pytest.fixture(scope="module")
-def disposable_db() -> Generator[dict[str, Any], None, None]:
-    """Provision a dedicated, disposable PostgreSQL test database for constraint validation.
-
-    Enforces strict safety preconditions:
-    1. Verifies database name has disposable prefix 'finsignal_test_ephem_'.
-    2. Verifies environment is 'testing'.
-    3. Runs Alembic migrations to head.
-    4. Drops the ephemeral database completely on teardown.
-    """
-    if not is_live_postgres_available():
-        pytest.skip("PostgreSQL is not reachable with configured credentials.")
-
-    active_env = os.environ.get("ENVIRONMENT", "")
-    if active_env != "testing":
-        raise RuntimeError(
-            f"Safety abort: Refusing to create disposable test DB in non-testing environment: {active_env!r}"
-        )
-
-    params = get_admin_connection_params()
-    ephemeral_db_name = f"finsignal_test_ephem_{uuid.uuid4().hex[:8]}"
-
-    # Precondition assertion
-    assert ephemeral_db_name.startswith("finsignal_test_ephem_")
-    _PROVISIONED_DISPOSABLE_DATABASES.add(ephemeral_db_name)
-
-    admin_conn = psycopg.connect(
-        host=params["host"],
-        port=params["port"],
-        user=params["user"],
-        password=params["password"],
-        dbname="postgres",
-        autocommit=True,
-    )
-
-    try:
-        admin_conn.execute(
-            sql.SQL("CREATE DATABASE {}").format(sql.Identifier(ephemeral_db_name))
-        )
-
-        ephemeral_settings = Settings(
-            app_name="FinSignalDisposableTest",
-            environment="testing",
-            database_host=str(params["host"]),
-            database_port=int(params["port"]),
-            database_name=ephemeral_db_name,
-            database_user=str(params["user"]),
-            database_password=SecretStr(str(params["password"])),
-            _env_file=None,
-        )
-
-        # Run Alembic migrations on the disposable database
-        alembic_cfg = Config("alembic.ini")
-        escaped_url = ephemeral_settings.sync_database_url.replace("%", "%%")
-        alembic_cfg.set_main_option("sqlalchemy.url", escaped_url)
-        command.upgrade(alembic_cfg, "head")
-
-        yield {
-            "db_name": ephemeral_db_name,
-            "settings": ephemeral_settings,
-            "sync_url": ephemeral_settings.sync_database_url,
-            "alembic_cfg": alembic_cfg,
-        }
-
-    finally:
-        _PROVISIONED_DISPOSABLE_DATABASES.discard(ephemeral_db_name)
-        # Terminate any remaining client connections to allow drop
-        try:
-            admin_conn.execute(
-                """
-                SELECT pg_terminate_backend(pid)
-                FROM pg_stat_activity
-                WHERE datname = %s AND pid <> pg_backend_pid();
-                """,
-                (ephemeral_db_name,),
-            )
-            admin_conn.execute(
-                sql.SQL("DROP DATABASE IF EXISTS {}").format(
-                    sql.Identifier(ephemeral_db_name)
-                )
-            )
-        except Exception:
-            pass
-        finally:
-            admin_conn.close()
+__all__ = [
+    "get_admin_connection_params",
+    "is_live_postgres_available",
+]
 
 
 @pytest.fixture
@@ -460,10 +327,18 @@ def test_canonical_transaction_uniqueness(db_session: Session) -> None:
     db_session.add(t_diff_acc)
     db_session.commit()
 
-    # Same account and external_id under DIFFERENT source_namespace -> SUCCESS
+    # Under a DIFFERENT source_namespace, an account in that namespace with same external_id -> SUCCESS
+    acc_cb = Account(
+        source_namespace="CORE_BANKING",
+        account_type="SAVINGS",
+        status="ACTIVE",
+    )
+    db_session.add(acc_cb)
+    db_session.commit()
+
     t_diff_ns = Transaction(
         source_namespace="CORE_BANKING",
-        account_id=acc1.id,
+        account_id=acc_cb.id,
         external_transaction_id="TX_UNIQUE_1",
         amount=Decimal("100.00"),
         currency="USD",
@@ -650,3 +525,166 @@ def test_transaction_and_provenance_persistence_atomicity(db_session: Session) -
         select(Transaction).where(Transaction.external_transaction_id == "TX_ATOMIC_1")
     ).scalar_one_or_none()
     assert found_txn is None
+
+
+def test_account_namespace_external_id_partial_unique_index(
+    db_session: Session,
+) -> None:
+    """Verify uq_accounts_namespace_external_id partial unique index."""
+    # 1. First account in SYNTHETIC with external_id
+    acc1 = Account(
+        source_namespace="SYNTHETIC",
+        external_account_id="ACC_EXT_001",
+        account_type="CHECKING",
+        status="ACTIVE",
+    )
+    db_session.add(acc1)
+    db_session.commit()
+
+    # 2. Duplicate (source_namespace, external_account_id) -> MUST FAIL
+    acc1_dup = Account(
+        source_namespace="SYNTHETIC",
+        external_account_id="ACC_EXT_001",
+        account_type="SAVINGS",
+        status="ACTIVE",
+    )
+    db_session.add(acc1_dup)
+    with pytest.raises(IntegrityError, match="uq_accounts_namespace_external_id"):
+        db_session.commit()
+    db_session.rollback()
+
+    # 3. Same external_account_id under DIFFERENT namespace -> SUCCESS
+    acc_diff_ns = Account(
+        source_namespace="PARTNER_BANK",
+        external_account_id="ACC_EXT_001",
+        account_type="CHECKING",
+        status="ACTIVE",
+    )
+    db_session.add(acc_diff_ns)
+    db_session.commit()
+    assert acc_diff_ns.id is not None
+
+    # 4. Multiple accounts with external_account_id IS NULL in same namespace -> SUCCESS
+    acc_null1 = Account(
+        source_namespace="SYNTHETIC",
+        external_account_id=None,
+        account_type="CHECKING",
+        status="ACTIVE",
+    )
+    acc_null2 = Account(
+        source_namespace="SYNTHETIC",
+        external_account_id=None,
+        account_type="CHECKING",
+        status="ACTIVE",
+    )
+    db_session.add_all([acc_null1, acc_null2])
+    db_session.commit()
+    assert acc_null1.id != acc_null2.id
+
+
+def test_dataset_imports_active_hash_namespace_isolation(
+    db_session: Session,
+) -> None:
+    """Verify uq_dataset_imports_active_hash is namespace-scoped (ADR-065 Decision C)."""
+    hash_val = "1111222233334444555566667777888899990000aaaabbbbccccddddeeeeffff"
+
+    # Active import in SYNTHETIC
+    imp1 = DatasetImport(
+        source_namespace="SYNTHETIC",
+        file_hash=hash_val,
+        source_type="CSV",
+        status="PENDING",
+    )
+    db_session.add(imp1)
+    db_session.commit()
+
+    # Duplicate active import in SAME namespace -> MUST FAIL
+    imp1_dup = DatasetImport(
+        source_namespace="SYNTHETIC",
+        file_hash=hash_val,
+        source_type="CSV",
+        status="PROCESSING",
+    )
+    db_session.add(imp1_dup)
+    with pytest.raises(IntegrityError, match="uq_dataset_imports_active_hash"):
+        db_session.commit()
+    db_session.rollback()
+
+    # Same file_hash in DIFFERENT namespace while imp1 is still active -> SUCCESS
+    imp_diff_ns = DatasetImport(
+        source_namespace="PUBLIC_DATASET_A",
+        file_hash=hash_val,
+        source_type="CSV",
+        status="PENDING",
+    )
+    db_session.add(imp_diff_ns)
+    db_session.commit()
+    assert imp_diff_ns.id is not None
+
+
+def test_transaction_account_namespace_composite_foreign_key_enforcement(
+    db_session: Session,
+) -> None:
+    """Verify Option C2/C3 composite FK fk_transactions_account_namespace structurally blocks mismatch."""
+    acc_synth = Account(
+        source_namespace="SYNTHETIC",
+        account_type="CHECKING",
+        status="ACTIVE",
+    )
+    db_session.add(acc_synth)
+    db_session.commit()
+
+    now = datetime.now(UTC)
+
+    # 1. Matching namespace -> SUCCESS
+    txn_ok = Transaction(
+        source_namespace="SYNTHETIC",
+        account_id=acc_synth.id,
+        external_transaction_id="TX_NS_MATCH_1",
+        amount=Decimal("100.00"),
+        currency="USD",
+        transaction_type="PURCHASE",
+        direction="DEBIT",
+        occurred_at=now,
+    )
+    db_session.add(txn_ok)
+    db_session.commit()
+    assert txn_ok.id is not None
+
+    # 2. Mismatched namespace referencing acc_synth -> REJECTED by database composite FK
+    txn_mismatch = Transaction(
+        source_namespace="CORE_BANKING",  # Mismatch! Account is SYNTHETIC
+        account_id=acc_synth.id,
+        external_transaction_id="TX_NS_MISMATCH_1",
+        amount=Decimal("100.00"),
+        currency="USD",
+        transaction_type="PURCHASE",
+        direction="DEBIT",
+        occurred_at=now,
+    )
+    db_session.add(txn_mismatch)
+    with pytest.raises(IntegrityError, match="fk_transactions_account_namespace"):
+        db_session.commit()
+    db_session.rollback()
+
+
+def test_transaction_account_namespace_layered_enforcement(
+    db_session: Session,
+) -> None:
+    """Verify Option C3 Layered Enforcement: application validation catches mismatch before insert."""
+    acc = Account(
+        source_namespace="SYNTHETIC",
+        account_type="CHECKING",
+        status="ACTIVE",
+    )
+    db_session.add(acc)
+    db_session.commit()
+
+    # Application-level validation provides rich diagnostic error before hitting DB
+    with pytest.raises(NamespaceMismatchError) as exc_info:
+        validate_transaction_account_namespace(
+            account_namespace=acc.source_namespace,
+            transaction_namespace="CORE_BANKING",
+        )
+    assert exc_info.value.code == "NAMESPACE_MISMATCH"
+    assert exc_info.value.status_code == 422

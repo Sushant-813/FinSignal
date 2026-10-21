@@ -915,25 +915,36 @@ Velocity scenarios should involve transaction sequences rather than isolated rec
 
 # 37. F006 — Account Takeover Pattern
 
-A multi-signal scenario representing potential account compromise.
+A multi-signal scenario representing potential account compromise and an attempted account-drain sequence.
 
-Possible combination:
+Combination of signals:
 
 ```text
 New Device
      +
 New Location
      +
-Unusual Time
+Unusual Time (02:00 - 03:00 AM)
      +
-Large Amount
+Large Amounts
      +
-High Velocity
+Multi-step Attempted Drain Sequence
 ```
 
-The scenario should generate multiple related transactions where appropriate.
+### Sequence Structure (Implemented in Phase 4)
 
-This is intentionally more complex than single-signal scenarios.
+In the implemented generator (`src/finsignal/dataset/generator/transaction_generator.py`), each F006 instance generates a 4-transaction sequence initiated from an unprecedented device and remote location during dormant night hours:
+
+1. **Probe Transaction:** Small purchase (`₹150.00`, category `FOOD`) to test credential and payment validity.
+2. **Primary Drain Transfer:** Large transfer (`5.0x` profile maximum amount) to an external counterparty account.
+3. **Secondary Drain Transfer:** Large transfer (`4.0x` profile maximum amount) to the external counterparty account.
+4. **Final Cash Extraction:** Out-of-pattern ATM cash withdrawal (`₹20,000.00`).
+
+### Financial and Balance Semantics Notice
+
+> [!IMPORTANT]
+> **Attempted Pattern vs. Ledger Balance Validation:**
+> The FinSignal domain model adheres to an event-sourced architecture where account balances are event-derived and no persistent running balance column exists in `accounts`. Consequently, the synthetic generator does **not** simulate or enforce available-balance constraints when generating F006. F006 represents a **suspicious attempted account-drain pattern** calibrated against historical profile spending ceilings, rather than a mathematically balance-verified executable ledger state. Downstream analytics or ML models evaluate this scenario based on behavioral anomaly signals (device, location, nocturnal timing, transfer velocity, and volume deviation), not ledger solvency.
 
 ---
 
@@ -1387,14 +1398,52 @@ A dataset version should ideally record:
 - Fraud rate
 - Scenario distribution
 
-### Version Continuity & ID Stability Contracts
+### Version Continuity & ID Stability Contracts (Implemented in Phase 4)
 
-For future Phase 4 synthetic generator implementation:
-- **Seed Determinism:** Given identical configuration and seed, generator output must be byte-for-byte and ID-for-ID reproducible.
-- **Cross-Version Identity Continuity:** When logical transactions are carried forward into a revised population or incremental extension (e.g. from `dataset-v1.0` to `dataset-v1.1`), existing events must preserve their stable `transaction_id`.
-- **New Event Generation:** Newly introduced transactions must receive newly allocated, non-colliding `transaction_id` values.
-- **No Coincidental Continuity:** Continuity must never be inferred from coincidental attributes (e.g. same amount or timestamp) or physical row position in CSV files.
-- **Implementation Status Notice:** The synthetic generator does not yet exist in the codebase. These continuity rules represent explicit architectural design contracts to be implemented and verified during Phase 4, not claims of existing code behavior.
+- **Seed Determinism:** Given identical configuration and seed, generator output is bitwise- and ID-for-ID reproducible.
+- **Cross-Version Identity Continuity:** When logical transactions are carried forward into a revised population or incremental extension (e.g. from `dataset-v1.0` to `dataset-v1.1`), existing events preserve their stable `transaction_id`.
+- **New Event Generation:** Newly introduced transactions receive newly allocated, non-colliding `transaction_id` values (`TXN_[0-9]{8}`).
+- **No Coincidental Continuity:** Continuity is never inferred from coincidental attributes (e.g. same amount or timestamp) or physical row position in CSV files.
+- **Implementation Status:** The deterministic synthetic generator core and reference entities have been implemented in `src/finsignal/dataset/generator/` and verified across unit and PostgreSQL integration test suites.
+
+### Implemented Scale Presets (`GeneratorConfig`)
+
+The generator provides three canonical presets via `GeneratorConfig`:
+
+| Preset | Accounts | Merchants | Devices | Locations | Transactions | Target Fraud Rate |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`small`** | 100 | 50 | 200 | 20 | 5,000 | 3.0% |
+| **`medium`** | 1,000 | 250 | 2,000 | 50 | 50,000 | 3.0% |
+| **`full`** | 5,000 | 500 | 8,000 | 100 | 250,000 | 3.0% |
+
+### Scenario Quotas vs. Measured Distribution
+
+The generator's `scenario_distribution` configuration defines **approximate instance-level sampling weights** via PRNG (`domain_rng.choices(scenarios, weights=weights)`). Multi-transaction scenarios expand downstream into multiple transactions per instance:
+
+- F001, F002, F003, F004: 1 transaction per instance.
+- F005 (Velocity Burst): 4 transactions per instance.
+- F006 (Account Takeover): 4 transactions per instance.
+- F007 (Spending Shift): 3 transactions per instance.
+
+#### Empirical Full-Scale Benchmark (Seed 42)
+
+The full-scale preset (`250,000` transactions, `seed=42`, `generator_version="1.0.0"`) generates:
+- **Total Transactions:** 250,000
+- **Total Fraud Transactions:** 7,500 (**exact 3.0000% fraud rate**)
+- **Total Scenario Instances:** 3,631
+
+| Scenario | Target Instance Quota | Actual Instances | Instance % | Actual Transactions | Transaction % |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **F001** | 20.0% | 739 | 20.35% | 739 | 9.85% |
+| **F002** | 15.0% | 533 | 14.68% | 533 | 7.11% |
+| **F003** | 15.0% | 570 | 15.70% | 570 | 7.60% |
+| **F004** | 10.0% | 380 | 10.47% | 380 | 5.07% |
+| **F005** | 15.0% | 537 | 14.79% | 2,148 | 28.64% |
+| **F006** | 15.0% | 514 | 14.16% | 2,056 | 27.41% |
+| **F007** | 10.0% | 358 | 9.86% | 1,074 | 14.32% |
+| **Total** | **100.0%** | **3,631** | **100.00%** | **7,500** | **100.00%** |
+
+*Note: The measured counts above demonstrate convergence on a representative full-scale run (seed 42); instance allocations are stochastic and will exhibit minor statistical variation across different seeds within a $\approx \pm 1\%$ envelope.*
 
 ---
 
@@ -1459,28 +1508,21 @@ Dataset Export
 
 ---
 
-# 57. Dataset Outputs
+# 57. Dataset Outputs (Implemented in Phase 4)
 
-The generator should be capable of producing separate logical outputs such as:
-
-```text
-accounts.csv
-merchants.csv
-devices.csv
-locations.csv
-transactions.csv
-```
-
-Ground-truth information may either be stored separately or clearly isolated from production-facing datasets.
-
-Example:
+The CSV exporter (`src/finsignal/dataset/generator/csv_exporter.py`) produces seven canonical artifacts with complete ground-truth isolation:
 
 ```text
-transactions.csv
-transactions_ground_truth.csv
+accounts.csv                   -> Reference accounts (ACC_[0-9]{6})
+merchants.csv                  -> Reference merchants (MERCH_[0-9]{5})
+devices.csv                    -> Reference devices (DEV_[0-9]{6})
+locations.csv                  -> Reference geographic locations (LOC_[0-9]{3})
+transactions.csv               -> Production transactions (material features only; zero fraud labels)
+transactions_ground_truth.csv  -> Isolated evaluation ground truth (transaction_id, is_fraud, fraud_scenario, scenario_instance_id, anomaly_notes)
+metadata.json                  -> Dataset metadata, configuration hash, seed, and achieved metrics
 ```
 
-The exact file structure will be finalized during implementation.
+Production `transactions.csv` contains only material transaction columns; ground truth metadata resides solely in `transactions_ground_truth.csv` and is never exposed through production ingest.
 
 ---
 
@@ -1639,9 +1681,9 @@ These decisions belong primarily in:
 
 # 63. Document Status
 
-**Version:** 1.0.0  
-**Status:** Draft  
-**Previous Document:** `PRD.md`  
+**Version:** 1.1.0<br>
+**Status:** Reconciled with Phase 4 Implementation<br>
+**Previous Document:** `PRD.md`<br>
 **Next Document:** `TRD.md`
 
-This document defines the dataset requirements that the technical architecture and ML design must satisfy.
+This document defines the dataset requirements and reconciles the verified Phase 4 generator, behavioral profiles, presets, and isolated ground-truth export.

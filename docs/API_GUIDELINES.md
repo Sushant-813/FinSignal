@@ -653,94 +653,99 @@ bulk dataset ingestion
 POST /api/v1/datasets/imports
 ```
 
-The endpoint accepts the supported dataset file format, initially:
+Accepts multipart form-data containing:
+- `file`: CSV file payload (max 50 MB, must be valid UTF-8).
+- `source_namespace`: Target namespace string (default: `"SYNTHETIC"`).
+- `source_type`: Origin type (default: `"SYNTHETIC"`).
 
-```text
-CSV
-```
+### RBAC Requirement
+Requires role `ADMIN` or `ANALYST`.
 
-The API should validate:
+### Validation and Deduplication Guarantees
+- Validates file extension (`.csv`), file size ($\le 50$ MB), non-empty payload, and UTF-8 encoding.
+- Computes SHA-256 stream hash over uploaded bytes.
+- Acquires transaction-scoped PostgreSQL advisory lock on `(source_namespace, file_hash)`.
+- If an import for `(source_namespace, file_hash)` is currently `PENDING` or `PROCESSING`, returns `HTTP 409 Conflict` with code `"IMPORT_IN_PROGRESS"`.
+- If an import with identical bytes has already reached `COMPLETED` in the same namespace, returns `HTTP 200 OK` with the existing import summary and `is_duplicate = true` without reprocessing.
+- If the import is new, ingests rows in bounded batches, committing row-level provenance to `transaction_import_records` and returning `HTTP 201 Created` with `is_duplicate = false`.
 
-- file type
-- file size
-- required columns
-- row structure
-- encoding
-- field types
-
----
-
-## 23.2 Import Response
-
-Large imports may be asynchronous.
-
-Example:
+### Response Schema (`DatasetImportResponse`)
 
 ```json
 {
-  "id": "uuid",
-  "status": "PROCESSING",
+  "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "source_namespace": "SYNTHETIC",
   "filename": "transactions.csv",
+  "file_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "source_type": "SYNTHETIC",
+  "status": "COMPLETED",
   "total_rows": 250000,
-  "valid_rows": 0,
-  "invalid_rows": 0
+  "valid_rows": 249700,
+  "invalid_rows": 300,
+  "started_at": "2026-10-22T00:00:00Z",
+  "completed_at": "2026-10-22T00:01:30Z",
+  "is_duplicate": false
 }
 ```
 
-HTTP status:
-
-```text
-202 Accepted
-```
-
-when processing continues after the request.
-
 ---
 
-## 23.3 Import Status
+## 23.2 Import Details & Errors
 
 ```http
 GET /api/v1/datasets/imports/{import_id}
 ```
 
-Response:
+### RBAC Requirement
+Requires role `ADMIN`, `ANALYST`, or `INVESTIGATOR`.
+
+### Response Schema (`DatasetImportDetailResponse`)
+Returns import status, summary counters, and an embedded list of recorded validation/quarantine errors (up to 100 items from `dataset_import_errors`):
 
 ```json
 {
-  "id": "uuid",
+  "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "source_namespace": "SYNTHETIC",
+  "filename": "transactions.csv",
+  "file_hash": "e3b0c442...",
+  "source_type": "SYNTHETIC",
   "status": "COMPLETED",
   "total_rows": 250000,
   "valid_rows": 249700,
-  "invalid_rows": 300
-}
-```
-
----
-
-## 23.4 Import Errors
-
-```http
-GET /api/v1/datasets/imports/{import_id}/errors
-```
-
-This endpoint is paginated.
-
-Example:
-
-```json
-{
-  "items": [
+  "invalid_rows": 300,
+  "started_at": "2026-10-22T00:00:00Z",
+  "completed_at": "2026-10-22T00:01:30Z",
+  "is_duplicate": false,
+  "errors": [
     {
       "row_number": 1482,
       "field_name": "amount",
       "error_code": "INVALID_AMOUNT",
-      "message": "Amount must be greater than zero."
+      "message": "Amount must be a positive decimal."
     }
   ]
 }
 ```
 
-Sensitive raw field values should not be returned unless explicitly required.
+---
+
+## 23.3 Import Recovery
+
+```http
+POST /api/v1/datasets/imports/{import_id}/recover
+```
+
+Accepts multipart form-data with the original `file` payload to resume a previously `FAILED` or interrupted import.
+
+### RBAC Requirement
+Requires role `ADMIN` or `ANALYST`.
+
+### Recovery Guarantees
+- Verifies uploaded file SHA-256 matches `import.file_hash`.
+- Acquires transaction-scoped advisory lock on `(source_namespace, file_hash)`.
+- Reconciles previously committed row ordinals via `SELECT source_row_number FROM transaction_import_records WHERE dataset_import_id = :id`.
+- Processes only uncommitted rows, guaranteeing zero row duplication or gap skipping even across non-contiguous batch commits.
+- Returns `HTTP 200 OK` with updated `DatasetImportResponse`.
 
 ---
 
@@ -1957,9 +1962,8 @@ POST   /api/v1/transactions/{transaction_id}/risk/analyze
 
 ```text
 POST   /api/v1/datasets/imports
-GET    /api/v1/datasets/imports
 GET    /api/v1/datasets/imports/{import_id}
-GET    /api/v1/datasets/imports/{import_id}/errors
+POST   /api/v1/datasets/imports/{import_id}/recover
 ```
 
 ### Analytics

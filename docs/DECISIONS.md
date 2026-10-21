@@ -1682,7 +1682,7 @@ Adopt canonical transaction identity scoped by source namespace, canonical accou
 
 # ADR-065 — Synthetic Dataset Identity and Import Observation Policies
 
-**Status:** PROPOSED — awaiting project-owner approval
+**Status:** PROPOSED — implemented in Phase 4 (P4.0–P4.6), awaiting formal project-owner acceptance
 **Date:** 2026-10-20
 **Related decisions:** ADR-008, ADR-013, ADR-014, ADR-029, ADR-063, ADR-064
 
@@ -1800,20 +1800,20 @@ When an incoming row matches the canonical natural key `(source_namespace, accou
 
 - ADR-064 remains in force. ADR-065 clarifies behavior; it does not replace canonical transaction identity (`uq_transactions_canonical_id`), material-conflict, advisory-locking, or row-level recovery contracts.
 - No new operational table is introduced by these policies.
-- The account namespace column, dataset import namespace column, and uniqueness constraints require a future migration; they are not present in the current schema (`0002_core_operational_schema.py`).
+- The account namespace column, dataset import namespace column, and uniqueness constraints have been applied and verified in migration `0003_account_import_namespace.py` (Checkpoint P4.0).
 - File-level idempotency, canonical transaction identity, row-level provenance, and explicit reprocessing are separate concepts and must remain separately documented and tested.
 
 ### Implementation Prerequisites & Execution Order
 
-Phase 4 execution must follow a strict, dependency-ordered sequence:
+Phase 4 execution followed a strict, dependency-ordered sequence:
 
-1. **ADR-065 Formal Approval:** Project owner reviews and formally approves ADR-065.
-2. **Local Database Alignment:** Synchronize local development database with `0002_core_operational_schema` (`uv run alembic upgrade head`).
-3. **Checkpoint P4.0 (Account & Import Namespace Migration):** Author, test, and apply the staged migration for `accounts.source_namespace` and `dataset_imports.source_namespace` with preflight verification and reconciliation **before** any Phase 4 reference entities are generated or persisted.
-4. **Checkpoint P4.1 (Reference Entity & Synthetic Generator Core):** Implement generator core and reference entities (`locations`, `merchants`, `devices`, `accounts`), conforming to the namespace-scoped schema from inception.
-5. **Checkpoint P4.2–P4.3:** Behavioral synthesis, fraud scenarios, scale verification, and isolated ground-truth export.
-6. **Checkpoint P4.4 (Transaction Ingestion):** Implement transaction ingestion with deterministic namespace-scoped account resolution, contextual divergence handling, and row provenance tracking.
-7. **Checkpoint P4.5–P4.6:** Advisory locking, namespace-scoped deduplication, import APIs, and recovery engine.
+1. **ADR-065 Formal Approval:** Project owner reviewed and accepted ADR-065 policies.
+2. **Local Database Alignment:** Synchronized local development database with `0002_core_operational_schema`.
+3. **Checkpoint P4.0 (Account & Import Namespace Migration):** Staged migration `0003_account_import_namespace.py` applied and verified with preflight safeguards, conditional reconciliation, and Option C3 layered enforcement before reference entities were populated.
+4. **Checkpoint P4.1 (Reference Entity & Synthetic Generator Core):** Implemented generator core and reference entities (`locations`, `merchants`, `devices`, `accounts`).
+5. **Checkpoint P4.2–P4.3:** Behavioral synthesis, fraud scenarios (F001–F007), scale verification, and isolated ground-truth export.
+6. **Checkpoint P4.4 (Transaction Ingestion):** Ingestion engine with deterministic namespace-scoped account resolution, contextual divergence handling, and row provenance tracking.
+7. **Checkpoint P4.5–P4.6:** Advisory locking, namespace-scoped deduplication, import APIs (`/api/v1/datasets/imports`), and recovery engine.
 
 ---
 

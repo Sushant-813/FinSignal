@@ -406,7 +406,7 @@ F007 Behavioral Spending Shift
 
 ### Status
 
-`NOT STARTED`
+`COMPLETED (Implementation & Verification Complete; Ready for Final Review)`
 
 ---
 
@@ -1027,6 +1027,78 @@ Documentation baseline is technically defensible, mathematically unambiguous, an
 3. Design, review, test, and apply Checkpoint P4.0 (Account & Import Namespace Staged Migration) before generating reference entities.
 4. Proceed to Checkpoint P4.1 (Synthetic Generator Core & Reference Entities: `locations`, `merchants`, `devices`, `accounts`).
 5. Proceed to Checkpoints P4.2 through P4.6.
+
+---
+
+## 2026-10-22 — Phase 4 Completion: Synthetic Generator Core, Behavioral Synthesis, Advisory Locking, and Gap-Safe Ingestion Verification
+
+Complete the full implementation and verification of Phase 4 (Checkpoints P4.0 through P4.6) covering deterministic synthetic dataset generation, namespace migration, canonical transaction identity matching, advisory-lock deduplication, REST import endpoints, and gap-safe recovery.
+
+### Work Completed
+- **Checkpoint P4.0 (Account & Import Namespace Staged Migration):**
+  - Authored, applied, and verified Alembic migration `0003_account_import_namespace.py`.
+  - Added `source_namespace VARCHAR(64) NOT NULL DEFAULT 'SYNTHETIC'` to `accounts` and `dataset_imports`.
+  - Implemented 5 preflight checks and conditional reconciliation queries (unambiguous ledger, multi-namespace contamination halts, internal account defaults, unprovable account quarantine flagging, collision assertion).
+  - Enforced partial unique indexes `uq_accounts_namespace_external_id` and `uq_dataset_imports_active_hash`.
+  - Implemented Layered Enforcement (Option C3) backed by database composite foreign key `fk_transactions_account_namespace` on `transactions(account_id, source_namespace) REFERENCES accounts(id, source_namespace)`.
+- **Checkpoint P4.1 (Deterministic Generator Core & Reference Entities):**
+  - Implemented `ReferenceEntityGenerator` and `ReferenceEntityPersistenceService` generating deterministic reference entities (`locations`, `merchants`, `devices`, `accounts`).
+  - Standardized business identifiers: `ACC_[0-9]{6}`, `MERCH_[0-9]{5}`, `DEV_[0-9]{6}`, `LOC_[0-9]{3}`, and `TXN_[0-9]{8}`.
+  - Implemented domain- and entity-isolated PRNG streams (`get_domain_rng`, `get_entity_rng`) ensuring independent stream reproducibility across runs.
+- **Checkpoint P4.2 (Behavioral Synthesis & Fraud Scenarios F001–F007):**
+  - Implemented `TransactionDatasetGenerator` with five behavioral spending profiles calibrated in Indian Rupees (`LOW_SPENDER`: mean ₹450, `MODERATE_SPENDER`: mean ₹1,800, `HIGH_SPENDER`: mean ₹14,000, `SUBSCRIPTION_HEAVY`: mean ₹650, `BUSINESS_LIKE`: mean ₹32,000).
+  - Synthesized fraud scenarios F001 through F007:
+    - F001: Large amount anomaly (8x–15x profile ceiling).
+    - F002: New device anomaly.
+    - F003: New location anomaly.
+    - F004: Unusual nocturnal hour (02:30–04:00 AM).
+    - F005: High velocity burst (4 rapid transactions).
+    - F006: Account takeover pattern (attempted drain sequence: 4 transactions: probe $\rightarrow$ drain transfer $\rightarrow$ drain transfer $\rightarrow$ ATM cash withdrawal).
+    - F007: Behavioral spending shift (3 transactions: rapid luxury/electronics pivot).
+  - Enforced transfer invariants: `TRANSFER` transactions strictly require distinct `counterparty_account_id` (`counterparty_account_id != account_id`), while non-transfers require `counterparty_account_id IS NULL`.
+- **Checkpoint P4.3 (Scale Presets, Isolated Ground Truth & CSV Exporter):**
+  - Implemented canonical scale presets in `GeneratorConfig`: `small` (15 accounts, 500 txns, 3% fraud), `medium` (100 accounts, 5,000 txns, 3% fraud), and `full` (5,000 accounts, 250,000 txns, 3% fraud).
+  - Built `CSVDatasetExporter` producing 7 distinct artifacts (`accounts.csv`, `merchants.csv`, `devices.csv`, `locations.csv`, `transactions.csv`, `transactions_ground_truth.csv`, `metadata.json`) with formula injection sanitization (`sanitize_csv_value`).
+  - Production `transactions.csv` contains zero ground truth labels, completely isolating evaluation labels into `transactions_ground_truth.csv`.
+  - Built `DatasetQualityValidator` ensuring structural and domain invariant compliance.
+- **Checkpoint P4.4 (Transaction Ingestion Engine & Provenance Ledger):**
+  - Implemented `TransactionIngestionEngine` with bounded batch processing and row-level provenance logging to `transaction_import_records`.
+  - Implemented canonical transaction natural key matching on `(source_namespace, account_id, external_transaction_id)`.
+  - Verified all five documented provenance outcomes:
+    - `INSERTED`: Fresh canonical transaction.
+    - `MATCHED_EXISTING`: Canonical key and all 7 core material fields match existing record (alternate contextual differences preserved as lossy hash provenance without overwriting canonical facts).
+    - `DUPLICATE_IN_IMPORT`: Duplicate canonical key within the same import file.
+    - `QUARANTINED`: Canonical key matches but material fields conflict (`MATERIAL_CONFLICT`). Canonical row remains immutable; conflict error logged in `dataset_import_errors`.
+    - `REJECTED`: Malformed syntax, invalid types, or unresolvable reference entities.
+- **Checkpoint P4.5 (Advisory Locking, Deduplication & REST Import API):**
+  - Implemented `DatasetImportService` and FastAPI router mounted on `/api/v1/datasets/imports`.
+  - Enforced 64-bit signed integer advisory lock derivation `(source_namespace, file_hash)` via `pg_advisory_xact_lock` with statement timeout. Verified that lock key collisions cause temporary serialization without data corruption or cross-namespace pollution.
+  - Implemented namespace-scoped deduplication:
+    - Completed upload with identical bytes in same namespace returns `HTTP 200 OK` with existing summary (`is_duplicate = True`).
+    - Active in-progress identical upload returns `HTTP 409 Conflict` with code `"IMPORT_IN_PROGRESS"`.
+    - Uploading identical bytes in different namespaces operates independently.
+  - Endpoints: `POST /api/v1/datasets/imports`, `GET /api/v1/datasets/imports/{id}`, and `POST /api/v1/datasets/imports/{id}/recover`.
+- **Checkpoint P4.6 (Gap-Safe Recovery & Integration Verification):**
+  - Implemented durable row-level recovery reading committed row ordinals via `SELECT source_row_number FROM transaction_import_records WHERE dataset_import_id = :id`. Proved recovery resumes from non-contiguous gaps without skipping or duplicating rows.
+  - Added race-safe entity refresh on advisory lock acquisition during recovery (`session.refresh(import_record)`).
+  - Verified 10 lifecycle scenarios under PostgreSQL.
+
+### Empirical Validation & Quality Gates
+- `uv run pytest tests/unit`: 165 passed in 3.51s.
+- `uv run pytest`: 276 passed (0 failed, 0 skipped) across unit, API, and PostgreSQL integration tests in 49.87s.
+- `uv run ruff check .`: Clean (all checks passed).
+- `uv run ruff format --check .`: Clean (104 files formatted).
+- `uv run mypy src tests`: Success: no issues found in 99 source files.
+- Alembic revision: `0003_account_import_namespace (head)`.
+
+### Result
+Phase 4 implementation is complete, fully verified against PostgreSQL, and reconciled with all project documentation. All exit criteria are satisfied.
+
+### Next Steps
+1. Project owner reviews the complete Phase 4 documentation and code diff.
+2. Execute final quality gates.
+3. Commit Phase 4 as a unified milestone.
+4. Proceed to Phase 5: Deterministic Financial Analytics.
 
 ---
 

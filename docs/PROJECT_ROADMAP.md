@@ -473,26 +473,26 @@ F006 Account Takeover
 F007 Behavioral Spending Shift
 ```
 
-## Implementation Checkpoints
+## Implementation Checkpoints (Phase 4 — COMPLETE)
 
-- **Checkpoint P4.0 (Pre-Generation Prerequisite):** Account & Import Namespace Migration (author staged migration adding `source_namespace` to `accounts` and `dataset_imports`, duplicate preflight, conditional reconciliation, and `UNIQUE (source_namespace, external_account_id)` partial index prior to P4.1 account generation and P4.4 ingestion).
-- **Checkpoint P4.1:** Synthetic Generator Core & Reference Entities (`locations`, `merchants`, `devices`, `accounts`).
-- **Checkpoint P4.2:** Legitimate Behavioral Synthesis & Fraud Scenarios (F001–F007).
-- **Checkpoint P4.3:** Scale Verification, Isolated Ground Truth & CSV Exporters (5k, 50k, 250k).
-- **Checkpoint P4.4:** Ingestion Engine & Canonical Provenance Ledger (`transaction_import_records`).
-- **Checkpoint P4.5:** Advisory Locking, File Deduplication & Dataset Import API (`/api/v1/datasets/imports`).
-- **Checkpoint P4.6:** Recovery Engine, Security Hardening & Scale Verification.
+- **Checkpoint P4.0 [COMPLETE]:** Account & Import Namespace Migration (`0003_account_import_namespace.py` applied, preflight duplicate safeguards, conditional reconciliation, and Option C3 layered enforcement).
+- **Checkpoint P4.1 [COMPLETE]:** Synthetic Generator Core & Reference Entities (`locations`, `merchants`, `devices`, `accounts`, `ReferenceEntityPersistenceService`).
+- **Checkpoint P4.2 [COMPLETE]:** Legitimate Behavioral Synthesis & Fraud Scenarios (F001–F007, behavioral profiles calibrated in INR, attempted drain sequence F006).
+- **Checkpoint P4.3 [COMPLETE]:** Scale Verification, Isolated Ground Truth & CSV Exporters (presets `small`, `medium`, `full`, formula sanitization, validator).
+- **Checkpoint P4.4 [COMPLETE]:** Ingestion Engine & Canonical Provenance Ledger (`transaction_import_records`, all 5 outcomes verified: `INSERTED`, `MATCHED_EXISTING`, `DUPLICATE_IN_IMPORT`, `QUARANTINED`, `REJECTED`).
+- **Checkpoint P4.5 [COMPLETE]:** Advisory Locking, File Deduplication & Dataset Import API (`/api/v1/datasets/imports`, lock key collision tolerance, partial unique index `uq_dataset_imports_active_hash`).
+- **Checkpoint P4.6 [COMPLETE]:** Recovery Engine, Security Hardening & Scale Verification (gap-safe recovery, partial batch commit, 276 passing tests).
 
 ## Exit Criteria
 
-- deterministic dataset generation works;
-- generated data passes structural validation;
-- legitimate unusual events exist;
-- fraud scenarios exist;
-- ground truth is isolated;
-- CSV import works;
-- invalid records are reported;
-- no silent data loss occurs.
+- [x] deterministic dataset generation works;
+- [x] generated data passes structural validation;
+- [x] legitimate unusual events exist;
+- [x] fraud scenarios exist;
+- [x] ground truth is isolated;
+- [x] CSV import works;
+- [x] invalid records are reported;
+- [x] no silent data loss occurs.
 
 ---
 

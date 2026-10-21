@@ -8,6 +8,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     Numeric,
@@ -31,6 +32,12 @@ class Transaction(Base, UUIDPrimaryKeyMixin, CreatedAtMixin):
             "account_id",
             "external_transaction_id",
             name="uq_transactions_canonical_id",
+        ),
+        ForeignKeyConstraint(
+            ["account_id", "source_namespace"],
+            ["accounts.id", "accounts.source_namespace"],
+            name="fk_transactions_account_namespace",
+            ondelete="RESTRICT",
         ),
         CheckConstraint(
             "amount > 0",

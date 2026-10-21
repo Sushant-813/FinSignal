@@ -95,6 +95,24 @@ class ValidationError(FinSignalError):
         )
 
 
+class NamespaceMismatchError(ValidationError):
+    """Transaction and account namespace inconsistency (HTTP 422, ADR-065 Decision D)."""
+
+    def __init__(
+        self,
+        message: str = "Transaction source namespace does not match account source namespace.",
+        code: str = "NAMESPACE_MISMATCH",
+        details: dict[str, Any] | None = None,
+        internal_context: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(
+            message=message,
+            code=code,
+            details=details,
+            internal_context=internal_context,
+        )
+
+
 class AuthenticationError(FinSignalError):
     """Authentication failure (HTTP 401)."""
 

@@ -81,6 +81,7 @@ class DatasetImport(Base, UUIDPrimaryKeyMixin, CreatedAtMixin):
         ),
         Index(
             "uq_dataset_imports_active_hash",
+            "source_namespace",
             "file_hash",
             unique=True,
             postgresql_where=text(
@@ -89,6 +90,12 @@ class DatasetImport(Base, UUIDPrimaryKeyMixin, CreatedAtMixin):
         ),
     )
 
+    source_namespace: Mapped[str] = mapped_column(
+        String(64),
+        server_default="SYNTHETIC",
+        default="SYNTHETIC",
+        nullable=False,
+    )
     dataset_version_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(as_uuid=True),
         ForeignKey("dataset_versions.id", ondelete="RESTRICT"),
