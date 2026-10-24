@@ -279,14 +279,14 @@ async def test_timezone_independence_and_session_mismatch(
 
     # Transaction occurred at 2026-09-01 02:00:00 UTC
     # In America/New_York (UTC-4 in Sep), this is 2026-08-31 22:00:00 (August 31!)
-    # In Asia/Calcutta (UTC+5:30), this is 2026-09-01 07:30:00 (September 1!)
+    # In Asia/Kolkata (UTC+5:30), this is 2026-09-01 07:30:00 (September 1!)
     t_tx = datetime(2026, 9, 1, 2, 0, 0, tzinfo=UTC)
     await _create_test_transaction(
         async_session, acc, Decimal("75.00"), occurred_at=t_tx
     )
 
-    # Force database session timezone to Asia/Calcutta
-    await async_session.execute(text("SET LOCAL timezone = 'Asia/Calcutta'"))
+    # Force database session timezone to Asia/Kolkata
+    await async_session.execute(text("SET LOCAL timezone = 'Asia/Kolkata'"))
 
     repo = AnalyticsRepository()
     # Query with reporting timezone = America/New_York
