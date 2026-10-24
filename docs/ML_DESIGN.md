@@ -1080,7 +1080,7 @@ rather than only:
 
 ---
 
-# 40. Account-Level Aggregation
+# 40. Account-Level Aggregation & Phase Boundaries
 
 A future account-level risk score may be derived from transaction results.
 
@@ -1097,7 +1097,12 @@ account_risk =
     )
 ```
 
-The MVP may expose account-level analytics without introducing a separate account-level ML model.
+### 40.1 Phase 5 Deterministic Analytics vs. Phase 7 Machine Learning
+- **Phase 5 (Implemented):** Account unusual-spending detection (`/api/v1/analytics/accounts/{account_id}/unusual-spending`) operates purely as a deterministic statistical outlier filter:
+  $$\text{threshold} = \text{ROUND}(M_{\text{debit}} \times \text{multiplier}, 2)$$
+  flagging debit transactions where $\text{amount} \ge \text{threshold}$ within the requested reporting window. It does **not** employ a trained machine learning model or multivariate feature weights.
+- **Phase 6 (Deferred):** Point-in-time sliding historical feature engineering (amount z-scores, 5-minute/24-hour velocity, location/device frequencies) enforcing strict temporal boundaries to prevent lookahead leakage.
+- **Phase 7 (Deferred):** Trained multivariate anomaly detection models (e.g., Isolation Forest, supervised benchmarks) predicting continuous risk scores based on engineered feature vectors.
 
 ---
 

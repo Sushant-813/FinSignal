@@ -887,22 +887,57 @@ The initial feature pipeline should support:
 
 # 30. Financial Analytics Requirements
 
-Analytics should be implemented independently from risk scoring where possible.
+Financial analytics are implemented as an independent, deterministic domain module inside the modular monolith (`src/finsignal/analytics/`), providing database-backed financial intelligence without coupling to ML scoring pipelines.
 
-Supported analytics include:
+### 30.1 Module Architecture and Boundaries
 
-- Transaction volume
-- Debit volume
-- Credit volume
-- Average transaction value
-- Median transaction value
-- Category distribution
-- Merchant distribution
-- Temporal trends
-- Account-level spending
-- Transaction frequency
+```text
+HTTP Request
+     │
+     ▼
+FastAPI Router (src/finsignal/api/v1/analytics.py)
+     │  ├── JWT Authentication
+     │  └── Role Authorization (ADMIN, ANALYST, INVESTIGATOR)
+     ▼
+Analytics Service (src/finsignal/analytics/service.py)
+     │  ├── Input Validation (Regex, IANA Timezones, Bounds)
+     │  ├── Namespace Verification (accounts/dataset_imports)
+     │  ├── Bucket-Count Boundary Enforcement
+     │  ├── Authoritative Account Namespace Derivation
+     │  └── Decimal Percentage Calculations (ROUND_HALF_UP)
+     ▼
+Analytics Repository (src/finsignal/analytics/repository.py)
+     │  ├── Dynamic SQL Parameterized Query Assembly
+     │  ├── PostgreSQL Single-Roundtrip Window Aggregations
+     │  ├── Wall-Clock generate_series & AT TIME ZONE Projections
+     │  └── Continuous Median Calculations (percentile_cont)
+     ▼
+PostgreSQL Database (transactions, accounts, merchants)
+```
 
-Analytics should not depend on the ML model being available.
+### 30.2 Request Validation and Domain Schemas
+- **Validation Strictness:** All responses use strict Pydantic v2 models with `extra="forbid"`.
+- **Monetary Precision:** Monetary values are modeled as `MoneyStr` (`"0.00"`) and `OptionalMoneyStr`, serialized via `ROUND_HALF_UP` from Python `Decimal` or PostgreSQL `NUMERIC(18,2)`. Binary floating-point representation for currency amounts is strictly prohibited.
+- **Reporting Windows:** Time intervals are strictly half-open: `[from_time, to_time)`. When both timestamps are provided, `from_time < to_time` is strictly enforced.
+- **Trend Interval & Bucket Limits:**
+  - `interval` must be `'day'` or `'month'`.
+  - Enforces `count_calendar_buckets()` in the target timezone before query execution:
+    - Daily trends: maximum 366 buckets (`MAX_DAILY_BUCKETS`).
+    - Monthly trends: maximum 120 buckets (`MAX_MONTHLY_BUCKETS`).
+- **Namespace Syntax & Isolation:**
+  - Validates namespace syntax against `^[A-Z0-9_]{3,64}$`.
+  - Verifies namespace existence against `accounts` or `dataset_imports`, raising HTTP 404 (`NAMESPACE_NOT_FOUND`) if nonexistent.
+  - For account-specific routes (`/accounts/{id}` and `/accounts/{id}/unusual-spending`), the source namespace is authoritatively derived from the persisted `Account.source_namespace`, preventing cross-namespace tampering or caller spoofing.
+- **Deterministic Outlier Detection:**
+  - Median debit amount $M_{\text{debit}}$ is calculated across all debits in the requested reporting window using continuous median (`percentile_cont(0.5)`).
+  - Outlier threshold: $\text{threshold} = \text{ROUND}(M_{\text{debit}} \times \text{multiplier}, 2)$.
+  - Outlier condition: `amount >= :threshold` (inclusive).
+  - Multiplier bounded between 1.5 and 10.0 (default 3.0).
+  - Total pre-pagination outlier count is computed before applying `limit` and `offset`.
+
+### 30.3 Multi-Currency and Inactive Account Semantics
+- Existing accounts with no transaction activity in the requested currency return HTTP 200 with zeroed financial summary metrics and the full list of `available_currencies` transacted by that account in its namespace.
+- If the account itself does not exist in the database, HTTP 404 (`RESOURCE_NOT_FOUND`) is returned.
 
 ---
 
@@ -1743,13 +1778,38 @@ The batch size should be configurable.
 
 # 74. Analytics Computation
 
-Analytics may be computed using:
+Analytics are executed via database-level SQL aggregations using async SQLAlchemy and raw parameterized PostgreSQL queries (`AnalyticsRepository`). This approach avoids large in-memory dataset transfers to Python and leverages PostgreSQL's query optimizer and index structures.
 
-1. SQL aggregations for database-friendly operations.
-2. Pandas for dataset-oriented processing.
-3. Precomputed aggregates where repeated computation becomes expensive.
+### 74.1 Query Techniques
+1. **Single-Roundtrip Macro Aggregations:** Aggregates volume, directional counts, sums, min/max, directional averages, and continuous medians (`percentile_cont(0.5) WITHIN GROUP (ORDER BY amount)`) in a single SQL statement.
+2. **Wall-Clock Trend Series Generation:** Generates zero-filled continuous series using wall-clock bounds:
+   ```sql
+   generate_series(
+       date_trunc(:interval, :from_time, :tz) AT TIME ZONE :tz,
+       date_trunc(:interval, :to_time, :tz) AT TIME ZONE :tz,
+       '1 day'::interval
+   )
+   ```
+   joined against transactions projected to the same timezone `date_trunc(:interval, occurred_at, :tz)`. This ensures daylight saving transitions (e.g., 23-hour spring-forward days) and midnight boundaries remain robust regardless of the database connection's session timezone.
+3. **Dynamic Where Conditions:** Query predicates are constructed dynamically to pass only populated filters, preventing untyped parameter errors in asyncpg prepared statements and maximizing index scan pruning.
 
-The implementation should choose the simplest approach that meets performance requirements.
+### 74.2 Empirical Performance and Documented Limitations
+
+The Phase 5 implementation was evaluated under the approved benchmarking protocol:
+- **Medium Scale (100 accounts, 5,000 transactions, seed=42):**
+  - `/overview`: P50 = 0.48 ms, P95 = 0.81 ms (Budget: $\le 50.0\text{ ms}$ — **MET**).
+  - `/trends`: P50 = 1.14 ms, P95 = 1.53 ms (Budget: $\le 50.0\text{ ms}$ — **MET**).
+- **Full Scale (5,000 accounts, 250,000 transactions, seed=42, 80,651 matching window rows):**
+  - `/categories`: Repo P95 = 85.72 ms (Budget: $\le 100\text{ ms}$ — **MET**).
+  - `/merchants`: Repo P95 = 83.06 ms (Budget: $\le 100\text{ ms}$ — **MET**).
+  - `/accounts/{id}`: Repo P95 = 1.25 ms (Budget: $\le 100\text{ ms}$ — **MET**).
+  - `/accounts/{id}/unusual-spending`: Repo P95 = 0.54 ms (Budget: $\le 100\text{ ms}$ — **MET**).
+  - `/overview`: Repo P95 = 135.74 ms; HTTP P95 = 145.3 ms (Budget: $\le 100\text{ ms}$ — **EXCEEDED**).
+  - `/trends`: Repo P95 = 140.16 ms; HTTP P95 = 148.1 ms (Budget: $\le 100\text{ ms}$ — **EXCEEDED**).
+- **Query Plan Findings:**
+  - `EXPLAIN (ANALYZE, BUFFERS)` confirms that PostgreSQL uses `Index Scan using ix_transactions_occurred_at`, reading 80,651 rows in 28.02 ms with 2,351 shared buffer hits and 0 sequential scans.
+  - The remaining ~100 ms is consumed by in-engine memory sorting and CPU aggregation required for continuous `percentile_cont(0.5)` over 80k decimal rows and hash grouping.
+  - Adding composite indexes would not improve performance because row filtering is already index-driven (28 ms). Introducing precomputed rollup tables or background materialization is deferred to future optimization phases.
 
 ---
 

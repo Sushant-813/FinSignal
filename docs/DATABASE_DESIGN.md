@@ -1192,7 +1192,7 @@ investigation_evidence(investigation_id, created_at)
 
 ---
 
-## 15.4 Audit Indexes
+## 15.5 Audit Indexes
 
 Recommended:
 
@@ -1201,6 +1201,25 @@ audit_events(actor_user_id, created_at)
 audit_events(entity_type, entity_id, created_at)
 audit_events(created_at)
 ```
+
+---
+
+## 15.6 Financial Analytics Index Utilization and Benchmark Performance
+
+Phase 5 introduces pure database-level analytics querying without requiring new tables or schema migrations. The Alembic migration head remains at `0003_account_import_namespace`.
+
+### 15.6.1 Utilized Existing Indexes
+- **`ix_transactions_occurred_at` (`occurred_at`):** Serves time-window filtering (`occurred_at >= :from_time AND occurred_at < :to_time`) for global overview, periodic trends, category breakdowns, and merchant rankings.
+- **`ix_transactions_account_occurred` (`account_id`, `occurred_at`):** Accelerates account-scoped activity metrics and outlier detection queries.
+- **`ix_transactions_merchant_id` (`merchant_id`):** Accelerates joining `transactions` with `merchants` for merchant spending and ranking calculations.
+- **`uq_transactions_canonical_id` (`source_namespace`, `account_id`, `external_transaction_id`):** Enforces canonical tenant/namespace boundaries.
+
+### 15.6.2 Query Plan Verification and Aggregation Bottleneck Analysis
+In the full-scale benchmark (250,000 transactions across 5,000 accounts; 80,651 rows matching the 30-day window):
+- An `EXPLAIN (ANALYZE, BUFFERS)` inspection of `/api/v1/analytics/overview` and `/api/v1/analytics/trends` confirms that PostgreSQL performs an `Index Scan using ix_transactions_occurred_at on transactions`.
+- The index scan required only **28.02 ms** to locate and fetch all 80,651 matching tuples, producing 2,351 shared buffer hits and 0 sequential disk reads.
+- Total PostgreSQL execution time reached **86.13 ms** for overview and **141.0 ms** for daily trends. The residual ~58–113 ms is consumed by in-engine CPU sorting and memory grouping for continuous medians (`percentile_cont(0.5) WITHIN GROUP (ORDER BY amount)::numeric`) across 80k rows, alongside hash grouping for trend series.
+- **Architectural Conclusion:** Adding composite indexes (e.g. `(source_namespace, currency, occurred_at)`) would not meaningfully reduce latency because filtering accounts for only 28 ms of the execution time. Consequently, speculative schema modifications and indexing migrations were intentionally avoided. Rollup precomputations or background materialization may be considered in future phases if global reporting windows expand further.
 
 ---
 

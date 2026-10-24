@@ -539,59 +539,54 @@ The system should avoid silently modifying important financial facts.
 
 ## 11. Financial Analytics
 
-FinSignal should provide analytical views over transaction data.
+FinSignal provides deterministic financial intelligence and aggregation capabilities directly over persisted transaction data. Financial analytics operate independently of machine-learning models, providing immediate operational visibility to investigators and analysts.
 
-### 11.1 Transaction Analytics
+### 11.1 Implemented Phase 5 Capabilities
 
-Examples:
+#### 1. Financial Overview Aggregates
+- **Scope:** Namespace-partitioned, single-currency macro-metrics over half-open reporting windows `[from_time, to_time)`.
+- **Metrics:** Total transaction count, directional debit/credit counts, total volume amount, total debit/credit amounts, net cash flow (`credit - debit`), min and max transaction amounts.
+- **Statistical Central Tendency:** Overall average and continuous median, alongside distinct directional debit-only average/median and credit-only average/median. Continuous medians use PostgreSQL `percentile_cont(0.5)` with two-decimal `ROUND_HALF_UP` quantization.
 
-- Total transaction count
-- Total debit volume
-- Total credit volume
-- Average transaction amount
-- Median transaction amount
-- Minimum/maximum transaction amount
-- Transaction volume over time
+#### 2. Periodic Trend Buckets
+- **Aggregation Intervals:** Contiguous `day` or `month` buckets.
+- **Zero-Filled Continuity:** Complete time series without calendar gaps; empty intervals are preserved with zero counts and `"0.00"` amounts.
+- **Timezone Awareness:** Buckets are generated according to the caller's requested IANA timezone (or UTC), correctly handling daylight saving transitions (e.g., 23-hour spring-forward days) and midnight boundaries without session-timezone coupling.
+- **Safety Limits:** Enforces hard limits before query execution: maximum 366 daily buckets and maximum 120 monthly buckets.
 
-### 11.2 Category Analytics
+#### 3. Category Spending Distributions
+- **Directional Grouping:** Breakdown of transaction spend by category for a chosen direction (`DEBIT` or `CREDIT`).
+- **Distribution Metrics:** Category transaction count, total volume, average transaction amount, and percentage share of directional total rounded to two decimal places.
+- **Uncategorized Activity:** Transactions with null categories are explicitly grouped under `"UNCATEGORIZED"`.
 
-Analyze:
+#### 4. Merchant Spending and Ranking
+- **Ranking Criteria:** Top merchants ranked by debit spend (`amount`) or frequency (`count`) with deterministic pagination (`limit`, `offset`).
+- **Dual Denominator Metrics:**
+  - `percentage_of_total_debit`: Merchant debit spend divided by total debit spend across all transactions in the window.
+  - `percentage_of_merchant_spend`: Merchant debit spend divided by total debit spend specifically directed to identified merchants.
+- **Non-Merchant Debit Isolation:** Unattributed debit spend (peer-to-peer transfers, withdrawals, untracked counterparties) is isolated and reported as `non_merchant_debit_amount`.
 
-- Spending by category
-- Category frequency
-- Category trends
-- Account-specific category behavior
+#### 5. Account Activity Summaries
+- **Authoritative Namespace Scoping:** Account queries derive and enforce the namespace from the persisted `Account.source_namespace`, ignoring caller namespace overrides to prevent cross-partition leakage.
+- **Temporal Footprint:** First transaction timestamp, last transaction timestamp, and count of distinct active calendar days in the requested reporting timezone.
+- **Top Entities:** Top 5 spending categories and top 5 merchants for the account.
+- **Multi-Currency Behavior:** When an existing account has no transactions in the requested currency, the endpoint returns HTTP 200 with zeroed financial metrics and a list of `available_currencies` transacted by that account.
 
-### 11.3 Merchant Analytics
+#### 6. Deterministic Unusual Spending Detection
+- **Statistical Outlier Heuristic:** Identifies unusual debit activity by comparing individual debit transactions against the account's historical debit median ($M_{\text{debit}}$) within the requested reporting window.
+- **Threshold Rule:** Flags transactions where $\text{amount} \ge \text{ROUND}(M_{\text{debit}} \times \text{multiplier}, 2)$ using an inclusive threshold and `ROUND_HALF_UP` arithmetic. Multiplier is configurable between 1.5 and 10.0 (default 3.0).
+- **Outlier Metrics:** Reports account debit median, applied threshold, deviation ratio ($\text{amount} / M_{\text{debit}}$), total outlier count before pagination, and paginated outlier records sorted by amount descending.
 
-Analyze:
+### 11.2 Role-Based Access Policy
+- Protected financial analytics endpoints are accessible by authenticated users with roles: `ADMIN`, `ANALYST`, and `INVESTIGATOR`.
+- Nonexistent source namespaces return HTTP 404 (`NAMESPACE_NOT_FOUND`).
+- Invalid parameters (malformed namespaces, non-ISO currencies, inverted date intervals, unsupported intervals/timezones, pagination overflows) return HTTP 422 with structured validation error codes.
 
-- Most frequently used merchants
-- Highest transaction-volume merchants
-- Merchant spending
-- Account-merchant relationships
-
-### 11.4 Temporal Analytics
-
-Analyze:
-
-- Hourly activity
-- Daily activity
-- Weekly activity
-- Monthly activity
-- Weekend vs weekday behavior
-- Unusual activity periods
-
-### 11.5 Account Analytics
-
-Analyze:
-
-- Account transaction volume
-- Account spending patterns
-- Account average transaction amount
-- Account category distribution
-- Account merchant preferences
-- Account activity patterns
+### 11.3 Phase Boundary Distinctions
+- **Phase 5 (Current):** Deterministic SQL aggregates, exact monetary calculations, calendar trend bucketing, and statistical median-based outlier filtering.
+- **Phase 6 (Deferred):** Sliding-window behavioral feature engineering (e.g., 5-minute/24-hour velocity, temporal leakage prevention).
+- **Phase 7 (Deferred):** Machine learning anomaly detection (Isolation Forest model training, inference, and multivariate anomaly scores).
+- **Phase 9 (Deferred):** Case management, alert triage, evidence attachment, and investigator resolution workflows.
 
 ---
 

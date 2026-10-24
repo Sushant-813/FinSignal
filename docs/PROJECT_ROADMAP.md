@@ -528,13 +528,17 @@ Analytics must:
 - use deterministic ordering;
 - remain independent of fraud ground truth.
 
+## Status
+
+**COMPLETED WITH DOCUMENTED BENCHMARK LIMITATION** (Verified via 320 tests, zero regressions. Medium scale P95 < 2ms against 50ms budget; full-scale categories, merchants, and account endpoints meet <= 100ms budget, with global overview and trends at 135-140ms due to in-memory aggregation of 80k+ decimal rows).
+
 ## Exit Criteria
 
-- analytics endpoints work;
-- calculations are verified against hand-calculated datasets;
-- aggregation tests pass;
-- temporal boundaries are tested;
-- API performance is acceptable at development scale.
+- [x] analytics endpoints work (`/overview`, `/trends`, `/categories`, `/merchants`, `/accounts/{id}`, `/accounts/{id}/unusual-spending`);
+- [x] calculations are verified against hand-calculated datasets;
+- [x] aggregation tests pass;
+- [x] temporal boundaries are tested (half-open `[from_time, to_time)`, sub-second boundaries, zero-filled series);
+- [x] API performance is acceptable at development scale (Medium scale P95 < 2 ms on 5,000 transactions; full scale evaluated on 250,000 transactions).
 
 ---
 

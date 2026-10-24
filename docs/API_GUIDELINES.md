@@ -751,45 +751,339 @@ Requires role `ADMIN` or `ANALYST`.
 
 # 24. Analytics API
 
-Financial analytics are distinct from ML risk analysis.
+Financial analytics provide deterministic server-computed intelligence directly over persisted transaction data. All analytics endpoints require Bearer JWT authentication and are accessible by users with roles: `ADMIN`, `ANALYST`, and `INVESTIGATOR`. All monetary amounts are formatted as two-decimal strings (`"0.00"`) via `ROUND_HALF_UP`.
 
-Potential endpoints:
-
+The implemented endpoint inventory:
 ```text
 GET /api/v1/analytics/overview
-GET /api/v1/analytics/transactions/trends
-GET /api/v1/analytics/spending/categories
+GET /api/v1/analytics/trends
+GET /api/v1/analytics/categories
 GET /api/v1/analytics/merchants
 GET /api/v1/analytics/accounts/{account_id}
+GET /api/v1/analytics/accounts/{account_id}/unusual-spending
 ```
-
-Analytics responses should contain server-computed values.
-
-The frontend must not independently recreate financial calculations.
 
 ---
 
-# 25. Analytics Overview
+# 25. Analytics Endpoint Specifications
 
-Example:
+## 25.1 Global Overview (`GET /api/v1/analytics/overview`)
 
-```http
-GET /api/v1/analytics/overview?from=...&to=...
-```
+Retrieves macro-aggregates across transactions for a given namespace and currency over a half-open window `[from_time, to_time)`.
 
-Possible response:
+### Parameters
+| Name | Type | In | Required | Default | Validation / Description |
+|---|---|---|:---:|---|---|
+| `source_namespace` | `string` | Query | No | `"SYNTHETIC"` | Target namespace pattern `^[A-Z0-9_]{3,64}$` |
+| `namespace` | `string` | Query | No | `null` | Alias for `source_namespace` |
+| `currency` | `string` | Query | No | `"INR"` | ISO-4217 3-letter currency code |
+| `from_time` | `datetime` | Query | No | `null` | Start boundary (inclusive) |
+| `to_time` | `datetime` | Query | No | `null` | End boundary (exclusive); must be `> from_time` |
+| `timezone` | `string` | Query | No | `"UTC"` | Reporting timezone (informational) |
 
+### Status Codes
+- `200 OK`: Successful response.
+- `401 Unauthorized`: Missing or invalid Bearer token.
+- `403 Forbidden`: Authenticated user lacks required role.
+- `404 Not Found`: Namespace does not exist (`NAMESPACE_NOT_FOUND`).
+- `422 Unprocessable Entity`: Validation failure (syntax, range).
+
+### Response Example (`OverviewAnalyticsResponse`)
 ```json
 {
-  "transaction_count": 125000,
-  "total_debit": "45000000.00",
-  "total_credit": "52000000.00",
-  "flagged_transaction_count": 842,
-  "open_investigation_count": 137
+  "source_namespace": "SYNTHETIC",
+  "currency": "INR",
+  "from_time": "2026-02-01T00:00:00Z",
+  "to_time": "2026-03-01T00:00:00Z",
+  "total_transaction_count": 80651,
+  "debit_transaction_count": 52400,
+  "credit_transaction_count": 28251,
+  "total_volume_amount": "24501230.50",
+  "total_debit_amount": "14201200.00",
+  "total_credit_amount": "10300030.50",
+  "net_cash_flow": "-3901169.50",
+  "average_transaction_amount": "303.79",
+  "median_transaction_amount": "145.50",
+  "debit_average_amount": "271.02",
+  "debit_median_amount": "130.00",
+  "credit_average_amount": "364.59",
+  "credit_median_amount": "180.00",
+  "min_transaction_amount": "5.00",
+  "max_transaction_amount": "50000.00"
 }
 ```
 
-The exact metrics depend on the final product dashboard.
+---
+
+## 25.2 Periodic Trends (`GET /api/v1/analytics/trends`)
+
+Retrieves contiguous, zero-filled financial trend buckets grouped by day or month in the client's specified IANA timezone over `[from_time, to_time)`.
+
+### Parameters
+| Name | Type | In | Required | Default | Validation / Description |
+|---|---|---|:---:|---|---|
+| `from_time` | `datetime` | Query | Yes | — | Start boundary (inclusive) |
+| `to_time` | `datetime` | Query | Yes | — | End boundary (exclusive); must be `> from_time` |
+| `source_namespace` | `string` | Query | No | `"SYNTHETIC"` | Namespace pattern `^[A-Z0-9_]{3,64}$` |
+| `namespace` | `string` | Query | No | `null` | Alias for `source_namespace` |
+| `currency` | `string` | Query | No | `"INR"` | ISO-4217 3-letter currency code |
+| `interval` | `string` | Query | No | `"day"` | `"day"` or `"month"` |
+| `timezone` | `string` | Query | No | `"UTC"` | Valid IANA timezone or `"UTC"` |
+
+### Bucket Count Limits
+- `interval=day`: max 366 buckets (`MAX_DAILY_BUCKETS`). Exceeding returns HTTP 422 (`TREND_BUCKET_COUNT_EXCEEDS_LIMIT`).
+- `interval=month`: max 120 buckets (`MAX_MONTHLY_BUCKETS`). Exceeding returns HTTP 422 (`TREND_BUCKET_COUNT_EXCEEDS_LIMIT`).
+
+### Response Example (`TrendAnalyticsResponse`)
+```json
+{
+  "source_namespace": "SYNTHETIC",
+  "currency": "INR",
+  "interval": "day",
+  "timezone": "UTC",
+  "from_time": "2026-02-01T00:00:00Z",
+  "to_time": "2026-02-03T00:00:00Z",
+  "total_buckets": 2,
+  "buckets": [
+    {
+      "bucket_start": "2026-02-01T00:00:00Z",
+      "transaction_count": 2740,
+      "debit_count": 1810,
+      "credit_count": 930,
+      "total_debit_amount": "485200.00",
+      "total_credit_amount": "392100.00",
+      "net_cash_flow": "-93100.00"
+    },
+    {
+      "bucket_start": "2026-02-02T00:00:00Z",
+      "transaction_count": 2680,
+      "debit_count": 1750,
+      "credit_count": 930,
+      "total_debit_amount": "472150.00",
+      "total_credit_amount": "381000.00",
+      "net_cash_flow": "-91150.00"
+    }
+  ]
+}
+```
+
+---
+
+## 25.3 Category Distribution (`GET /api/v1/analytics/categories`)
+
+Aggregates spending or volume grouped by transaction category for a specified direction (`DEBIT` or `CREDIT`).
+
+### Parameters
+| Name | Type | In | Required | Default | Validation / Description |
+|---|---|---|:---:|---|---|
+| `direction` | `string` | Query | No | `"DEBIT"` | `"DEBIT"` or `"CREDIT"` |
+| `source_namespace` | `string` | Query | No | `"SYNTHETIC"` | Namespace pattern `^[A-Z0-9_]{3,64}$` |
+| `namespace` | `string` | Query | No | `null` | Alias for `source_namespace` |
+| `currency` | `string` | Query | No | `"INR"` | ISO-4217 3-letter currency code |
+| `from_time` | `datetime` | Query | No | `null` | Start boundary (inclusive) |
+| `to_time` | `datetime` | Query | No | `null` | End boundary (exclusive) |
+| `timezone` | `string` | Query | No | `"UTC"` | Reporting timezone (informational) |
+
+### Response Example (`CategoryAnalyticsResponse`)
+```json
+{
+  "source_namespace": "SYNTHETIC",
+  "currency": "INR",
+  "direction": "DEBIT",
+  "total_directional_amount": "14201200.00",
+  "categories": [
+    {
+      "category_name": "GROCERY",
+      "transaction_count": 15420,
+      "total_amount": "4260360.00",
+      "percentage_of_total": "30.00",
+      "average_amount": "276.29"
+    },
+    {
+      "category_name": "UNCATEGORIZED",
+      "transaction_count": 412,
+      "total_amount": "142012.00",
+      "percentage_of_total": "1.00",
+      "average_amount": "344.69"
+    }
+  ]
+}
+```
+
+---
+
+## 25.4 Merchant Analytics (`GET /api/v1/analytics/merchants`)
+
+Ranks top merchants by debit volume (`amount`) or frequency (`count`) with dual percentage metrics.
+
+### Parameters
+| Name | Type | In | Required | Default | Validation / Description |
+|---|---|---|:---:|---|---|
+| `sort_by` | `string` | Query | No | `"amount"` | `"amount"` or `"count"` |
+| `limit` | `integer` | Query | No | `20` | `1 <= limit <= 100` |
+| `offset` | `integer` | Query | No | `0` | `offset >= 0` |
+| `source_namespace` | `string` | Query | No | `"SYNTHETIC"` | Namespace pattern `^[A-Z0-9_]{3,64}$` |
+| `namespace` | `string` | Query | No | `null` | Alias for `source_namespace` |
+| `currency` | `string` | Query | No | `"INR"` | ISO-4217 3-letter currency code |
+| `from_time` | `datetime` | Query | No | `null` | Start boundary (inclusive) |
+| `to_time` | `datetime` | Query | No | `null` | End boundary (exclusive) |
+| `timezone` | `string` | Query | No | `"UTC"` | Reporting timezone (informational) |
+
+### Response Example (`MerchantAnalyticsResponse`)
+```json
+{
+  "source_namespace": "SYNTHETIC",
+  "currency": "INR",
+  "total_debit_amount": "14201200.00",
+  "total_merchant_debit_amount": "12500000.00",
+  "non_merchant_debit_amount": "1701200.00",
+  "returned_merchant_count": 1,
+  "merchants": [
+    {
+      "merchant_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "merchant_name": "FreshMart Supermarket",
+      "merchant_category": "GROCERY",
+      "transaction_count": 3200,
+      "total_amount": "1420120.00",
+      "average_amount": "443.79",
+      "percentage_of_total_debit": "10.00",
+      "percentage_of_merchant_spend": "11.36"
+    }
+  ]
+}
+```
+
+---
+
+## 25.5 Account Activity (`GET /api/v1/analytics/accounts/{account_id}`)
+
+Retrieves account financial summaries, temporal milestones, active days, top categories, and top merchants.
+
+### Behavior & Authoritative Scoping
+- **Authoritative Namespace:** Derives namespace from the persisted `Account.source_namespace`. Caller overrides are ignored.
+- **Empty Currency (HTTP 200):** If the account exists but has no transactions in the requested currency, returns HTTP 200 with zeroed metrics and the complete list of `available_currencies` transacted by that account.
+- **Account Not Found (HTTP 404):** Returns HTTP 404 (`RESOURCE_NOT_FOUND`) if `account_id` does not exist.
+
+### Parameters
+| Name | Type | In | Required | Default | Validation / Description |
+|---|---|---|:---:|---|---|
+| `account_id` | `uuid` | Path | Yes | — | Valid account UUID |
+| `currency` | `string` | Query | No | `"INR"` | ISO-4217 3-letter currency code |
+| `timezone` | `string` | Query | No | `"UTC"` | Valid IANA timezone |
+| `from_time` | `datetime` | Query | No | `null` | Start boundary (inclusive) |
+| `to_time` | `datetime` | Query | No | `null` | End boundary (exclusive) |
+
+### Response Example (`AccountActivityResponse`)
+```json
+{
+  "account_id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+  "external_account_id": "ACC_00001001",
+  "source_namespace": "SYNTHETIC",
+  "account_type": "SAVINGS",
+  "status": "ACTIVE",
+  "currency": "INR",
+  "available_currencies": ["INR", "USD"],
+  "first_transaction_at": "2026-01-15T10:30:00Z",
+  "last_transaction_at": "2026-02-28T18:45:00Z",
+  "active_days_count": 24,
+  "summary": {
+    "total_transaction_count": 52,
+    "debit_transaction_count": 38,
+    "credit_transaction_count": 14,
+    "total_volume_amount": "45200.00",
+    "total_debit_amount": "22100.00",
+    "total_credit_amount": "23100.00",
+    "net_cash_flow": "1000.00",
+    "average_transaction_amount": "869.23",
+    "median_transaction_amount": "450.00",
+    "debit_average_amount": "581.58",
+    "debit_median_amount": "320.00",
+    "credit_average_amount": "1650.00",
+    "credit_median_amount": "1200.00",
+    "min_transaction_amount": "25.00",
+    "max_transaction_amount": "8500.00"
+  },
+  "top_categories": [
+    {
+      "category_name": "GROCERY",
+      "transaction_count": 18,
+      "total_amount": "8200.00",
+      "percentage_of_total": "37.10"
+    }
+  ],
+  "top_merchants": [
+    {
+      "merchant_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "merchant_name": "FreshMart Supermarket",
+      "merchant_category": "GROCERY",
+      "transaction_count": 12,
+      "total_amount": "5400.00",
+      "percentage_of_total_debit": "24.43",
+      "percentage_of_merchant_spend": "38.57"
+    }
+  ]
+}
+```
+
+---
+
+## 25.6 Account Unusual Spending Outliers (`GET /api/v1/analytics/accounts/{account_id}/unusual-spending`)
+
+Detects statistical outlier debit transactions exceeding an inclusive multiple of the account's historical debit median over the requested window.
+
+### Mathematical Formulation
+$$\text{threshold} = \text{ROUND}(M_{\text{debit}} \times \text{multiplier}, 2)$$
+A debit transaction is flagged if $\text{amount} \ge \text{threshold}$ (inclusive).
+
+### Parameters
+| Name | Type | In | Required | Default | Validation / Description |
+|---|---|---|:---:|---|---|
+| `account_id` | `uuid` | Path | Yes | — | Valid account UUID |
+| `multiplier` | `decimal` | Query | No | `3.0` | `1.5 <= multiplier <= 10.0` |
+| `threshold_multiplier` | `decimal` | Query | No | `null` | Alias for `multiplier` |
+| `currency` | `string` | Query | No | `"INR"` | ISO-4217 3-letter currency code |
+| `limit` | `integer` | Query | No | `50` | `1 <= limit <= 100` |
+| `offset` | `integer` | Query | No | `0` | `offset >= 0` |
+| `from_time` | `datetime` | Query | No | `null` | Start boundary (inclusive) |
+| `to_time` | `datetime` | Query | No | `null` | End boundary (exclusive) |
+| `timezone` | `string` | Query | No | `"UTC"` | Reporting timezone (informational) |
+
+### Response Example (`UnusualSpendingResponse`)
+```json
+{
+  "account_id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+  "currency": "INR",
+  "account_median_debit": "320.00",
+  "multiplier": "3.0",
+  "outlier_threshold_amount": "960.00",
+  "unusual_transaction_count": 2,
+  "returned_count": 2,
+  "transactions": [
+    {
+      "transaction_id": "c1d2e3f4-a5b6-7890-1234-567890abcdef",
+      "external_transaction_id": "TXN_00098124",
+      "occurred_at": "2026-02-14T21:15:00Z",
+      "amount": "4500.00",
+      "currency": "INR",
+      "transaction_type": "PURCHASE",
+      "direction": "DEBIT",
+      "category": "ELECTRONICS",
+      "deviation_ratio": "14.06"
+    },
+    {
+      "transaction_id": "e5f6a1b2-c3d4-5678-90ab-cdef12345678",
+      "external_transaction_id": "TXN_00098412",
+      "occurred_at": "2026-02-18T14:20:00Z",
+      "amount": "1250.00",
+      "currency": "INR",
+      "transaction_type": "PURCHASE",
+      "direction": "DEBIT",
+      "category": "APPAREL",
+      "deviation_ratio": "3.91"
+    }
+  ]
+}
+```
 
 ---
 
@@ -1970,10 +2264,11 @@ POST   /api/v1/datasets/imports/{import_id}/recover
 
 ```text
 GET    /api/v1/analytics/overview
-GET    /api/v1/analytics/transactions/trends
-GET    /api/v1/analytics/spending/categories
+GET    /api/v1/analytics/trends
+GET    /api/v1/analytics/categories
 GET    /api/v1/analytics/merchants
 GET    /api/v1/analytics/accounts/{account_id}
+GET    /api/v1/analytics/accounts/{account_id}/unusual-spending
 ```
 
 ### Merchants

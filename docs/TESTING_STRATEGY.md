@@ -1256,6 +1256,51 @@ Run:
 
 Heavy benchmarks should not unnecessarily slow every developer iteration.
 
+### 40.1 Phase 5 Financial Analytics Benchmark Protocol & Test Inventory
+
+Phase 5 introduces a dual-scale performance benchmarking protocol to validate PostgreSQL query performance and HTTP latency across deterministic synthetic datasets.
+
+#### Automated Test Suite Inventory (320 Total Passing Tests)
+1. **Math & Precision Unit Tests (`tests/unit/test_analytics_math.py`):**
+   - Validates continuous median halfway rounding (`[100.01, 100.02] -> continuous median 100.015 -> rounded 100.02`).
+   - Validates sum of category and merchant percentages within $\pm 0.05\%$ rounding tolerance.
+2. **Schema & Calendar Unit Tests (`tests/unit/test_analytics_schemas.py`):**
+   - Enforces `MoneyStr` two-decimal formatting (`ROUND_HALF_UP`) and rejects floats or malformed strings.
+   - Tests `count_calendar_buckets()` for day and month intervals across leap years, exact midnight boundaries, sub-second offsets, and invalid intervals.
+3. **Service Logic Unit Tests (`tests/unit/test_analytics_service.py`):**
+   - Validates namespace regex (`^[A-Z0-9_]{3,64}$`), ISO-4217 currencies, half-open interval validation (`from_time < to_time`), and IANA timezone validation.
+   - Enforces bucket limits (`MAX_DAILY_BUCKETS=366`, `MAX_MONTHLY_BUCKETS=120`) and pagination constraints (`limit <= 100`, `offset >= 0`).
+4. **API & RBAC Authorization Tests (`tests/api/test_analytics_api.py`):**
+   - Verifies 200 OK for `ADMIN`, `ANALYST`, and `INVESTIGATOR`.
+   - Verifies 401 Unauthorized for missing tokens and 403 Forbidden for unprivileged roles.
+   - Verifies 404 for nonexistent namespaces and missing account IDs.
+   - Verifies 422 for parameter validation failures.
+5. **PostgreSQL Persistence Tests (`tests/integration/test_analytics_persistence.py`):**
+   - Verifies half-open interval boundaries (`from_time` included, `to_time` excluded).
+   - Verifies sub-second boundary regression scenario (`to_time = 00:00:00.500Z` retains day 2 bucket).
+   - Verifies zero-filled daily/monthly trend buckets across empty intervals.
+   - Verifies session-timezone independence (client timezone `Asia/Kolkata` vs DB session `America/New_York`).
+   - Verifies DST transition handling across 23-hour spring-forward days (`America/New_York` 2026-03-08).
+   - Verifies account-specific authoritative namespace derivation and available currency listing.
+   - Verifies pre-pagination outlier counts (`unusual_transaction_count`).
+
+#### Benchmarking Methodology & Empirical Measurements
+- **Isolation Requirement:** Benchmarks run strictly against an isolated disposable database (`finsignal_test`). Benchmarks never execute against or modify development/production databases.
+- **Protocol:** 10 unmeasured warmup iterations followed by 50 timed iterations measuring P50, P90, P95, and Max latency. Repository-level query latency is measured separately from HTTP-layer ASGI roundtrip latency.
+- **Medium Scale (100 accounts, 5,000 transactions, seed=42):**
+  - Integrated into automated pytest suite (`tests/integration/test_analytics_benchmark.py`).
+  - `/overview` (30-day window): P50 = 0.48 ms, P95 = 0.81 ms (Budget $\le 50.0\text{ ms}$ — **MET**).
+  - `/trends` (30 daily buckets): P50 = 1.14 ms, P95 = 1.53 ms (Budget $\le 50.0\text{ ms}$ — **MET**).
+- **Full Scale (5,000 accounts, 250,000 transactions, seed=42, 80,651 matching window rows):**
+  - Executed via standalone script `scripts/run_full_scale_benchmark.py`.
+  - `/categories` (30-day window): Repo P95 = 85.72 ms (Budget $\le 100\text{ ms}$ — **MET**).
+  - `/merchants` (top 20): Repo P95 = 83.06 ms (Budget $\le 100\text{ ms}$ — **MET**).
+  - `/accounts/{id}` (activity): Repo P95 = 1.25 ms (Budget $\le 100\text{ ms}$ — **MET**).
+  - `/accounts/{id}/unusual-spending`: Repo P95 = 0.54 ms (Budget $\le 100\text{ ms}$ — **MET**).
+  - `/overview` (30-day window): Repo P50 = 130.79 ms, P95 = 135.74 ms, Max = 140.85 ms; HTTP P95 = 145.3 ms (Budget $\le 100\text{ ms}$ — **EXCEEDED**).
+  - `/trends` (30 daily buckets): Repo P50 = 134.12 ms, P95 = 140.16 ms, Max = 141.66 ms; HTTP P95 = 148.1 ms (Budget $\le 100\text{ ms}$ — **EXCEEDED**).
+- **Query Plan Findings:** `EXPLAIN (ANALYZE, BUFFERS)` proves that `ix_transactions_occurred_at` handles row filtering in 28.02 ms. The residual ~100 ms is consumed by in-engine memory sorting and CPU aggregation for continuous medians across 80,651 rows and trend hash grouping. Speculative index migrations were intentionally rejected.
+
 ---
 
 # 41. End-to-End Testing

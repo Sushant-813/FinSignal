@@ -583,16 +583,21 @@ Persist
 
 # 23. Analytics Module
 
-Responsibilities:
+The analytics module (`src/finsignal/analytics/`) provides deterministic financial intelligence and temporal reporting directly over canonical relational data.
 
-- Transaction analytics
-- Account analytics
-- Category analytics
-- Merchant analytics
-- Temporal analytics
-- Aggregations
+### 23.1 Internal Package Structure
+- `src/finsignal/analytics/__init__.py`: Public exports (`AnalyticsRepository`, `AnalyticsService`).
+- `src/finsignal/analytics/schemas.py`: Pydantic v2 schemas (`extra="forbid"`), monetary string formatting (`MoneyStr`, `OptionalMoneyStr`), and calendar bucket calculation logic (`count_calendar_buckets`).
+- `src/finsignal/analytics/repository.py`: Async SQLAlchemy repository executing raw parameterized SQL aggregations, window functions, and timezone projections.
+- `src/finsignal/analytics/service.py`: Domain service enforcing input invariants, namespace verification, calendar bucket limits, and decimal financial rounding.
+- `src/finsignal/api/v1/analytics.py`: FastAPI router defining the six analytics endpoints with OpenAPI tags and dependencies.
+- `src/finsignal/api/router.py`: Central v1 API router registering `analytics.router` under `/analytics`.
 
-Analytics should be available independently of the ML pipeline.
+### 23.2 Domain Responsibilities and Isolation
+- **Read-Only Facts:** Queries existing canonical transaction, account, and merchant tables without mutating operational state.
+- **No Duplicate Persistence:** Computes aggregations directly from primary transaction facts; no duplicate caching or shadow tables.
+- **Authoritative Account Isolation:** Derives namespace scope from persisted `Account.source_namespace`, preventing cross-account and cross-namespace information leakage.
+- **Independence from ML:** Analytics endpoints remain fully functional regardless of whether ML models (Phase 7) or feature stores (Phase 6) are active.
 
 ---
 
@@ -815,26 +820,32 @@ Dataset Ready
 # 33. Analytics Flow
 
 ```text
-PostgreSQL
-    |
-    v
-Analytics Service
-    |
-    +---- Transaction Metrics
-    |
-    +---- Account Metrics
-    |
-    +---- Category Metrics
-    |
-    +---- Merchant Metrics
-    |
-    +---- Temporal Metrics
-    |
-    v
-API Response
-    |
-    v
-Frontend
+HTTP Client (Dashboard / API Consumer)
+     │
+     ▼
+API Route (`src/finsignal/api/v1/analytics.py`)
+     │  ├── Bearer JWT Extraction & Authentication
+     │  └── Role Enforcement (`ADMIN`, `ANALYST`, `INVESTIGATOR`)
+     ▼
+Analytics Service (`src/finsignal/analytics/service.py`)
+     │  ├── Input Validation (Namespace Regex, ISO Currency, Half-Open Dates)
+     │  ├── Namespace Verification (`accounts` / `dataset_imports`)
+     │  ├── Bucket-Count Boundary Check (`MAX_DAILY_BUCKETS=366`, `MAX_MONTHLY_BUCKETS=120`)
+     │  ├── Account Namespace Scoping (`Account.source_namespace`)
+     │  └── Percentage Quantization (`ROUND_HALF_UP`)
+     ▼
+Analytics Repository (`src/finsignal/analytics/repository.py`)
+     │  ├── Dynamic SQL Parameterized Query Assembly
+     │  └── Single-Roundtrip Aggregate Execution
+     ▼
+PostgreSQL Database
+     │  ├── Index Scan (`ix_transactions_occurred_at` / `ix_transactions_account_occurred`)
+     │  └── In-Engine Window Functions (`percentile_cont`, `generate_series`, `FILTER`)
+     ▼
+Pydantic v2 Response Schemas (`src/finsignal/analytics/schemas.py`)
+     │  └── Exact Two-Decimal Serialization (`MoneyStr` / `"0.00"`)
+     ▼
+HTTP Response (JSON)
 ```
 
 ---

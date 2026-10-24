@@ -594,25 +594,56 @@ API representation should preserve precision.
 
 ---
 
-# 26. Decimal Arithmetic
+# 26. Decimal Arithmetic and Financial Analytics Conventions
 
-Use:
-
+### 26.1 Monetary Precision and Rounding
+Always use:
 ```python
 Decimal
 ```
+for financial calculations and monetary state. Never use IEEE 754 floating-point numbers (`float`) for monetary operations.
 
-for financial calculations.
+- **API Serialization (`MoneyStr` / `OptionalMoneyStr`):** All monetary fields exposed via Pydantic response models must serialize to strict two-decimal strings (e.g. `"1250.50"`, `"0.00"`) using `ROUND_HALF_UP` rounding via `pydantic.BeforeValidator`:
+  ```python
+  def to_money_str(v: Any) -> str:
+      if v is None:
+          return "0.00"
+      if isinstance(v, Decimal):
+          return f"{v:.2f}"
+      return f"{Decimal(str(v)):.2f}"
+  ```
+- **PostgreSQL Continuous Medians:** When calculating continuous medians in PostgreSQL, always use `percentile_cont(0.5)` cast to `numeric` and explicitly rounded:
+  ```sql
+  ROUND(percentile_cont(0.5) WITHIN GROUP (ORDER BY amount)::numeric, 2) AS median_debit
+  ```
+  Continuous medians over even counts interpolate halfway values (e.g., `[100.01, 100.02]` yields continuous median `100.015`), which must round up to `100.02` with `ROUND_HALF_UP`.
 
-Avoid:
-
-```python
-0.1 + 0.2
+### 26.2 Half-Open Reporting Intervals
+All temporal reporting boundaries must use half-open intervals:
+$$\text{Window} = [\text{from\_time}, \text{to\_time})$$
+In SQL, this is strictly expressed as:
+```sql
+occurred_at >= :from_time AND occurred_at < :to_time
 ```
+This avoids double-counting events that fall exactly on midnight or temporal boundaries and guarantees seamless partition concatenation.
 
-style floating-point financial arithmetic.
+### 26.3 Timezone-Aware Calendar Bucketing
+Trend bucketing must generate series based on actual calendar intervals in the caller's requested IANA timezone, rather than fixed UTC elapsed durations:
+1. Truncate boundary timestamps to the target timezone: `date_trunc(:interval, :from_time, :tz) AT TIME ZONE :tz`.
+2. Generate wall-clock series with `generate_series(start_wall, end_wall, '1 day'::interval)` on `TIMESTAMP WITHOUT TIME ZONE`.
+3. Project each generated point to `TIMESTAMPTZ` via `(g AT TIME ZONE :tz)`.
+4. Filter using `< :to_time` to preserve half-open bounds.
 
-If conversion from external numeric data is required, convert carefully and validate the source representation.
+This prevents missing or duplicated buckets across daylight saving transitions (e.g. 23-hour spring-forward or 25-hour fall-back days) and maintains independence from the database session's configured timezone.
+
+### 26.4 Dynamic Parameterization in Repositories
+In SQLAlchemy repositories executing raw SQL via `text()`, do not pass `(:from_time IS NULL OR occurred_at >= :from_time)` when using asyncpg. Asyncpg prepared statement planners cannot infer data types when parameters are bound to `None`. Instead, assemble WHERE clauses dynamically, appending parameterized conditions only for present filters:
+```python
+conditions = ["source_namespace = :namespace", "currency = :currency"]
+if from_time is not None:
+    conditions.append("occurred_at >= :from_time")
+    params["from_time"] = from_time
+```
 
 ---
 

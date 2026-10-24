@@ -388,6 +388,25 @@ resource is accessible to that user
 
 This helps prevent insecure direct object reference vulnerabilities.
 
+### 16.1 Analytics Object-Level and Namespace Isolation (Phase 5)
+
+FinSignal enforces strict namespace and object isolation across all analytics endpoints:
+
+1. **Role Enforcement:** All analytics endpoints require Bearer JWT authentication and restrict access to `ADMIN`, `ANALYST`, and `INVESTIGATOR` via `require_roles("ADMIN", "ANALYST", "INVESTIGATOR")`.
+2. **Authoritative Account Namespace Scoping:**
+   - Account-specific endpoints (`/api/v1/analytics/accounts/{account_id}` and `/api/v1/analytics/accounts/{account_id}/unusual-spending`) do not permit the caller to supply or override the namespace.
+   - The account record is looked up by its primary key UUID. If found, the query derives its namespace strictly from `Account.source_namespace`.
+   - All subsequent aggregation queries (activity metrics, available currencies, category breakdowns, and unusual spending medians) are strictly locked to `source_namespace = :authoritative_namespace`. This eliminates IDOR vulnerabilities and prevents cross-namespace data leakage between partitions.
+3. **Global Namespace Verification:**
+   - Global analytics endpoints (`/overview`, `/trends`, `/categories`, `/merchants`) validate the namespace format (`^[A-Z0-9_]{3,64}$`) and check for existence in `accounts` or `dataset_imports`.
+   - If the namespace does not exist, the API returns HTTP 404 (`NAMESPACE_NOT_FOUND`) rather than returning empty metrics for arbitrary strings.
+
+### 16.2 SQL Injection Defense and Parameter Handling
+- **Parameterized Queries:** All relational aggregation queries use SQLAlchemy `text()` constructs with named parameter bindings (`:namespace`, `:currency`, `:from_time`, `:to_time`, `:account_id`).
+- **Interval Whitelisting:** For trend generation (`generate_series`), interval step strings are strictly validated against an internal enum `("day", "month")` before being safely injected into SQL (`f"'{interval_step}'::interval"`). Arbitrary or user-controlled strings are rejected at the service layer (`INVALID_INTERVAL`).
+- **Timezone Validation:** Timezone strings are validated against Python's `zoneinfo.available_timezones()`. Unrecognized identifiers are rejected with HTTP 422 (`INVALID_TIMEZONE`) before reaching PostgreSQL.
+- **Error Obfuscation:** Database-level connection errors, driver exceptions, or syntax errors are never returned to clients. The service catches domain errors and maps them to structured `ValidationError` or `NotFoundError` models with sanitized error codes.
+
 ---
 
 # 17. Investigation Access

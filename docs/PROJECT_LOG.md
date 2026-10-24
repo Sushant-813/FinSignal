@@ -1100,9 +1100,64 @@ Phase 4 implementation is complete, fully verified against PostgreSQL, and recon
 3. Commit Phase 4 as a unified milestone.
 4. Proceed to Phase 5: Deterministic Financial Analytics.
 
+# 24. Phase 5 Implementation — Deterministic Financial Analytics
+
+**Date:** 2026-10-24
+**Scope:** Complete vertical slice implementation of Phase 5 Financial Analytics.
+
+### Summary of Completed Work
+
+1. **Schemas & Domain Contracts (`src/finsignal/analytics/schemas.py`):**
+   - Implemented strict Pydantic v2 schemas: `OverviewAnalyticsResponse`, `TrendAnalyticsResponse`, `CategoryAnalyticsResponse`, `MerchantAnalyticsResponse`, `AccountActivityResponse`, and `UnusualSpendingResponse`.
+   - Enforced stringified two-decimal formatting (`MoneyStr`, `OptionalMoneyStr`) via `ROUND_HALF_UP` preserving financial correctness without binary floating-point representation.
+   - Implemented `count_calendar_buckets` computing actual calendar buckets for half-open intervals `[from_time, to_time)` in target IANA timezones, enforcing `MAX_DAILY_BUCKETS=366` and `MAX_MONTHLY_BUCKETS=120`.
+
+2. **PostgreSQL Aggregation Repository (`src/finsignal/analytics/repository.py`):**
+   - Single-roundtrip macro-aggregates over `[from_time, to_time)` using PostgreSQL window/aggregate functions (`percentile_cont(0.5)`, `SUM`, `AVG`, `FILTER`).
+   - Contiguous zero-filled trend series generation using wall-clock `TIMESTAMP WITHOUT TIME ZONE` series joined against `date_trunc(interval, occurred_at, tz)` via `TIMESTAMPTZ`, eliminating DST skew and session-timezone coupling.
+   - Dynamic parameterized WHERE conditions eliminating untyped prepared statement parameters and optimizing PostgreSQL index utilization.
+   - Scoped available currencies and activity details to authoritative account namespace.
+
+3. **Domain Service & Validation (`src/finsignal/analytics/service.py`):**
+   - Validates namespace syntax (`^[A-Z0-9_]{3,64}$`) and verifies namespace existence in `accounts` or `dataset_imports`.
+   - Validates ISO 4217 currency syntax (`^[A-Z]{3}$`).
+   - Enforces half-open interval validation: `from_time < to_time`.
+   - Rejects bucket-count overflows before executing database queries.
+   - Computes deterministic outlier threshold ($M_{\text{debit}} \times \text{multiplier}$) and pre-pagination matching counts.
+   - Implements empty-currency semantics: existing account with no transactions in requested currency returns HTTP 200 with zeroed metrics and available currencies.
+
+4. **API Router & Endpoints (`src/finsignal/api/v1/analytics.py` & `src/finsignal/api/router.py`):**
+   - Mounted `GET /api/v1/analytics/overview`
+   - Mounted `GET /api/v1/analytics/trends`
+   - Mounted `GET /api/v1/analytics/categories`
+   - Mounted `GET /api/v1/analytics/merchants`
+   - Mounted `GET /api/v1/analytics/accounts/{account_id}`
+   - Mounted `GET /api/v1/analytics/accounts/{account_id}/unusual-spending`
+   - Enforced JWT Bearer authentication and permitted roles: `ADMIN`, `ANALYST`, and `INVESTIGATOR`.
+
+5. **Empirical Validation & Benchmark Results:**
+   - 320 passed tests in 48.58s (43 new tests across unit, API, integration, and benchmark suites, with 0 regressions in existing 277 tests).
+   - Verified halfway continuous median rounding (`100.015 -> 100.02`).
+   - Verified half-open boundaries (`from_time` included, `to_time` excluded).
+   - Verified sub-second boundary regression scenario (`to_time = 00:00:00.500Z` retains day 2 bucket).
+   - Verified DST spring-forward 23-hour day and session timezone mismatch resilience.
+   - **Medium Scale Benchmark (100 accounts, 5,000 transactions, seed=42):**
+     - `/overview` (30-day window): P50=0.48ms, P90=0.78ms, P95=0.81ms, Max=0.88ms. (Target $\le 50.0$ ms MET)
+     - `/trends` (30 daily buckets): P50=1.14ms, P90=1.50ms, P95=1.53ms, Max=1.75ms. (Target $\le 50.0$ ms MET)
+     - Query plans confirm `Index Scan using ix_transactions_occurred_at`.
+   - **Full Scale Benchmark (5,000 accounts, 250,000 transactions, seed=42, 80,651 matching in window):**
+     - `/overview` (30-day window): Repository P50=130.79ms, P90=133.06ms, P95=135.74ms, Max=140.85ms; HTTP P95=145.3ms. Engine execution time is 86.13ms.
+     - `/trends` (30 daily buckets): Repository P50=134.12ms, P90=138.43ms, P95=140.16ms, Max=141.66ms; HTTP P95=148.1ms. Engine execution time is 141.0ms.
+     - `/categories` (30-day window): Repository P50=83.47ms, P90=84.96ms, P95=85.72ms, Max=87.07ms. (Target $\le 100$ ms MET)
+     - `/merchants` (top 20): Repository P50=80.33ms, P90=82.35ms, P95=83.06ms, Max=99.82ms. (Target $\le 100$ ms MET)
+     - `/accounts/{id}` (activity): Repository P50=0.86ms, P90=0.99ms, P95=1.25ms, Max=1.56ms. (Target $\le 100$ ms MET)
+     - `/accounts/{id}/unusual-spending`: Repository P50=0.27ms, P90=0.33ms, P95=0.54ms, Max=0.68ms. (Target $\le 100$ ms MET)
+     - Query Plan Findings: PostgreSQL uses `Index Scan using ix_transactions_occurred_at` (index scan took 28.0ms to fetch 80,651 rows with 2,351 shared buffer hits and 0 sequential scans). The remaining time is consumed by in-memory `percentile_cont(0.5)` sorting and 80k-row hash grouping. Global overview and trends over 80k rows slightly exceed the aspirational 100ms threshold due to in-memory aggregation volume; no speculative index is required as the index scan itself runs in 28ms.
+   - Code quality: `uv run ruff check .` passed; `uv run ruff format --check .` passed; `uv run mypy src tests` passed (110 source files).
+
 ---
 
-# 24. Log Maintenance Rules
+# 25. Log Maintenance Rules
 
 The project log should be updated when:
 
@@ -1128,7 +1183,7 @@ What happens next?
 
 ---
 
-# 25. Final Principle
+# 26. Final Principle
 
 The project log is a record of **engineering evolution**, not a diary of every command executed.
 

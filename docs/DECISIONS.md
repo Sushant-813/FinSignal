@@ -1817,6 +1817,78 @@ Phase 4 execution followed a strict, dependency-ordered sequence:
 
 ---
 
+# ADR-066 — Deterministic Financial Analytics and PostgreSQL Aggregation Architecture
+
+**Status:** ACCEPTED
+
+**Date:** 2026-10-24
+
+**Related decisions:** ADR-004, ADR-008, ADR-047, ADR-049, ADR-050, ADR-063, ADR-064
+
+## Context
+
+Phase 5 introduces financial analytics to provide immediate operational visibility over imported transaction data without coupling to machine learning or risk scoring. The analytical engine must compute platform overview metrics, periodic trends, category breakdowns, merchant rankings, account summaries, and unusual-spending outlier detection across multi-currency and multi-namespace partitions.
+
+Key architectural challenges include:
+1. **Compute Locality:** Determining whether aggregations should be performed by loading transaction datasets into application memory (e.g. Pandas) or directly within PostgreSQL using SQL aggregates.
+2. **Monetary Precision & Serialization:** Eliminating binary floating-point representation in both calculation and API serialization, ensuring strict two-decimal string formatting.
+3. **Temporal Window & Calendar Semantics:** Ensuring trend intervals (day/month) accurately reflect calendar boundaries in the user's requested IANA timezone across daylight saving transitions without coupling to the database connection's session timezone.
+4. **Namespace and Object Isolation:** Guaranteeing that account queries cannot leak cross-namespace data or allow callers to tamper with tenant partition boundaries.
+5. **Deterministic Outlier Detection:** Defining clear, reproducible statistical outlier detection rules that avoid floating-point math and provide stable pagination.
+6. **Performance & Indexing Strategy:** Evaluating database query execution on full-scale benchmarks (250,000 transactions) and determining whether schema modifications or composite indexes are warranted.
+
+## Decision
+
+1. **In-Database Relational Aggregation:** Implement financial analytics via async SQLAlchemy repository queries (`AnalyticsRepository`) that execute single-roundtrip aggregations directly in PostgreSQL. Avoid pulling raw transaction datasets into Python memory for aggregation.
+2. **Strict Decimal & Two-Decimal Serialization:**
+   - Store all monetary quantities as `NUMERIC(18,2)`.
+   - Process calculations using Python's `Decimal` with explicit `ROUND_HALF_UP` quantization.
+   - Enforce Pydantic custom types `MoneyStr` (annotated string formatted via before-validator to `"0.00"`) and `OptionalMoneyStr`, forbidding binary floats.
+3. **Half-Open Temporal Windows:**
+   - Enforce half-open intervals `[from_time, to_time)` consistently across all endpoints: `occurred_at >= :from_time AND occurred_at < :to_time`.
+   - Validate `from_time < to_time` when both boundaries are supplied.
+4. **Wall-Clock Timezone-Aware Calendar Bucketing:**
+   - Calculate trend series using wall-clock start/end bounds projected from the requested timezone:
+     ```sql
+     WITH calendar_bounds AS (
+         SELECT
+             (date_trunc(:interval, :from_time, :tz) AT TIME ZONE :tz) AS start_wall,
+             (date_trunc(:interval, :to_time, :tz) AT TIME ZONE :tz) AS end_wall
+     ),
+     series AS (
+         SELECT (g AT TIME ZONE :tz) AS bucket_start
+         FROM calendar_bounds b,
+              generate_series(b.start_wall, b.end_wall, '1 day'::interval) g
+         WHERE (g AT TIME ZONE :tz) < :to_time
+     )
+     ```
+   - Left-join the series against transactions truncated to the same timezone `date_trunc(:interval, occurred_at, :tz)`.
+   - This guarantees zero-filled contiguous series and exact local midnight boundaries across daylight saving transitions (e.g., 23-hour spring-forward days) independent of the database connection's session timezone.
+   - Enforce safety bucket limits before execution: maximum 366 daily buckets (`MAX_DAILY_BUCKETS`) and 120 monthly buckets (`MAX_MONTHLY_BUCKETS`).
+5. **Authoritative Account Namespace Scoping:**
+   - Account-specific endpoints (`/api/v1/analytics/accounts/{id}` and `/api/v1/analytics/accounts/{id}/unusual-spending`) derive their namespace strictly from the persisted `Account.source_namespace`. Caller overrides in query parameters or headers are ignored, guaranteeing strict tenant boundary enforcement.
+   - Available currencies are queried strictly within the account's authoritative namespace.
+6. **Empty Currency Response Contract:**
+   - When an existing account has no transactions in the requested currency, the endpoint returns HTTP 200 with zeroed metrics and the complete list of `available_currencies` transacted by that account, rather than returning an error.
+7. **Deterministic Statistical Outlier Detection:**
+   - Compute the account's debit median ($M_{\text{debit}}$) over debits in `[from_time, to_time)` using PostgreSQL `percentile_cont(0.5) WITHIN GROUP (ORDER BY amount)::numeric` rounded to 2 decimals.
+   - Outlier threshold: $\text{threshold} = \text{ROUND}(M_{\text{debit}} \times \text{multiplier}, 2)$ with multiplier bounded between 1.5 and 10.0 (default 3.0).
+   - Compare inclusively: `amount >= :threshold`.
+   - Return total outlier count before pagination (`unusual_transaction_count`) along with paginated outliers sorted deterministically by `amount DESC, occurred_at DESC, transaction_id ASC`.
+8. **Preserve Existing Database Schema Without Speculative Indexing:**
+   - Introduce no new tables or migrations; Alembic head remains `0003_account_import_namespace`.
+   - Benchmark query plans (`EXPLAIN (ANALYZE, BUFFERS)`) prove that PostgreSQL uses `ix_transactions_occurred_at`, reading 80,651 matching window rows in 28.02 ms.
+   - Total query execution for global overview (86 ms) and trends (141 ms) is dominated by in-engine CPU/memory sorting for continuous medians and grouping. Composite indexes would not reduce this latency because filtering is already fast (28 ms). Speculative index additions are therefore rejected.
+
+## Consequences
+
+- **Correctness:** Eliminates floating-point discrepancies, lookahead leaks, session-timezone bugs, and DST bucket shifts.
+- **Security:** Prevents IDOR and cross-namespace partition leakage via authoritative account scoping and input validation.
+- **Maintainability:** Pure functional service and repository design with strict schema boundaries and zero persistence side-effects.
+- **Performance Trade-Off:** Category breakdowns, merchant rankings, account activity, and unusual spending easily meet the $\le 100\text{ ms}$ P95 budget on 250,000 transactions. Global overview and trends take 135–140 ms P95 on 80k-row windows; this known limitation is explicitly documented rather than masked with speculative indexing or premature precomputed rollups.
+
+---
+
 # 4. Decision Dependency Map
 
 ```text
