@@ -24,7 +24,7 @@ FinSignal is built as a clean modular monolith adhering to strict domain separat
 
 ## Implementation Status
 
-### Completed Phases (Backend Milestone 1–5)
+### Completed Phases (Backend Milestone 1–6)
 
 | Phase | Module | Key Capabilities | Status |
 |:---:|---|---|:---:|
@@ -33,15 +33,35 @@ FinSignal is built as a clean modular monolith adhering to strict domain separat
 | **Phase 3** | Authentication & Users | User registration, login, JWT issuance/validation, RBAC dependencies | **Completed** |
 | **Phase 4** | Synthetic Data & Ingestion | Deterministic PRNG generator (seed 42, 250k transactions, 5k accounts, 7 fraud scenarios), idempotent CSV ingestion, advisory locking, row-level provenance | **Completed** |
 | **Phase 5** | Financial Analytics | 6 REST analytics endpoints, PostgreSQL window aggregations, timezone-aware trends, statistical median outliers | **Completed with Documented Benchmark Limitation** |
+| **Phase 6** | Feature Engineering | 34-feature point-in-time contract, pure functional engine, O(N log N) streaming batch extraction, zero temporal leakage, live PostgreSQL index-scan aggregation | **Completed with Documented Benchmark Deviation** |
 
 ### Deferred Phases
 
-- **Phase 6 — Feature Engineering:** Point-in-time sliding-window historical features (velocity, deviation, frequency) with strict lookahead-leakage prevention.
 - **Phase 7 — Machine Learning Models:** Multivariate anomaly detection (Isolation Forest, supervised benchmark) and continuous risk scoring.
 - **Phase 8 — Risk Engine:** Rule-based heuristics, multi-factor risk scoring, and alert generation.
 - **Phase 9 — Investigation Workflows:** Human investigation cases, evidence assembly, and resolution lifecycle (`CONFIRMED_FRAUD`, `LEGITIMATE`, `SUSPICIOUS`, `INCONCLUSIVE`).
 - **Phase 10 — AI Investigation Assistant:** Grounded, provider-abstracted LLM investigation summaries strictly bounded by structured evidence.
 - **Phase 11 — Frontend Dashboard:** React, TypeScript, and Vite user interface.
+
+---
+
+## Feature Engineering Subsystem (Phase 6)
+
+Phase 6 provides on-demand, in-memory behavioral feature engineering with strict lookahead-leakage prevention (`src/finsignal/features/`):
+
+- **34 Model Features (`FeatureVector`):** Immutable Pydantic v2 schema (`frozen=True`, `extra="forbid"`) enforcing finite floats (`math.isfinite`):
+  - Amount & Log: `amount`, `amount_log` (via `math.log1p`).
+  - Account Profile: `account_age_days` (UTC, clamped $\ge 0.0$; `is_account_created_after_txn` reported in `FeatureMetadata`).
+  - Velocities: `velocity_5m_count`, `velocity_1h_count`, `velocity_24h_count` (all currencies/directions); `velocity_5m_amount`, `velocity_1h_amount`, `velocity_24h_amount` (direction- and currency-matched).
+  - Baselines & Quality: `amount_vs_mean_ratio`, `amount_vs_median_ratio`, `amount_zscore`, `is_amount_different_from_constant_baseline`, `has_direction_baseline`, `has_zero_variance_baseline`, `is_cold_start` (provisional threshold: `MIN_BASELINE_OBSERVATIONS = 3`).
+  - Entity Familiarity: `has_device`, `is_new_device`, `device_tx_count`, `has_merchant`, `is_new_merchant`, `merchant_tx_count`, `has_location`, `is_home_location`, `is_new_location`, `location_tx_count`, `location_frequency`.
+  - Category Spending: `has_category`, `is_new_category`, `category_spend_share_30d` (preceding 30d DEBIT spend in matching currency).
+  - Temporal Behavior: `hour_of_day`, `day_of_week`, `is_weekend`, `is_unusual_hour` (01:00–05:59 UTC).
+- **Separation of Diagnostics:** Execution metadata (`FeatureMetadata`) is kept strictly decoupled from model inputs.
+- **Dual Pipeline Architecture:**
+  - *Online Single Evaluation:* Point-in-time historical context query via async PostgreSQL repository + pure computation engine.
+  - *Streaming Batch Extraction:* $O(N \log N)$ chronological extraction using Welford's algorithm and dual heaps without database queries during extraction; preserves caller input collection and guarantees account state isolation.
+- **Zero Leakage:** Strictly excludes evaluated transaction from its own baseline and enforces point-in-time eligibility `occurred_at < eval_t OR (occurred_at == eval_t AND id < eval_id)`. Ground truth is never accessed.
 
 ---
 
@@ -63,7 +83,7 @@ Phase 5 exposes six deterministic financial intelligence endpoints under `/api/v
 The implementation is verified by an exhaustive automated test suite and strict type-checking:
 
 ```bash
-# Run complete test suite (320 tests)
+# Run complete test suite (347 tests)
 uv run pytest
 
 # Static analysis and linting
@@ -77,6 +97,8 @@ uv run alembic heads
 ```
 
 ### Performance Benchmarks
+
+#### Analytics Benchmark (Phase 5)
 - **Medium Scale (100 accounts, 5,000 transactions, seed=42):**
   - `/overview`: P95 = 0.81 ms (Budget $\le 50.0\text{ ms}$)
   - `/trends`: P95 = 1.53 ms (Budget $\le 50.0\text{ ms}$)
@@ -88,3 +110,10 @@ uv run alembic heads
   - `/overview`: P95 = 135.74 ms (Exceeds 100 ms budget due to in-memory sorting of 80k decimal rows for continuous median)
   - `/trends`: P95 = 140.16 ms (Exceeds 100 ms budget due to in-memory hash grouping across 80k decimal rows)
   - Query plan (`EXPLAIN (ANALYZE, BUFFERS)`) confirms `ix_transactions_occurred_at` index scan executes in 28.02 ms.
+
+#### Feature Engineering Benchmark (Phase 6)
+- **Medium Scale (100 accounts, 5,000 transactions, seed=42):**
+  - Batch extraction (5,000 txs): **0.851 s** (~5,875 tx/sec; Budget $\le 3.0\text{ s}$)
+  - Peak memory overhead: **27.82 MB** (Budget $\le 50.0\text{ MB}$)
+  - Online single evaluation latency: P50 = 7.23 ms, P90 = 8.51 ms, P95 = 8.84 ms (Exceeds aspirational 5.0 ms budget due to unpooled local asyncpg DB roundtrips in development; pure computation engine executes in $< 50\ \mu\text{s}$)
+  - Query plan (`EXPLAIN (ANALYZE, BUFFERS)`) confirms `ix_transactions_account_occurred` index range scan executes in 0.041 ms with 3 shared buffer hits and 0 sequential scans.

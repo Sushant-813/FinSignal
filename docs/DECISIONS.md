@@ -5,7 +5,7 @@
 **Scope:** Backend + ML  
 **Status:** Planning / Implementation-Ready  
 **Version:** 1.0.0  
-**Last Updated:** 2026-10-17
+**Last Updated:** 2026-10-25
 
 ---
 
@@ -1973,6 +1973,7 @@ The following decisions remain intentionally open until implementation provides 
 13. Exact retention window for completed-file re-upload deduplication — Resolved via ADR-065 (Perpetual retention for byte-identical files with separately authorized administrative reprocessing).
 14. Policy for differing contextual metadata on canonical match — Resolved via ADR-065 (Candidate 1: Immutable canonical preservation with row-hash provenance).
 15. Account external identifier uniqueness and namespace resolution contract — Policy selected via proposed ADR-065 Decision D (Namespace-Scoped Account Identity `(source_namespace, external_account_id)`); schema migration and existing data backfill pending implementation authorization.
+16. Sparse/new-account baseline strategy — Resolved in Phase 6 via Candidate 2+3 Hybrid (Provisional minimum observation threshold N=3 with neutral sentinels and cold-start indicator).
 
 ### Resolved Decision Note: Contextual Metadata Divergence on Canonical Match
 - **Status:** RESOLVED via proposed ADR-065 (Decision A: Candidate 1 — Immutable Canonical Preservation with Hash Provenance).
@@ -1989,17 +1990,28 @@ The following decisions remain intentionally open until implementation provides 
 - **Migration Dependency:** The current database schema (`0002_core_operational_schema.py`) does not yet include `accounts.source_namespace`, `dataset_imports.source_namespace`, or the composite unique constraints. An authorized Alembic migration (Checkpoint P4.0), executing a staged execution pattern (nullable column -> duplicate preflight & reconciliation -> NOT NULL & partial unique index), is an explicit prerequisite before reference-entity account generation (Checkpoint P4.1) and transaction ingestion (Checkpoint P4.4). No schema migration is authorized by this policy selection alone.
 
 
-### Detailed Open Decision: Sparse/New-Account Baseline Strategy (Phase 6 Resolution Checkpoint)
+### Resolved Decision Note: Sparse/New-Account Baseline Strategy (Phase 6 Resolution Checkpoint)
 
-- **Question:** How should the temporal feature engineering engine compute baseline metrics (e.g. spending mean, velocity ratio) when an account has zero or very few historical transactions?
-- **Why it matters:** Naive calculation produces division-by-zero, NaNs, or extreme anomaly ratios that generate false-positive alert storms on legitimate new customer accounts.
-- **Required Information:** Empirical distribution of account age and transaction volume in the Phase 5 synthetic dataset; baseline stability analysis under low sample sizes.
-- **Resolution Phase:** Phase 6 (Feature Engineering Engine) prior to baseline feature construction.
-- **Candidate Approaches:**
-  1. *Global / segment fallback:* Impute population or account-tier mean and standard deviation.
-  2. *Cold-start indicator flag + neutral defaults:* Add `is_new_account` boolean feature and set deviation features to 0.0 / neutral baseline.
-  3. *Minimum transaction threshold:* Require N transactions (e.g. 5 transactions) before computing ratio features; below threshold, assign neutral sentinel value (e.g. 1.0 ratio).
-  4. *Hybrid approach:* Combine cold-start indicator with tier-based default priors.
+- **Status:** RESOLVED in Phase 6 (Feature Engineering Implementation) via Hybrid Candidate 2 + 3.
+- **Resolution Rationale & Architecture:**
+  1. *Centralized Threshold:* Approved provisional minimum observation threshold `MIN_BASELINE_OBSERVATIONS = 3` scoped strictly to the evaluated transaction's direction and currency.
+     - *Justification:* 3 observations is the pragmatic minimum allowing sample variance calculation ($N - 1 = 2$ degrees of freedom) without indefinitely locking new accounts into cold-start status. This threshold is recorded as an operational baseline policy, not a statistically validated guarantee.
+  2. *Neutral Sentinels for Sparse History ($N < 3$):*
+     - `amount_vs_mean_ratio = 1.0`
+     - `amount_vs_median_ratio = 1.0`
+     - `amount_zscore = 0.0`
+     - `has_direction_baseline = 0`
+     - `has_zero_variance_baseline = 0`
+     - `is_amount_different_from_constant_baseline = 0`
+  3. *Zero-Variance Handling ($N \ge 3 \text{ and } s^2 = 0$):*
+     - `amount_zscore = 0.0` (neutral, avoiding arbitrary inflated z-scores)
+     - `has_zero_variance_baseline = 1`
+     - `is_amount_different_from_constant_baseline = 1` only when the evaluated amount differs from the invariant historical mean.
+  4. *Decoupled Cold-Start Semantics:*
+     - `is_cold_start = 1` if total account prior transaction count across all directions and currencies is $< 3$, else `0`.
+     - Cold-start status is strictly decoupled from account age. Clamped negative account age (from historical data backfilling prior to account DB persistence) does not trigger cold start.
+  5. *30-Day Category Spend Share Bounding:*
+     - Evaluated over preceding 30 days $[t - 30\text{d}, t)$ using historical DEBIT transactions in matching currency. Returns `0.0` if category is missing or denominator is zero; result is bounded in $[0.0, 1.0]$.
 
 Open decisions must not block decisions that are already sufficiently established.
 

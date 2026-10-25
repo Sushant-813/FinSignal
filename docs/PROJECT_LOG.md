@@ -5,7 +5,7 @@
 **Scope:** Backend + ML  
 **Status:** Active Development Log  
 **Version:** 1.0.0  
-**Last Updated:** 2026-10-13
+**Last Updated:** 2026-10-25
 
 ---
 
@@ -1155,9 +1155,94 @@ Phase 4 implementation is complete, fully verified against PostgreSQL, and recon
      - Query Plan Findings: PostgreSQL uses `Index Scan using ix_transactions_occurred_at` (index scan took 28.0ms to fetch 80,651 rows with 2,351 shared buffer hits and 0 sequential scans). The remaining time is consumed by in-memory `percentile_cont(0.5)` sorting and 80k-row hash grouping. Global overview and trends over 80k rows slightly exceed the aspirational 100ms threshold due to in-memory aggregation volume; no speculative index is required as the index scan itself runs in 28ms.
    - Code quality: `uv run ruff check .` passed; `uv run ruff format --check .` passed; `uv run mypy src tests` passed (110 source files).
 
+# 25. Phase 6 Implementation — Feature Engineering
+
+**Date:** 2026-10-25
+**Scope:** Complete implementation and verification of Phase 6: Feature Engineering.
+
+### Objective
+Implement an on-demand, in-memory, point-in-time feature-engineering module (`src/finsignal/features/`) capable of serving single-transaction online evaluations and high-throughput streaming batch extractions according to the approved 34-feature contract, while strictly preventing temporal lookahead leakage and isolating ground-truth labels.
+
+### Summary of Completed Work
+
+1. **Schemas & Contract Versioning (`src/finsignal/features/schemas.py`, `constants.py`):**
+   - Implemented `FeatureVector` as an immutable Pydantic v2 model (`frozen=True`, `extra="forbid"`) containing **strictly 34 model input features**. All floating-point fields are validated via `@model_validator(mode="after")` to guarantee finite values (`math.isfinite`), preventing non-finite floats (`NaN`, `+Inf`, `-Inf`) from entering model matrices.
+   - Implemented `FeatureMetadata` decoupled from `FeatureVector` to house operational and execution diagnostics (`feature_version="v1.0"`, account/transaction identifiers, event timestamps, calculation timestamp, and `is_account_created_after_txn`). Diagnostic metadata is never exposed as a model feature.
+   - Clean DTOs (`HistoricalTransactionDTO`, `EvaluatedTransactionDTO`, `AccountProfileDTO`, `LifetimeBaselineSummary`, `EvaluationContext`, `FeatureEvaluationResult`) isolate domain ORM models from pure computation logic.
+   - Centralized constants: `FEATURE_VERSION = "v1.0"`, `MIN_BASELINE_OBSERVATIONS = 3`, velocity window durations (5m: 300s, 1h: 3600s, 24h: 86400s), category spending window (30d: 2,592,000s), nocturnal unusual hours (`{1, 2, 3, 4, 5}` UTC), and weekend days (`{5, 6}`).
+
+2. **Pure Functional Computation Engine (`src/finsignal/features/engine.py`):**
+   - Stateless, deterministic feature computer with zero database I/O and zero mutation of domain entities.
+   - Enforces strict point-in-time boundary: candidate historical transactions are eligible if and only if:
+     `occurred_at < eval.occurred_at OR (occurred_at == eval.occurred_at AND id < eval.id)`.
+     The evaluated transaction is strictly excluded from its own baseline and velocity metrics.
+   - High precision: monetary sums and aggregates are computed using Python standard library `Decimal` internally and converted to `float` only at the `FeatureVector` boundary.
+   - Sliding-window velocities (5m, 1h, 24h count and direction/currency-matched amount) with inclusive lower boundaries (`>= t - window`) and strict upper boundaries.
+   - Baseline statistics (mean, sample variance/stddev with $N-1$ degrees of freedom, and exact median with even-length averaging).
+   - Zero-variance handling: When count $\ge 3$ and sample variance is zero, assigns neutral `amount_zscore = 0.0`, sets `has_zero_variance_baseline = 1`, and sets `is_amount_different_from_constant_baseline = 1` only if the evaluated amount differs from the constant historical mean.
+   - Sparse baseline neutral sentinels: When count $< 3$, assigns `amount_vs_mean_ratio = 1.0`, `amount_vs_median_ratio = 1.0`, `amount_zscore = 0.0`, `has_direction_baseline = 0`, and `has_zero_variance_baseline = 0`.
+   - Cold start: `is_cold_start = 1` if total account prior transaction count $< 3$ across all currencies and directions; decoupled from account age. Clamped negative account age does not trigger cold start.
+   - Entity familiarity & novelty: Evaluates prior transaction counts and novelty flags for device, merchant, and location. Missing entity IDs return neutral 0 sentinels. Home location match (`is_home_location = 1`) treats the registered address as familiar (`is_new_location = 0`). `location_frequency` uses total eligible prior transactions as the denominator (returning `0.0` when no history exists).
+   - Category spending share: Preceding 30-day DEBIT transactions in matching currency, bounded in $[0.0, 1.0]$ with `0.0` sentinel for missing category or zero denominator. Evaluated regardless of whether the current transaction is DEBIT or CREDIT.
+   - UTC temporal features: `hour_of_day` (0–23), `day_of_week` (0–6), `is_weekend` (Saturday/Sunday), and `is_unusual_hour` (01:00–05:59 UTC).
+
+3. **Historical Context Repository (`src/finsignal/features/repository.py`):**
+   - Cleanly separates bounded window retrieval (preceding 30 days) from lifetime aggregates.
+   - Bounded historical query executes an index range scan on `ix_transactions_account_occurred` with range pushdown:
+     `occurred_at >= :window_start AND occurred_at <= :eval_occurred_at AND NOT (occurred_at = :eval_occurred_at AND id >= :eval_id)`.
+   - Lifetime baseline summary query executes direction- and currency-matched aggregates directly in PostgreSQL (`COUNT`, `AVG`, `STDDEV_SAMP`, `percentile_cont(0.5)::numeric`) in $O(1)$ memory without retrieving millions of raw historical rows.
+   - Lifetime total transaction count and entity counts queried using strict point-in-time boundary predicates.
+   - Sub-second UUID tie-breaking verified against native PostgreSQL byte-order UUID sorting.
+   - Session lifecycle: Repository accepts caller-owned `AsyncSession` without premature commits or rollbacks; raises project-standard `NotFoundError` on missing IDs.
+
+4. **Feature Service & Streaming Batch Extraction (`src/finsignal/features/service.py`):**
+   - Single-transaction online evaluation (`evaluate_transaction`): combines repository context assembly and pure engine computation.
+   - Chronological batch extraction (`extract_batch`): performs streaming in-memory feature extraction across dataset batches without issuing $N$ individual database queries, achieving $O(N \log N)$ complexity.
+   - Non-mutation guarantee: caller-owned collections are never mutated; sorts an internal copy and re-sorts results to preserve caller's original sequence.
+   - Account state isolation: maintains independent `AccountChronologicalAccumulator` per account with zero cross-account leakage.
+   - Running statistics: implements `DirectionCurrencyRunningStats` using Welford's algorithm for sample variance and balanced dual heaps for exact running medians (with even-count arithmetic averaging matching PostgreSQL's `percentile_cont(0.5)`).
+   - Sliding 30-day deques automatically evict records older than 30 days.
+
+5. **Empirical Validation & Benchmark Results:**
+   - **Full test suite execution:** 347 passed (0 failed, 86 warnings) in 97.51s, verifying 100% regression parity across all 320 baseline tests plus 27 newly implemented Phase 6 tests:
+     - `tests/unit/test_feature_schemas.py`: 6 passed (34-feature contract, immutability, extra field rejection, finite float validation, metadata).
+     - `tests/unit/test_feature_engine.py`: 11 passed (amount/log, negative age clamping, velocity boundaries, sparse sentinels, direction/currency isolation, zero-variance, entity presence/novelty, 30d category share, UTC temporal features, UUID tie-breaking).
+     - `tests/unit/test_feature_service.py`: 3 passed (batch non-mutation, ordering preservation, batch vs. pure engine numerical equivalence within $10^{-5}$, multi-account isolation).
+     - `tests/integration/test_feature_repository.py`: 3 passed (bounded window query, sub-second UUID tie-breaking, self-exclusion, lifetime aggregates, not found handling).
+     - `tests/integration/test_temporal_leakage.py`: 3 passed (online future-data invariance, batch future-data invariance, ground-truth isolation).
+     - `tests/integration/test_feature_benchmark.py`: 1 passed (medium-scale dataset benchmark and query-plan verification).
+   - **Quality gates:**
+     - `uv run ruff check .`: Clean (all checks passed).
+     - `uv run ruff format --check .`: Clean (128 files formatted).
+     - `uv run mypy src tests`: Success: no issues found in 122 source files.
+   - **Performance Benchmark (100 accounts, 5,000 transactions, seed=42):**
+     - Batch feature extraction (5,000 txs): **0.851 s** (~5,875 tx/sec), easily satisfying the $\le 3.0$ s target.
+     - Peak memory for batch extraction: **27.82 MB**, satisfying the $\le 50.0$ MB target.
+     - Online single evaluation latency: P50=7.23ms, P90=8.51ms, P95=8.84ms (documented known deviation against 5.0ms aspirational target due to unpooled transient asyncpg TCP roundtrips to PostgreSQL on local dev workstation; pure engine execution time is $< 50\ \mu\text{s}$).
+     - Online vs. batch numerical agreement: verified identical within rel_tol $\le 10^{-5}$ across sampled transactions.
+     - Query plan verification: `EXPLAIN (ANALYZE, BUFFERS)` confirms PostgreSQL executes an `Index Scan using ix_transactions_account_occurred` taking 0.041 ms with 3 shared buffer hits and 0 sequential scans.
+
+### Known Performance & Scaling Considerations
+1. **Online Latency Deviation:** Online P95 latency is 8.84 ms versus the 5.0 ms target. This is attributable to connection and network roundtrips across two asynchronous SQL queries per evaluation in the local test setup, rather than feature computation overhead. Production connection pooling and co-located database networking will reduce this latency.
+2. **Lifetime Entity Aggregation:** `FeatureRepository.get_lifetime_baseline_summary()` queries `(device_id, merchant_id, location_id, category)` for all lifetime transactions of an account and computes frequency counters in Python. For standard account depths ($< 10,000$ txs), this takes $< 3\text{ ms}$; for hyper-active accounts with hundreds of thousands of transactions, row transfer volume scales with lifetime history. If account lifetimes grow significantly in future phases, separate SQL `GROUP BY` aggregations or entity counter tables can be introduced.
+3. **Exact Median Memory in Batch Processing:** The dual-heap algorithm in `DirectionCurrencyRunningStats` stores exact `Decimal` amounts in memory. While highly efficient for operational batch sizes (27.82 MB for 5,000 transactions), memory grows linearly with retained history. If single-account histories reach $> 500,000$ transactions in future ML pipelines, streaming chunks or approximate quantile algorithms (e.g., t-digest) may be considered.
+
+### Architectural Limitations & Invariants
+- No persistent feature tables were created; all features are generated on demand or in memory.
+- No database migrations were introduced; Alembic head remains unchanged at `0003_account_import_namespace`.
+- No new dependencies or lockfiles were added.
+- Ground-truth fraud labels and scenarios are strictly isolated from feature inputs.
+- Deferred from v1.0: `category_amount_mean`, `category_amount_deviation`, and `device_first_seen_age`.
+
+### Result
+Phase 6 implementation is complete, fully verified against PostgreSQL, and reconciled with all project documentation. All exit criteria are satisfied.
+
+### Next Steps
+1. Proceed to Phase 7: ML / Anomaly Detection (Isolation Forest baseline, chronological train/validation/test splits, unsupervised anomaly scoring, and model versioning).
+
 ---
 
-# 25. Log Maintenance Rules
+# 26. Log Maintenance Rules
 
 The project log should be updated when:
 
@@ -1183,7 +1268,7 @@ What happens next?
 
 ---
 
-# 26. Final Principle
+# 27. Final Principle
 
 The project log is a record of **engineering evolution**, not a diary of every command executed.
 

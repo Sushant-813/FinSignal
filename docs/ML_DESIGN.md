@@ -233,213 +233,101 @@ Therefore:
 
 ---
 
-# 7. Feature Engineering
+# 7. Feature Engineering Architecture
 
-Feature engineering is the most important part of the initial ML design.
+Feature engineering is the foundation of FinSignal's intelligence layer. Features are generated purely in memory or on demand, without persistent feature tables or database migrations.
 
-The objective is to represent:
+The feature engineering subsystem is implemented under `src/finsignal/features/` and organized into:
 
-- transaction magnitude
-- transaction frequency
-- temporal behavior
-- merchant behavior
-- device behavior
-- geographic behavior
-- category behavior
-- account-level behavioral change
+- **`schemas.py`**: Immutable Pydantic v2 schemas (`FeatureVector`, `FeatureMetadata`, DTOs).
+- **`constants.py`**: Centralized thresholds and window parameters (`FEATURE_VERSION = "v1.0"`, `MIN_BASELINE_OBSERVATIONS = 3`).
+- **`engine.py`**: Pure functional computation engine with zero database dependencies and zero entity mutation.
+- **`repository.py`**: Asynchronous SQLAlchemy query layer separating bounded window queries from single-row lifetime aggregates.
+- **`service.py`**: Service orchestrating single-transaction online evaluation and $O(N \log N)$ streaming batch feature extraction.
 
----
+### Core Architectural Boundaries
 
-# 8. Feature Categories
-
-## 8.1 Transaction Amount Features
-
-Examples:
-
-```text
-amount
-amount_log
-amount_vs_account_mean
-amount_vs_account_median
-amount_zscore
-amount_percentile
-```
-
-### Example
-
-If an account normally spends:
-
-```text
-₹500 - ₹2,000
-```
-
-and suddenly makes:
-
-```text
-₹75,000
-```
-
-the absolute amount is useful, but the deviation relative to the account is more informative.
+1. **Separation of Features from Metadata:** `FeatureVector` contains strictly the 34 model input features. Operational diagnostics, account/transaction IDs, and event timestamps are encapsulated in `FeatureMetadata` and never exposed to ML inference models.
+2. **Precision & Conversion:** All historical aggregations and monetary velocity sums maintain `Decimal` precision internally and convert to standard `float` only at the `FeatureVector` instantiation boundary.
+3. **Finite Floating-Point Validation:** All float features are validated via `@model_validator(mode="after")` to guarantee finite values (`math.isfinite`), strictly forbidding `NaN`, `+Inf`, and `-Inf`.
+4. **Strict Point-in-Time Membership:** For any evaluation transaction $T = (t, \text{id})$, candidate historical transactions $H = (t_h, \text{id}_h)$ are strictly eligible if and only if:
+   $$t_h < t \quad \text{OR} \quad (t_h = t \text{ AND } \text{id}_h < \text{id})$$
+   The evaluated transaction is strictly excluded from its own baselines and velocity counts. Sub-second tie-breaking uses 128-bit unsigned integer ordering (`uuid.int`), matching PostgreSQL B-tree byte comparisons.
+5. **Ground-Truth Isolation:** Ground-truth labels (`is_fraud`, `fraud_scenario`) are never referenced, queried, or utilized as feature inputs.
+6. **Window Boundaries:** All sliding windows (5m, 1h, 24h, 30d) enforce an **inclusive** lower boundary ($t_h \ge t - \text{window}$) and strict point-in-time upper boundary.
 
 ---
 
-# 9. Velocity Features
+# 8. Implemented 34-Feature Contract (Version v1.0)
 
-Velocity captures transaction frequency over time windows.
+The approved model input contract comprises exactly 34 features:
 
-Examples:
+### 8.1 Amount Features (2)
+- **`amount`** (`float`): Transaction amount converted from Decimal at feature vector boundary.
+- **`amount_log`** (`float`): Natural logarithm of amount computed via `math.log1p(amount)`.
 
-```text
-transactions_last_5min
-transactions_last_15min
-transactions_last_1hour
-transactions_last_6hours
-transactions_last_24hours
-```
+### 8.2 Account Profile (1)
+- **`account_age_days`** (`float`): Point-in-time age in fractional days ($(t - \text{account.created\_at}) / 86400.0$) using UTC timestamps. Negative ages (e.g. historical data backfills prior to account DB persistence) are clamped to `0.0`. Decoupled `FeatureMetadata.is_account_created_after_txn` flags backfill anomalies. Account age is never used to infer cold-start status.
 
-Additional amount-based velocity:
+### 8.3 Transaction Velocity Counts (3)
+Evaluated across all directions and currencies within inclusive lower time boundaries:
+- **`velocity_5m_count`** (`int`): Count of transactions in preceding 5 minutes ($[t - 300\text{s}, t)$).
+- **`velocity_1h_count`** (`int`): Count of transactions in preceding 1 hour ($[t - 3600\text{s}, t)$).
+- **`velocity_24h_count`** (`int`): Count of transactions in preceding 24 hours ($[t - 86400\text{s}, t)$).
 
-```text
-amount_last_1hour
-amount_last_24hours
-```
+### 8.4 Transaction Velocity Monetary Amounts (3)
+Direction- and currency-matched monetary sums:
+- **`velocity_5m_amount`** (`float`): Sum of amounts in preceding 5 minutes matching evaluated transaction direction and currency.
+- **`velocity_1h_amount`** (`float`): Sum of amounts in preceding 1 hour matching direction and currency.
+- **`velocity_24h_amount`** (`float`): Sum of amounts in preceding 24 hours matching direction and currency.
 
-These features support detection of:
+### 8.5 Amount Deviation & Baseline Quality (7)
+Direction- and currency-matched lifetime baselines:
+- **`amount_vs_mean_ratio`** (`float`): $\text{amount} / \bar{x}_{\text{hist}}$. Sentinel: `1.0` if history $< 3$ observations.
+- **`amount_vs_median_ratio`** (`float`): $\text{amount} / \text{median}_{\text{hist}}$. Sentinel: `1.0` if history $< 3$ observations. Exact median uses arithmetic midpoint for even counts ($\frac{x_{n/2} + x_{n/2+1}}{2}$), matching PostgreSQL's `percentile_cont(0.5)::numeric`.
+- **`amount_zscore`** (`float`): Sample z-score $(\text{amount} - \bar{x}_{\text{hist}}) / s_{\text{hist}}$ using sample standard deviation ($N-1$ degrees of freedom). Sentinel: `0.0` if history $< 3$ observations or zero variance.
+- **`is_amount_different_from_constant_baseline`** (`int`): When sample variance is zero and history $\ge 3$, set to `1` if $\text{amount} \neq \bar{x}_{\text{hist}}$, else `0`. Sentinel: `0` when baseline is unavailable or variance is nonzero.
+- **`has_direction_baseline`** (`int`): `1` if direction/currency history $\ge 3$ observations, else `0`.
+- **`has_zero_variance_baseline`** (`int`): `1` if direction/currency history $\ge 3$ and sample variance equals `0.0`, else `0`.
+- **`is_cold_start`** (`int`): `1` if account historical transaction count across **all currencies and directions** $< 3$, else `0`. Decoupled from account age.
 
-- rapid transaction bursts
-- automated attacks
-- account takeover
-- unusual spending bursts
+### 8.6 Device Familiarity (3)
+- **`has_device`** (`int`): `1` if `device_id` is present, else `0`.
+- **`is_new_device`** (`int`): `1` if `device_id` is present and never observed in prior account history, else `0`.
+- **`device_tx_count`** (`int`): Count of strictly prior transactions by the account using this device.
 
----
+### 8.7 Merchant Familiarity (3)
+- **`has_merchant`** (`int`): `1` if `merchant_id` is present, else `0`.
+- **`is_new_merchant`** (`int`): `1` if `merchant_id` is present and never observed in prior account history, else `0`.
+- **`merchant_tx_count`** (`int`): Count of strictly prior transactions by the account with this merchant.
 
-# 10. Merchant Features
+### 8.8 Location Familiarity (5)
+- **`has_location`** (`int`): `1` if `location_id` is present, else `0`.
+- **`is_home_location`** (`int`): `1` if `location_id` matches `account.home_location_id` via UUID comparison, else `0`.
+- **`is_new_location`** (`int`): `1` if `location_id` is present, does not match `account.home_location_id`, and was never observed in prior history, else `0`. A transaction at the account's registered home location is treated as familiar (`is_new_location = 0`).
+- **`location_tx_count`** (`int`): Count of strictly prior transactions by the account at this location.
+- **`location_frequency`** (`float`): Ratio $\text{location\_tx\_count} / \text{total\_prior\_txs}$ across all account history. Sentinel: `0.0` if total prior transactions is 0 or location is missing. Bounded in $[0.0, 1.0]$.
 
-Examples:
+### 8.9 Category Behavior (3)
+- **`has_category`** (`int`): `1` if `category` is present, else `0`.
+- **`is_new_category`** (`int`): `1` if `category` is present and never observed in prior account history, else `0`.
+- **`category_spend_share_30d`** (`float`): Ratio of historical DEBIT spending in the evaluated category to total historical DEBIT spending in that currency over the preceding 30 days ($[t - 30\text{d}, t)$). Evaluated regardless of whether the current transaction is DEBIT or CREDIT. Sentinel: `0.0` if category is null or 30-day debit denominator is zero. Bounded in $[0.0, 1.0]$.
 
-```text
-merchant_transaction_count
-merchant_frequency
-merchant_amount_mean
-merchant_amount_deviation
-is_new_merchant
-```
-
-Historical merchant behavior should be account-specific.
-
-A merchant frequently used by one account may be unusual for another.
-
----
-
-# 11. Device Features
-
-Examples:
-
-```text
-device_transaction_count
-device_frequency
-is_new_device
-device_account_count
-device_first_seen_age
-```
-
-Important behavioral signal:
-
-```text
-is_new_device = true
-```
-
-when the transaction is associated with a device not previously observed for the account.
-
-A device used by multiple accounts can also become an important network signal.
+### 8.10 Temporal Features (4)
+All temporal attributes are evaluated in UTC:
+- **`hour_of_day`** (`int`): Hour of transaction (0–23).
+- **`day_of_week`** (`int`): Day of week (0=Monday, 6=Sunday).
+- **`is_weekend`** (`int`): `1` if Saturday or Sunday, else `0`.
+- **`is_unusual_hour`** (`int`): `1` if hour $\in \{1, 2, 3, 4, 5\}$ (01:00–05:59 UTC nocturnality), else `0`.
 
 ---
 
-# 12. Location Features
+# 9. Explicitly Deferred Features
 
-Examples:
-
-```text
-location_frequency
-is_new_location
-distance_from_home
-location_account_frequency
-```
-
-The initial implementation may use logical city/state/country differences rather than exact geospatial calculations.
-
-If coordinates are available later, geospatial distance can be introduced.
-
----
-
-# 13. Temporal Features
-
-Examples:
-
-```text
-hour_of_day
-day_of_week
-is_weekend
-is_unusual_hour
-```
-
-Temporal behavior should be account-specific.
-
-For example:
-
-```text
-Account A normally transacts 09:00–18:00
-Account B normally transacts 18:00–02:00
-```
-
-The same transaction time should therefore not automatically have the same risk meaning.
-
----
-
-# 14. Category Features
-
-Examples:
-
-```text
-category_frequency
-category_amount_mean
-category_amount_deviation
-is_new_category
-category_spend_share
-```
-
-These help identify behavioral shifts such as:
-
-```text
-normal:
-food + groceries
-
-sudden:
-electronics + travel + high-value purchases
-```
-
----
-
-# 15. Account Behavioral Features
-
-Account-level features capture broader behavior.
-
-Examples:
-
-```text
-daily_transaction_count
-daily_spend
-weekly_spend
-monthly_spend
-average_transaction_amount
-median_transaction_amount
-category_distribution
-merchant_diversity
-device_count
-location_diversity
-```
-
-These features should be computed from historical data available before the transaction being evaluated.
+To keep feature extraction deterministic, performant, and aligned with Phase 6 scope, the following candidate features are explicitly deferred from `v1.0`:
+- **`category_amount_mean` & `category_amount_deviation`**: Deferred pending empirical evaluation of category volume stability per account.
+- **`device_first_seen_age`**: Deferred; covered effectively by `is_new_device` and `device_tx_count`.
+- **Geospatial coordinates & distance**: Deferred until coordinate data is supported by domain models.
 
 ---
 
@@ -637,29 +525,48 @@ It also matches the initial synthetic dataset strategy where fraud labels exist 
 
 ---
 
-# 23. Isolation Forest Inputs
+# 23. Isolation Forest Inputs (Feature Vector v1.0)
 
-The model should consume engineered numerical features such as:
+The anomaly detection model consumes the validated, immutable 34-feature vector defined in Phase 6:
 
 ```text
+amount
 amount_log
+account_age_days
+velocity_5m_count
+velocity_1h_count
+velocity_24h_count
+velocity_5m_amount
+velocity_1h_amount
+velocity_24h_amount
+amount_vs_mean_ratio
+amount_vs_median_ratio
 amount_zscore
-transactions_last_5min
-transactions_last_1hour
-transactions_last_24hours
-merchant_frequency
-device_frequency
-location_frequency
-category_spending_deviation
+is_amount_different_from_constant_baseline
+has_direction_baseline
+has_zero_variance_baseline
+is_cold_start
+has_device
 is_new_device
-is_new_location
+device_tx_count
+has_merchant
 is_new_merchant
+merchant_tx_count
+has_location
+is_home_location
+is_new_location
+location_tx_count
+location_frequency
+has_category
+is_new_category
+category_spend_share_30d
+hour_of_day
+day_of_week
+is_weekend
 is_unusual_hour
 ```
 
-Categorical values should be encoded appropriately before model input.
-
-The exact final feature set should be determined through controlled experiments.
+All 34 features are strictly numerical (`float` or `int`), finite, and deterministic. No ground-truth fraud labels or prediction targets are accessible. Diagnostic metadata (`account_id`, `transaction_id`, `occurred_at`, `calculated_at`, `is_account_created_after_txn`) is encapsulated separately in `FeatureMetadata`.
 
 ---
 
