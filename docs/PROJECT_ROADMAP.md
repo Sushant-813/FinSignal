@@ -597,67 +597,61 @@ Transform transaction history into behavior-aware ML features without temporal l
 
 # 12. Phase 7 — ML / Anomaly Detection
 
+**Status:**
+- **Implementation & Automated Tests:** **100% Completed** (46 Phase 7 unit/integration/benchmark tests passing; 393 total repository tests passing; 0 Ruff errors, 0 Mypy errors).
+- **Documentation Reconciliation:** **In Progress** (reconciling architecture, database, security, and testing documents).
+- **Production Release Gate:** **NOT PASSED** (blocked by unimplemented administrative artifact pruning and reconciliation tool).
+
 ## Objective
 
-Introduce a baseline unsupervised anomaly-detection model.
+Introduce a baseline unsupervised anomaly-detection model delivering calibrated operating thresholds, deterministic feature vectorization, and artifact integrity verification without fraud label leakage.
 
 ## Initial Model
 
-**Isolation Forest**
-
-The baseline must be simple enough to understand, evaluate, and explain.
+**Isolation Forest (`IsolationForestModel`)**
+- Encapsulates scikit-learn's `IsolationForest` (`n_estimators=100`, `random_state=42`, `contamination="auto"`).
+- Mathematical score negation: $S(X) = - \text{score\_samples}(X)$, ensuring higher scores indicate higher anomalousness.
+- Binary anomaly decision: $A(X) = \mathbb{I}(S(X) \ge \tau)$.
 
 ## Pipeline
 
 ```text
 Historical Transactions
         ↓
-Feature Generation
+Feature Extraction (FeatureVectorizer, FEATURE_VERSION="v1.0")
         ↓
-Feature Validation
+Chronological Splitting (Target 60/20/20 with equal-timestamp grouping)
         ↓
-Preprocessing
+Unsupervised Fitting (IsolationForestModel, zero label leakage)
         ↓
-Isolation Forest
+Validation Threshold Selection (ModelEvaluator, max F1 subject to alert rate <= 5%)
         ↓
-Anomaly Score
+Holdout Test Evaluation (Precision, Recall, F1, PR-AUC, Scenario Recall)
         ↓
-Risk Layer
+Artifact Storage & SHA-256 Hashing (ModelArtifactStore, atomic tempfile rename)
+        ↓
+Registry Persistence & Promotion (ModelRepository, migration 0004_model_versions)
 ```
 
-## Key Tasks
+## Implemented Tasks & Deliverables
 
-- model training pipeline;
-- feature selection;
-- preprocessing;
-- model persistence;
-- model version metadata;
-- deterministic seeds;
-- batch inference;
-- evaluation pipeline;
-- chronological data splits.
+- [x] Canonical 34-feature vector extraction (`FeatureVectorizer.to_numpy()`) matching `CANONICAL_FEATURE_NAMES` in strict order.
+- [x] Strict schema validation enforcing finite float64 matrices and rejecting null/NaN inputs.
+- [x] Unsupervised `IsolationForestModel` wrapping scikit-learn with score negation.
+- [x] Deterministic chronological data splitter (`ChronologicalSplitter`) preserving indivisible equal-timestamp groups.
+- [x] Validation-only threshold optimization subject to configured operational alert-rate budget ($\le 5\%$).
+- [x] Sealed holdout test evaluation producing Precision, Recall, F1, PR-AUC, Scenario Recall, and Cluster Recall.
+- [x] Artifact storage (`ModelArtifactStore`) enforcing path-containment validation, atomic `.tmp` file renaming, and pre-load SHA-256 integrity verification.
+- [x] PostgreSQL database migration `0004_model_versions` creating registry schema with status check constraints and partial unique index `uq_model_versions_active_family`.
+- [x] Model repository (`ModelRepository`) supporting lifecycle transitions (`EXPERIMENTAL -> VALIDATED -> ACTIVE -> RETIRED`) and row-locked promotion.
+- [x] Service facade (`MLService`) with dynamic active-model lookup from PostgreSQL on every scoring call and local in-memory caching validated by `artifact_hash`.
+- [x] Comprehensive test suite (+46 tests) and benchmark harness (`test_ml_benchmark.py`).
 
-## Temporal Split
+## Outstanding Pre-Release Blocker
+- [ ] **Administrative Model Artifact Pruning Tool:** Interrupted training pipelines can leave unreferenced directories in `{model_artifacts_dir}/{model_id}`. An administrative pruning tool (`finsignal-admin prune-unreferenced-artifacts`) is required prior to production release to reconcile database records against disk and safely prune orphaned artifacts.
 
-Example:
-
-```text
-January–June → Train
-July–August → Validation
-September → Test
-```
-
-The exact split may be adjusted based on generated dataset dates.
-
-## Exit Criteria
-
-- model trains successfully;
-- inference works;
-- model is reproducible;
-- no ground-truth leakage;
-- chronological evaluation works;
-- baseline metrics are generated;
-- scenario-level evaluation works.
+## Next Phase
+- **Phase 8 (Risk Analysis & Explainability):** Hybrid risk scoring combining ML anomaly scores with deterministic financial heuristics into a normalized 0–100 composite risk score, risk tiers (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL`), and explainable risk factors.
 
 ---
 

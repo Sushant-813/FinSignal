@@ -977,11 +977,14 @@ The application must not blindly load arbitrary uploaded model files.
 
 Potentially unsafe serialization mechanisms (e.g. pickle/joblib) must never be evaluated against untrusted or unverified artifact files.
 
-Model artifact integrity controls:
-- **Cryptographic Hashing:** Every trained model version persists a SHA-256 digest in `model_versions.artifact_hash`.
-- **Pre-Load Verification:** Prior to deserializing any artifact from disk or storage, the inference engine computes the artifact's SHA-256 digest and verifies that it strictly matches `model_versions.artifact_hash`.
-- **Controlled Rejection:** If the artifact file is missing, corrupted, or the SHA-256 digest mismatches, model loading must immediately abort with a controlled `ModelIntegrityError` without executing arbitrary bytecode.
-- **Trusted Storage:** Artifacts must only be read from controlled, non-world-writable filesystem paths.
+Model artifact integrity and containment controls:
+- **Path Traversal Defense:** All artifact access paths are verified using `.resolve()` and checked for strict containment within `settings.model_artifacts_dir` using `.relative_to()`. Any attempt to escape the designated artifact root raises a `ValueError` before any file operations occur.
+- **Two-Phase Atomic Persistence:** Artifacts are written to temporary `.tmp` files, hashed via SHA-256, and atomically renamed via `os.replace()`, preventing corrupt partial files from being exposed to concurrent readers.
+- **Cryptographic Hashing:** Every trained model version persists a SHA-256 digest in `model_versions.artifact_hash` alongside companion `metadata.json`.
+- **Pre-Load Verification:** Prior to deserializing any artifact from disk or storage via `joblib.load()`, the inference engine reads the raw bytes, computes the SHA-256 digest, and performs a constant-time comparison against `model_versions.artifact_hash`.
+- **Controlled Rejection:** If the artifact file is missing, corrupted, or the SHA-256 digest mismatches, model loading immediately aborts with a controlled `ModelIntegrityError` without executing arbitrary Python bytecode.
+- **Trust Boundary & Threat Model Scope:** SHA-256 digest verification operates as a defense-in-depth corruption and tamper-detection control. It does **not** protect against an attacker who has compromised write permissions to both the PostgreSQL database and the filesystem. FinSignal does not implement asymmetric PKI, digital signatures, or external hardware security modules.
+- **Trusted Storage Boundary:** Deserialization via joblib remains restricted strictly to internally generated artifacts within the trusted server operational boundary.
 
 ---
 
@@ -1016,19 +1019,15 @@ fraud_scenario
 scenario_instance_id
 ```
 
-must not enter production inference features.
+must not enter production inference features or unsupervised model training.
 
-This is both:
+In the Phase 7 workflow:
+1. **Unsupervised Training:** The Isolation Forest model is fitted exclusively on unsupervised feature vectors with zero exposure to ground-truth fraud labels.
+2. **Validation Tuning:** Ground-truth fraud labels are consumed solely during the validation split evaluation to calibrate the operating decision threshold $\tau^*$ subject to the operational alert-rate cap ($\le 5\%$).
+3. **Sealed Test Evaluation:** Ground-truth labels are consumed in a single evaluation pass over the holdout test partition to compute objective performance metrics (Precision, Recall, F1, PR-AUC).
+4. **Production Scoring:** Live and imported production transactions do not carry fraud labels during online inference.
 
-```text
-ML integrity
-```
-
-and:
-
-```text
-security/information-boundary control
-```
+This is both an ML integrity requirement (preventing label leakage) and a security/information-boundary control.
 
 ---
 

@@ -523,96 +523,116 @@ Isolation Forest is appropriate as an initial anomaly-detection baseline because
 
 It also matches the initial synthetic dataset strategy where fraud labels exist primarily for evaluation.
 
+## 22.2 Implemented Subsystem Architecture (`finsignal.ml`)
+
+Phase 7 implements the anomaly detection subsystem with explicit separation of responsibilities:
+
+1. **Feature Vectorizer (`FeatureVectorizer`):** Validates schema adherence and converts immutable Phase 6 `FeatureVector` sequences into 2D float64 NumPy matrices of shape `(N, 34)` adhering to canonical ordering.
+2. **Model Estimator (`IsolationForestModel`):** Implements the `AnomalyModel` protocol, encapsulating scikit-learn's `IsolationForest` with deterministic seeding (`random_state=42`) and mathematical score negation.
+3. **Chronological Data Splitter (`ChronologicalSplitter`):** Groups transactions into indivisible timestamp blocks and cuts partitions targeting 60% Train, 20% Validation, and 20% Holdout Test without lookahead leakage.
+4. **Evaluation & Threshold Tuner (`ModelEvaluator`):** Evaluates validation anomaly scores, identifies the optimal decision threshold $\tau^*$ subject to an operational alert-rate budget ($\le 5\%$), and executes single-pass holdout test evaluation.
+5. **Artifact Storage (`ModelArtifactStore`):** Persists serialized model binaries (`model.joblib`) and companion JSON metadata with path-traversal validation and two-phase atomic writes. Enforces pre-deserialization SHA-256 integrity verification.
+6. **Metadata & Lifecycle Repository (`ModelRepository`):** Manages `model_versions` table persistence, lifecycle state transitions (`EXPERIMENTAL -> VALIDATED -> ACTIVE -> RETIRED`), and row-locked atomic promotion.
+7. **Service Facade (`MLService`):** Orchestrates end-to-end model training, active-model resolution, in-memory caching, and transaction anomaly scoring.
+
+### Strict Label Separation
+Unsupervised Isolation Forest training is strictly decoupled from ground-truth fraud labels (`is_fraud`). The model fits exclusively on unsupervised feature vectors. Ground-truth labels are ingested solely during validation threshold tuning and holdout test set evaluation. Production inference transactions do not possess ground-truth labels.
+
 ---
 
 # 23. Isolation Forest Inputs (Feature Vector v1.0)
 
-The anomaly detection model consumes the validated, immutable 34-feature vector defined in Phase 6:
+The anomaly detection model consumes the validated, immutable 34-feature vector defined in Phase 6, strictly bound to `FEATURE_VERSION = "v1.0"`:
 
 ```text
-amount
-amount_log
-account_age_days
-velocity_5m_count
-velocity_1h_count
-velocity_24h_count
-velocity_5m_amount
-velocity_1h_amount
-velocity_24h_amount
-amount_vs_mean_ratio
-amount_vs_median_ratio
-amount_zscore
-is_amount_different_from_constant_baseline
-has_direction_baseline
-has_zero_variance_baseline
-is_cold_start
-has_device
-is_new_device
-device_tx_count
-has_merchant
-is_new_merchant
-merchant_tx_count
-has_location
-is_home_location
-is_new_location
-location_tx_count
-location_frequency
-has_category
-is_new_category
-category_spend_share_30d
-hour_of_day
-day_of_week
-is_weekend
-is_unusual_hour
+1.  amount
+2.  amount_log
+3.  account_age_days
+4.  velocity_5m_count
+5.  velocity_1h_count
+6.  velocity_24h_count
+7.  velocity_5m_amount
+8.  velocity_1h_amount
+9.  velocity_24h_amount
+10. amount_vs_mean_ratio
+11. amount_vs_median_ratio
+12. amount_zscore
+13. is_amount_different_from_constant_baseline
+14. has_direction_baseline
+15. has_zero_variance_baseline
+16. is_cold_start
+17. has_device
+18. is_new_device
+19. device_tx_count
+20. has_merchant
+21. is_new_merchant
+22. merchant_tx_count
+23. has_location
+24. is_home_location
+25. is_new_location
+26. location_tx_count
+27. location_frequency
+28. has_category
+29. is_new_category
+30. category_spend_share_30d
+31. hour_of_day
+32. day_of_week
+33. is_weekend
+34. is_unusual_hour
 ```
 
-All 34 features are strictly numerical (`float` or `int`), finite, and deterministic. No ground-truth fraud labels or prediction targets are accessible. Diagnostic metadata (`account_id`, `transaction_id`, `occurred_at`, `calculated_at`, `is_account_created_after_txn`) is encapsulated separately in `FeatureMetadata`.
+### Vectorization Rules and Contract Enforcements
+- **Canonical Ordering:** Feature extraction order in `FeatureVectorizer.to_numpy()` strictly matches `CANONICAL_FEATURE_NAMES`. Any deviation raises `SchemaValidationError`.
+- **Numeric Typing:** All 34 features are converted to `np.float64`. Boolean fields are cast to `1.0` (True) or `0.0` (False).
+- **Null and Non-Finite Rejection:** Null (`None`), `NaN`, `+Inf`, and `-Inf` values are forbidden. Pydantic schema validation rejects missing fields at extraction time, and `FeatureVectorizer` asserts finite numerical bounds before training or inference.
+- **Metadata Separation:** Diagnostic identifiers (`account_id`, `transaction_id`, `occurred_at`, `calculated_at`) are excluded from model inputs and preserved separately in `FeatureMetadata`.
 
 ---
 
-# 24. Feature Scaling
+# 24. Model Implementation & Scoring Semantics
 
-Isolation Forest is generally less dependent on feature scaling than distance-based algorithms, but preprocessing remains important.
+### Hyperparameters and Estimator Configuration
+The Phase 7 `IsolationForestModel` encapsulates scikit-learn's `IsolationForest` with the following baseline hyperparameters:
+- `n_estimators`: 100 decision trees
+- `max_samples`: `"auto"` (min(256, n_samples))
+- `contamination`: `"auto"` (unsupervised offset calculation)
+- `random_state`: 42 (reproducible seed)
+- `n_jobs`: `-1` (parallelized tree evaluation)
 
-The pipeline should:
+### Mathematical Score Orientation
+Scikit-learn's internal `score_samples(X)` yields the opposite of the standard anomaly score defined in Liu et al. (2008), returning negative numbers where lower/more negative values indicate severe anomalies. FinSignal negates the output to establish an intuitive, monotonic anomaly score:
 
-1. identify numeric features
-2. handle missing values
-3. encode categorical/binary features
-4. transform heavily skewed financial variables where appropriate
-5. ensure deterministic feature ordering
+$$S(X) = - \text{score\_samples}(X)$$
 
-A reproducible preprocessing pipeline must be versioned with the model.
+Under this formulation:
+- Higher scores signify higher anomalousness (shorter path lengths to isolation).
+- Normal transactions cluster around lower values.
+
+### Decision Threshold & Binary Prediction
+Given an operating threshold $\tau$, a transaction is classified as anomalous if:
+
+$$A(X) = \mathbb{I}(S(X) \ge \tau)$$
+
+### Score Interpretation and Limitations
+Continuous anomaly scores represent empirical tree isolation depth, **not calibrated posterior probabilities of fraud**. A transaction with score $0.72$ is more isolated than one with score $0.45$, but $0.72$ must not be reported as a "72% probability of fraud." Risk calibration and contextual explanation are deferred to the Phase 8 hybrid risk scoring engine.
 
 ---
 
-# 25. Missing Values
+# 25. Chronological Partitioning & Discipline
 
-Missing values must not automatically be interpreted as suspicious.
+### Target Partition Proportions
+To prevent temporal lookahead leakage, datasets are partitioned strictly chronologically targeting:
+- **Train (earliest ~60%):** Unsupervised model fitting without labels.
+- **Validation (middle ~20%):** Alert-rate constrained threshold tuning.
+- **Holdout Test (latest ~20%):** Single-pass final evaluation.
 
-Examples:
+Because transaction density varies over time and equal-timestamp blocks are kept intact, **60/20/20 represents target proportions**, not guaranteed exact record-count quotas.
 
-```text
-missing device
-missing merchant
-missing location
-```
-
-may reflect legitimate transaction-channel limitations.
-
-The feature pipeline should distinguish:
-
-```text
-unknown
-```
-
-from:
-
-```text
-unusual
-```
-
-where possible.
+### Equal-Timestamp Grouping Semantics
+- **Deterministic Sorting:** Transactions are sorted by `(occurred_at, str(record_id))` to ensure stable ordering across runs.
+- **Indivisible Timestamp Blocks:** All records sharing the exact same `occurred_at` timestamp are gathered into an indivisible group.
+- **Group Boundary Discipline:** Partition boundaries cut strictly between timestamp groups. A timestamp group is never split across train/validation or validation/test boundaries. If adding the next group causes the accumulated count to exceed the target count (`round(n * ratio)`), accumulation halts.
+- **Minimum Distinct Timestamps:** Chronological 3-way partitioning requires at least 3 distinct timestamps; datasets with fewer distinct timestamps raise `MLDomainError`.
 
 ---
 
@@ -1004,12 +1024,33 @@ account_risk =
     )
 ```
 
-### 40.1 Phase 5 Deterministic Analytics vs. Phase 7 Machine Learning
+### 40.1 Subsystem Phase Boundaries
 - **Phase 5 (Implemented):** Account unusual-spending detection (`/api/v1/analytics/accounts/{account_id}/unusual-spending`) operates purely as a deterministic statistical outlier filter:
   $$\text{threshold} = \text{ROUND}(M_{\text{debit}} \times \text{multiplier}, 2)$$
-  flagging debit transactions where $\text{amount} \ge \text{threshold}$ within the requested reporting window. It does **not** employ a trained machine learning model or multivariate feature weights.
-- **Phase 6 (Deferred):** Point-in-time sliding historical feature engineering (amount z-scores, 5-minute/24-hour velocity, location/device frequencies) enforcing strict temporal boundaries to prevent lookahead leakage.
-- **Phase 7 (Deferred):** Trained multivariate anomaly detection models (e.g., Isolation Forest, supervised benchmarks) predicting continuous risk scores based on engineered feature vectors.
+  flagging debit transactions where $\text{amount} \ge \text{threshold}$ within the requested reporting window. It does **not** employ a machine learning model or multivariate feature weights.
+- **Phase 6 (Implemented):** Point-in-time temporal and behavioral feature engineering producing the validated 34-feature `FeatureVector` under `FEATURE_VERSION = "v1.0"` with strict half-open window intervals $[t - \Delta, t)$ to prevent lookahead leakage.
+- **Phase 7 (Implemented):** Unsupervised multivariate anomaly detection via `IsolationForestModel`, extracting canonical 34-feature matrices, performing chronological partitioning with timestamp grouping, optimizing decision thresholds on validation data under an operational alert-rate budget ($\le 5\%$), and verifying artifact SHA-256 integrity.
+- **Phase 8 (Deferred / Out of Scope):** Hybrid risk scoring combining anomaly scores with deterministic financial heuristics into a normalized 0–100 composite risk score, classifying risk tiers (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL`), generating explainable risk factors, and driving automated investigation workflows.
+
+### 40.2 Validation-Only Alert-Rate Constrained Threshold Tuning
+Because unsupervised Isolation Forest anomaly scores $S(X) = - \text{score\_samples}(X)$ are uncalibrated, FinSignal utilizes validation split scenario labels to select an optimal operating threshold $\tau^*$:
+
+1. **Constrained Objective:**
+   $$\tau^* = \arg\max_{\tau : \text{alert\_rate}(\tau) \le \text{max\_alert\_rate}} F_1(\tau)$$
+   where the default $\text{max\_alert\_rate} = 0.05$ (5% alert budget).
+2. **Candidate Thresholds & Boundary Semantics:**
+   Candidate thresholds evaluated by `ModelEvaluator.tune_threshold()` consist of all unique validation anomaly scores plus an upper boundary candidate `max_score + 1e-6`.
+   - Because `max_score + 1e-6` strictly exceeds all observed scores, it produces zero alerts ($\text{alert\_rate} = 0.0$).
+   - For any valid non-negative alert rate budget ($\text{max\_alert\_rate} \ge 0.0$), this boundary candidate satisfies the budget constraint ($0.0 \le \text{max\_alert\_rate}$), ensuring that an operating threshold is always deterministically found (yielding $F_1 = 0.0$ if no positive alerts fall within budget).
+3. **Conservative Tie-Breaking:**
+   When multiple candidate thresholds yield the same maximum F1 score within budget, the algorithm selects the higher threshold (more conservative, producing fewer or equal alerts).
+4. **Single-Pass Holdout Test Evaluation:**
+   Once $\tau^*$ is selected, the finalized model and threshold are evaluated exactly once over the sealed holdout test split. The evaluator computes:
+   - Confusion matrix counts ($TP, FP, TN, FN$) and alert rate
+   - Precision, Recall, and $F_1$ score
+   - Area Under the Precision-Recall Curve (PR-AUC / Average Precision)
+   - Scenario-specific recall for each fraud scenario code (e.g. F001–F007)
+   - Cluster / scenario-instance recall evaluating whether grouped fraud patterns were detected
 
 ---
 
@@ -1274,6 +1315,41 @@ It should be treated as a model hyperparameter selected using validation behavio
 
 ---
 
+---
+
+## 49.1 Model Artifact Storage, Serialization & Known Limitations
+
+### Directory Layout & Relative URI Contract
+Model artifacts are stored in an isolated filesystem root controlled by `settings.model_artifacts_dir`:
+```text
+{model_artifacts_dir}/
+  └── {model_id}/
+        ├── model.joblib      # Serialized IsolationForestModel instance
+        └── metadata.json     # Companion metadata (model_id, sha256_hash, feature_version, params, timestamp)
+```
+The database records the relative artifact path `model_versions.artifact_uri = "{model_id}/model.joblib"`.
+
+### Two-Phase Atomic Serialization
+To guard against partial writes:
+1. `joblib.dump()` writes the fitted model to a temporary file: `model.{random_hex}.tmp`.
+2. The SHA-256 cryptographic digest of the complete serialized file is calculated.
+3. The temporary file is atomically renamed to `model.joblib` via `os.replace()`.
+4. Companion `metadata.json` is persisted alongside the artifact.
+
+### Pre-Deserialization Integrity Check
+Before invoking `joblib.load()`:
+1. The target path is verified against path-traversal attacks via `.resolve().relative_to(base_dir)`.
+2. The file bytes are streamed, and their SHA-256 digest is computed.
+3. The computed digest is compared against `model_versions.artifact_hash` using constant-time comparison.
+4. Any mismatch immediately aborts deserialization and raises `ModelIntegrityError`.
+
+### Known Operational Limitation (Unreferenced Artifact Orphans)
+- **Failure Mode:** Disk persistence occurs before database transaction commitment in `MLService.train_and_register()`. If database insertion, constraint verification, or connection commit fails, an unreferenced artifact directory remains on disk.
+- **Handling Rationale:** Deleting artifacts in client-side exception handlers was deliberately rejected due to commit ambiguity (e.g., if a commit succeeded on the database server but the network dropped before the client received the acknowledgement, client-side deletion would destroy a valid active model).
+- **Proposed Pre-Release Task:** An administrative pruning and reconciliation tool (`finsignal-admin prune-unreferenced-artifacts`) is proposed as a required operational task before production release to detect and clean unreferenced artifact directories. This tool is **unimplemented** in Phase 7.
+
+---
+
 # 50. Feature Importance and Explainability
 
 Isolation Forest does not provide traditional supervised feature coefficients.
@@ -1304,6 +1380,26 @@ This is more useful to an investigator than simply saying:
 ```text
 Model score: 0.93
 ```
+
+## 50.1 Model Lifecycle, Active Model Resolution & Caching
+
+### Model Lifecycle State Machine
+Model versions stored in `model_versions` transition through strict lifecycle states:
+- `EXPERIMENTAL` $\to$ `VALIDATED` (upon passing validation threshold tuning and test evaluation), or `RETIRED`.
+- `VALIDATED` $\to$ `ACTIVE` (via atomic promotion), or `RETIRED`.
+- `ACTIVE` $\to$ `RETIRED` (upon subsequent model promotion or deprecation).
+- `RETIRED` $\to$ Terminal state; no further transitions permitted.
+
+### Active Model Resolution & In-Memory Caching
+- **PostgreSQL Source of Truth:** `MLService.score_transaction()` resolves the active model dynamically by querying PostgreSQL (`WHERE name = :name AND status = 'ACTIVE'`) using the caller's session.
+- **In-Memory Cache Validation:** An in-memory cache dictionary `_model_cache` local to the `MLService` instance maps `model_id -> (artifact_hash, IsolationForestModel, threshold)`. If `model.id` exists in the local cache and `cached[0] == model.artifact_hash`, the in-memory estimator is reused. If not cached or if the artifact hash differs, the artifact is loaded from disk with SHA-256 verification.
+- **Process Scope:** In multi-worker deployments, each worker process maintains an independent local in-memory cache. Read Committed database isolation ensures that newly committed active models become visible on each worker's subsequent query.
+
+### Promotion Concurrency & Limitations
+- **Row-Level Locking:** `ModelRepository.promote_to_active()` acquires `SELECT ... FOR UPDATE` locks on both the candidate model and the currently active model within a single database transaction.
+- **Atomic Deactivation:** The current active model is transitioned to `RETIRED` and flushed before promoting the candidate to `ACTIVE`.
+- **Database Index Constraint:** The PostgreSQL partial unique index `uq_model_versions_active_family` (`CREATE UNIQUE INDEX ... WHERE status = 'ACTIVE'`) enforces at the database engine level that at most one model per family may be active.
+- **Concurrency Testing Scope:** Atomic promotion and partial unique index collision handling are verified by automated tests (`test_model_repository.py`). Concurrent multi-session promotion under race contention remains unverified with concurrent stress fixtures.
 
 ---
 
@@ -1340,6 +1436,38 @@ The transaction shows several deviations...
 ```
 
 The AI summary must never be treated as the original evidence.
+
+## 51.1 Empirical Benchmark Methodology, Environment Scope & Observed Measurements
+
+Performance benchmarks implemented in [`tests/integration/test_ml_benchmark.py`](file:///d:/PROJECTS/FinSignal/tests/integration/test_ml_benchmark.py) evaluate Phase 7 latency, throughput, and resource utilization under controlled test harnesses:
+
+### Benchmark Methodology & Harness Details
+1. **Feature Vectorization Latency (`test_benchmark_vectorization_latency`):**
+   - Sample size: $N = 1,000$ dummy `FeatureVector` instances.
+   - Warm-up: None. Garbage collection: Uncontrolled.
+   - Measurement: `time.perf_counter()` timing `FeatureVectorizer.to_numpy()`.
+   - Result: $\approx 7.3\ \mu\text{s}$ per feature vector.
+2. **Pure Single-Sample Scoring Latency (`test_benchmark_pure_model_scoring`):**
+   - Model: `IsolationForestModel` fitted on $N = 1,000$ synthetic transactions (34 features).
+   - Sample size: $N = 200$ individual calls scoring a single sample `(1, 34)` via `model.score_samples()`.
+   - Warm-up: None. Garbage collection: Uncontrolled.
+   - Percentile calculation: NumPy default `np.percentile`.
+   - Results: P50 $\approx 5.30$ ms, P90 $\approx 5.75$ ms, P95 $\approx 5.92$ ms (earlier run $6.26$ ms).
+3. **Pure Batch Scoring Throughput (`test_benchmark_pure_model_scoring`):**
+   - Input: $N = 10,000$ feature rows `(10000, 34)` evaluated in a single call.
+   - Result: $\approx 205,302$ transactions/second.
+4. **Model Training Latency (`test_benchmark_training_duration`):**
+   - Sample size: $N = 5,000$ transactions, 100 decision trees.
+   - Result: $\approx 0.12$ seconds.
+5. **End-to-End Online Scoring Latency (`test_benchmark_end_to_end_inference_latency`):**
+   - Pipeline: Complete invocation of `service.score_transaction()` including PostgreSQL active-model lookup, feature extraction (`FeatureService`), vectorization, and scoring.
+   - Warm-up: Exactly 1 warm-up scoring call to prime the in-memory cache.
+   - Sample size: $N = 50$ real synthetic transactions evaluated sequentially.
+   - Results: P50 $\approx 8.7$ ms, P90 $\approx 9.5$ ms, P95 $\approx 9.88$ ms.
+
+### Benchmark Scope & Proposed Target
+- **Proposed Target:** The project owner is reviewing a proposed pure single-sample scoring target of **P95 $\le 8.0$ ms** for the measured local Windows/Python 3.12 development environment.
+- **Environment Scope:** All reported metrics were observed on a local development workstation running Windows and Python 3.12 with local PostgreSQL. They are empirical observations under test conditions, not hardware-independent service-level agreements (SLAs).
 
 ---
 

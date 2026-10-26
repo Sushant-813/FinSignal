@@ -583,9 +583,10 @@ FinSignal provides deterministic financial intelligence and aggregation capabili
 - Invalid parameters (malformed namespaces, non-ISO currencies, inverted date intervals, unsupported intervals/timezones, pagination overflows) return HTTP 422 with structured validation error codes.
 
 ### 11.3 Phase Boundary Distinctions
-- **Phase 5 (Current):** Deterministic SQL aggregates, exact monetary calculations, calendar trend bucketing, and statistical median-based outlier filtering.
-- **Phase 6 (Deferred):** Sliding-window behavioral feature engineering (e.g., 5-minute/24-hour velocity, temporal leakage prevention).
-- **Phase 7 (Deferred):** Machine learning anomaly detection (Isolation Forest model training, inference, and multivariate anomaly scores).
+- **Phase 5 (Implemented):** Deterministic SQL aggregates, exact monetary calculations, calendar trend bucketing, and statistical median-based outlier filtering.
+- **Phase 6 (Implemented):** Sliding-window behavioral feature engineering producing the validated 34-feature `FeatureVector` under `FEATURE_VERSION = "v1.0"`.
+- **Phase 7 (Implemented):** Machine learning anomaly detection via `IsolationForestModel`, chronological partitioning with equal-timestamp grouping, validation-only threshold tuning under an operational alert-rate cap ($\le 5\%$), pre-deserialization SHA-256 integrity verification, and active model promotion.
+- **Phase 8 (Deferred):** Hybrid risk scoring combining anomaly scores with deterministic financial heuristics into a normalized 0–100 composite risk score, risk-level mapping (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL`), and explainable risk-factor generation.
 - **Phase 9 (Deferred):** Case management, alert triage, evidence attachment, and investigator resolution workflows.
 
 ---
@@ -664,11 +665,13 @@ Rules provide interpretable evidence.
 
 ### 13.2 Machine Learning
 
-An anomaly detection model should identify combinations and patterns that are difficult to capture through simple rules.
+An anomaly detection model identifies multivariate combinations and patterns that are difficult to capture through simple deterministic rules.
 
-The initial ML direction is unsupervised/semi-supervised anomaly detection, with Isolation Forest as a potential baseline.
+Phase 7 implements unsupervised anomaly detection via `IsolationForestModel` (`n_estimators=100`, `random_state=42`), producing continuous anomaly scores:
 
-Future supervised models may be evaluated against the anomaly-detection baseline.
+$$S(X) = - \text{score\_samples}(X)$$
+
+Operating decision thresholds are tuned on validation data subject to an operational alert-rate budget ($\le 5\%$). Future supervised models may be evaluated against this anomaly-detection baseline.
 
 ### 13.3 Risk Score
 

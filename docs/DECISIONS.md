@@ -1532,6 +1532,12 @@ Loading serialized ML models from disk introduces security and operational risks
 
 Store a cryptographic SHA-256 hash in `model_versions.artifact_hash` upon training. Verify this digest prior to loading in the inference engine. Any hash mismatch or missing hash must immediately raise a controlled `ModelIntegrityError` and abort loading.
 
+### Proposed Addendum — Artifact Integrity Trust Boundary (Pending Project-Owner Approval)
+
+- **Defense-in-Depth Scope:** SHA-256 digest validation serves as an integrity and corruption check verifying that serialized bytes on disk have not suffered partial writes, storage bit rot, or unauthorized local filesystem modification prior to `joblib.load()`.
+- **Trust Boundary & Threat Model:** SHA-256 digest validation does **not** authenticate model artifacts against an adversary who has achieved compromise of both PostgreSQL (updating `model_versions.artifact_hash`) and the filesystem (replacing `model.joblib`). FinSignal does not implement asymmetric PKI, digital signatures, or external hardware security modules.
+- **Deserialization Risk:** Deserializing arbitrary Python objects via `joblib.load()` executes untrusted bytecode if files are malicious. Model loading must strictly remain confined within the trusted application server boundary, and path traversal defenses must enforce filesystem containment.
+
 ---
 
 # ADR-060 — Polymorphic Evidence Source Validation at Application Layer
@@ -1889,6 +1895,129 @@ Key architectural challenges include:
 
 ---
 
+# Proposed ADR-067 — Canonical 34-Feature Vector Contract and Extraction Ordering
+
+**Status:** PROPOSED (Pending Project-Owner Approval)
+
+**Date:** 2026-10-26
+
+**Related decisions:** ADR-017, ADR-050, ADR-058
+
+## Context
+
+Phase 6 established point-in-time temporal and entity features embodied in Pydantic `FeatureVector`. Unsupervised anomaly detection (Phase 7) and downstream risk scoring (Phase 8) require a strictly consistent, immutable ordering when converting structured feature models into 2D NumPy matrices (`np.float64`) for machine learning estimation and online scoring. Discrepancies in feature ordering or silent imputation of missing features would invalidate trained tree splits.
+
+## Proposed Decision
+
+1. **Explicit Feature Versioning:** Bind all feature extraction and model schemas to `FEATURE_VERSION = "v1.0"`. Any mismatch between model record expectations and vectorizer contracts raises `SchemaValidationError`.
+2. **Canonical 34-Feature Ordering:** Enforce strict tuple ordering in `FeatureVectorizer.to_numpy()` matching `CANONICAL_FEATURE_NAMES`:
+   1. `amount`
+   2. `amount_log`
+   3. `account_age_days`
+   4. `velocity_5m_count`
+   5. `velocity_1h_count`
+   6. `velocity_24h_count`
+   7. `velocity_5m_amount`
+   8. `velocity_1h_amount`
+   9. `velocity_24h_amount`
+   10. `amount_vs_mean_ratio`
+   11. `amount_vs_median_ratio`
+   12. `amount_zscore`
+   13. `is_amount_different_from_constant_baseline`
+   14. `has_direction_baseline`
+   15. `has_zero_variance_baseline`
+   16. `is_cold_start`
+   17. `has_device`
+   18. `is_new_device`
+   19. `device_tx_count`
+   20. `has_merchant`
+   21. `is_new_merchant`
+   22. `merchant_tx_count`
+   23. `has_location`
+   24. `is_home_location`
+   25. `is_new_location`
+   26. `location_tx_count`
+   27. `location_frequency`
+   28. `has_category`
+   29. `is_new_category`
+   30. `category_spend_share_30d`
+   31. `hour_of_day`
+   32. `day_of_week`
+   33. `is_weekend`
+   34. `is_unusual_hour`
+3. **Data Type and Null Invariance:** All feature values must be finite numbers; boolean values are explicitly cast to `1.0` or `0.0`. Null or NaN values are strictly forbidden and rejected at the Pydantic schema validation layer.
+
+---
+
+# Proposed ADR-068 — Validation-Only Alert-Rate Constrained Threshold Selection
+
+**Status:** PROPOSED (Pending Project-Owner Approval)
+
+**Date:** 2026-10-26
+
+**Related decisions:** ADR-017, ADR-058
+
+## Context
+
+Scikit-learn's Isolation Forest produces continuous anomaly scores $S(X) = - \text{score\_samples}(X)$ where higher values signify greater anomaly. Because unsupervised anomaly scores are uncalibrated, selecting an operating decision threshold $\tau$ directly dictates the operational alert volume. In financial fraud operations, investigative capacity is bounded. Setting an arbitrary threshold risks alert flooding or silent failure to detect fraud clusters. Furthermore, tuning a threshold on the test set causes statistical contamination.
+
+## Proposed Decision
+
+1. **Chronological Split Separation:** Split dataset into target proportions of 60% Train, 20% Validation, and 20% Holdout Test. Training is purely unsupervised (zero fraud labels exposed).
+2. **Validation-Only Tuning:** Tune threshold $\tau^*$ exclusively on the validation split using ground-truth fraud labels from synthetic scenarios.
+3. **Operational Alert Rate Constraint:** Restrict candidate thresholds to those satisfying $\text{alert\_rate}(\tau) \le \text{max\_alert\_rate}$ (default 0.05, 5%). Select $\tau^*$ maximizing validation F1:
+   $$\tau^* = \arg\max_{\tau : \text{alert\_rate}(\tau) \le 0.05} F_1(\tau)$$
+4. **Candidate Set and Boundary Semantics:** Evaluate candidate thresholds from observed validation scores plus a boundary candidate `max_score + 1e-6` which guarantees zero alerts (`alert_rate = 0.0`). Under non-negative alert rate budgets, a valid threshold is always found (yielding $F_1 = 0.0$ if no positive alerts fall within budget).
+5. **Conservative Tie-Breaking:** When multiple thresholds yield identical maximum F1 within the budget, select the higher threshold (more conservative, minimizing false positives).
+6. **Sealed Holdout Test Pass:** Compute final evaluation metrics (Precision, Recall, F1, PR-AUC, Alert Rate, Scenario Recall, Cluster Recall) via a single evaluation pass over the holdout test partition using $\tau^*$.
+
+---
+
+# Proposed ADR-069 — Active Model Dynamic Resolution and Promotion Concurrency
+
+**Status:** PROPOSED (Pending Project-Owner Approval)
+
+**Date:** 2026-10-26
+
+**Related decisions:** ADR-059, Proposed ADR-068
+
+## Context
+
+Financial transactions must be scored against the currently approved active machine learning model. During continuous deployment and retraining, model promotions must take effect across application workers without requiring service restarts or distributed cache invalidation messaging (e.g. Redis pub/sub), while preventing multiple models from being concurrently active in the same family.
+
+## Proposed Decision
+
+1. **PostgreSQL as Source of Truth:** On every scoring request, query PostgreSQL for the model record where `name = :family_name AND status = 'ACTIVE'`.
+2. **In-Memory Cache Validation:** Cache deserialized model instances in process memory keyed by `model_id`. Validate that `cached[0] == model.artifact_hash`. If absent or hash differs, load from disk with pre-deserialization SHA-256 verification.
+3. **Row-Locked Atomic Promotion:** `ModelRepository.promote_to_active()` locks both the candidate and current active model rows using `SELECT ... FOR UPDATE`, transitions the existing active model to `RETIRED`, flushes, transitions the candidate to `ACTIVE`, and commits.
+4. **Database-Level Partial Unique Index:** Enforce that at most one model per family can be active via PostgreSQL partial unique index `uq_model_versions_active_family` on `(name)` where `status = 'ACTIVE'`.
+5. **Concurrency Boundaries:** Verified for sequential promotions and direct SQL duplicate rejection. Concurrent promotion race conditions under multi-session load have not been tested with concurrent test fixtures and remain an unverified operational boundary.
+
+---
+
+# Proposed Operational Design — Administrative Model Artifact Pruning and Reconciliation Tool
+
+**Status:** PROPOSED PRE-RELEASE TASK (Pending Project-Owner Approval, Unimplemented)
+
+**Date:** 2026-10-26
+
+**Related decisions:** ADR-059, Proposed ADR-069
+
+## Context
+
+Model training persists serialized artifacts (`model.joblib` and `metadata.json`) to the filesystem prior to database record registration and transaction commit. If database registration or transaction commit fails, an unreferenced artifact directory remains on disk. Deleting files in client-side exception handlers was rejected because network or transaction outcomes can be ambiguous, creating risks of deleting valid files.
+
+## Proposed Design
+
+Implement a standalone administrative CLI tool (`finsignal-admin prune-unreferenced-artifacts`) before production release:
+1. Scan `{model_artifacts_dir}/` for subdirectories.
+2. Query `model_versions.artifact_uri` for all referenced artifacts.
+3. Identify unreferenced directories older than a safety threshold (e.g., 24 hours).
+4. Provide `--dry-run` and interactive confirmation modes before deletion.
+5. **Implementation Status:** Not implemented in Phase 7. Required as a pre-release operational task before production deployment.
+
+---
+
 # 4. Decision Dependency Map
 
 ```text
@@ -1960,12 +2089,12 @@ The following decisions remain intentionally open until implementation provides 
 
 1. Exact JWT revocation/logout strategy.
 2. Exact password policy.
-3. Exact model artifact storage location.
+3. Exact model artifact storage location — Implementation-informed recommendation (Phase 7): Default to filesystem directory `{model_artifacts_dir}/{model_id}/model.joblib` with companion `metadata.json`. (Status: OPEN, recommendation pending owner approval).
 4. Exact LLM provider.
 5. Exact AI model.
 6. Exact risk-score thresholds.
 7. Exact feature normalization strategy.
-8. Exact model artifact serialization format.
+8. Exact model artifact serialization format — Implementation-informed recommendation (Phase 7): Use `joblib.dump()` with two-phase atomic temporary file rename and pre-deserialization SHA-256 integrity check. (Status: OPEN, recommendation pending owner approval).
 9. Exact deployment platform.
 10. Exact rate-limiting implementation defaults.
 11. Exact background-job strategy if batch processing becomes slow.

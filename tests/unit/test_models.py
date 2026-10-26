@@ -9,13 +9,14 @@ import finsignal.dataset.models  # noqa: F401
 import finsignal.devices.models  # noqa: F401
 import finsignal.locations.models  # noqa: F401
 import finsignal.merchants.models  # noqa: F401
+import finsignal.ml.models  # noqa: F401
 import finsignal.transactions.models  # noqa: F401
 import finsignal.users.models  # noqa: F401
 from finsignal.core.database import Base
 
 
 def test_metadata_contains_all_12_operational_tables() -> None:
-    """Verify that Base.metadata contains exactly the 12 Phase 2 operational tables."""
+    """Verify that Base.metadata contains the expected domain and ML model tables."""
     expected_tables = {
         "users",
         "accounts",
@@ -29,6 +30,7 @@ def test_metadata_contains_all_12_operational_tables() -> None:
         "dataset_import_errors",
         "transaction_import_records",
         "audit_events",
+        "model_versions",
     }
     actual_tables = set(Base.metadata.tables.keys())
     assert actual_tables == expected_tables

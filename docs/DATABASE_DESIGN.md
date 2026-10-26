@@ -748,26 +748,45 @@ If an import fails midway, recovery must be row-level and idempotent:
 
 ## 9.1 `model_versions`
 
-Stores metadata describing analytical/ML model versions.
+Stores metadata, parameters, metrics, artifact pointers, and lifecycle states for analytical and machine learning model versions (implemented in Phase 7 via migration `0004_model_versions.py`).
 
 ### Columns
 
-| Column | Type | Null | Description |
-|---|---|---:|---|
-| `id` | UUID | No | Primary key |
-| `name` | VARCHAR(128) | No | Model family/name |
-| `version` | VARCHAR(64) | No | Model version |
-| `algorithm` | VARCHAR(128) | No | Algorithm used |
-| `feature_version` | VARCHAR(64) | Yes | Feature definition version |
-| `dataset_version_id` | UUID | Yes | Training/evaluation dataset |
-| `parameters` | JSONB | Yes | Model configuration |
-| `metrics` | JSONB | Yes | Evaluation metrics |
-| `artifact_uri` | TEXT | Yes | Model artifact reference |
-| `artifact_hash` | VARCHAR(64) | Yes | SHA-256 digest for artifact integrity |
-| `status` | VARCHAR(32) | No | EXPERIMENTAL, VALIDATED, ACTIVE, RETIRED |
-| `created_at` | TIMESTAMPTZ | No | Creation timestamp |
+| Column | Type | Null | Default | Description |
+|---|---|---:|---|---|
+| `id` | UUID | No | `gen_random_uuid()` | Primary key |
+| `name` | VARCHAR(128) | No | None | Model family identifier (e.g. `transaction_anomaly_isolation_forest`) |
+| `version` | VARCHAR(64) | No | None | Semantic model version (e.g. `1.0.0`) |
+| `algorithm` | VARCHAR(128) | No | None | Model algorithm identifier (e.g. `isolation_forest`) |
+| `feature_version` | VARCHAR(64) | Yes | None | Bound feature contract version (e.g. `v1.0`) |
+| `dataset_version_id` | UUID | Yes | None | FK referencing `dataset_versions(id)` ON DELETE RESTRICT |
+| `parameters` | JSONB | Yes | None | Model training hyperparameters (`n_estimators`, `contamination`, `random_state`, `max_alert_rate`) |
+| `metrics` | JSONB | Yes | None | Evaluation metrics payload (`threshold`, `target_alert_rate`, validation metrics, test metrics, and `split` metadata) |
+| `artifact_uri` | TEXT | Yes | None | Relative filesystem path to model artifact (e.g. `{model_id}/model.joblib`) |
+| `artifact_hash` | VARCHAR(64) | Yes | None | SHA-256 hexadecimal digest for pre-deserialization integrity verification |
+| `status` | VARCHAR(32) | No | `'EXPERIMENTAL'` | Lifecycle status (`EXPERIMENTAL`, `VALIDATED`, `ACTIVE`, `RETIRED`) |
+| `created_at` | TIMESTAMPTZ | No | `now()` | Record creation timestamp |
 
-A model version is immutable after activation except for lifecycle metadata. Lifecycle transitions follow: `EXPERIMENTAL -> VALIDATED -> ACTIVE -> RETIRED`.
+### Database Constraints & Indexes
+
+- **Status Check Constraint:** `CheckConstraint("status IN ('EXPERIMENTAL', 'VALIDATED', 'ACTIVE', 'RETIRED')", name="chk_model_versions_status")`.
+- **Family Version Uniqueness:** `UniqueConstraint("name", "version", name="uq_model_versions_name_version")`.
+- **Active Family Partial Unique Index:** `CREATE UNIQUE INDEX uq_model_versions_active_family ON model_versions (name) WHERE status = 'ACTIVE'`. Guarantees at the database level that at most one model per family may be active at any time.
+- **Foreign Key:** `dataset_version_id` references `dataset_versions(id)` with `ON DELETE RESTRICT`.
+- **B-tree Indexes:**
+  - `ix_model_versions_name` on `(name)`
+  - `ix_model_versions_status` on `(status)`
+  - `ix_model_versions_dataset_version_id` on `(dataset_version_id)`
+
+### Lifecycle State Machine & Promotion
+Lifecycle transitions follow:
+```text
+EXPERIMENTAL -> VALIDATED, RETIRED
+VALIDATED    -> ACTIVE (via promote_to_active), RETIRED
+ACTIVE       -> RETIRED
+RETIRED      -> (terminal)
+```
+Model promotion uses `SELECT ... FOR UPDATE` row locks to retire the existing active model before activating the new version within a single database transaction.
 
 ---
 
@@ -1584,9 +1603,10 @@ Recommended structure:
 0001_initial_baseline.py
 0002_core_operational_schema.py
 0003_account_import_namespace.py (Phase 4 / Checkpoint P4.0)
-0004_intelligence_models.py (Phase 7/8)
-0005_investigation_models.py (Phase 9)
-0006_ai_models.py (Phase 10)
+0004_model_versions.py (Phase 7: model versions registry & lifecycle)
+0005_intelligence_risk_models.py (Phase 8: risk analyses & risk factors)
+0006_investigation_models.py (Phase 9)
+0007_ai_models.py (Phase 10)
 ```
 
 Migrations are executed via Alembic with the sync `psycopg` driver using dynamic application configuration (`Settings.sync_database_url`).

@@ -1,6 +1,7 @@
 """Application configuration management using Pydantic Settings."""
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
@@ -23,6 +24,18 @@ class Settings(BaseSettings):
 
     # Request correlation
     request_id_header: str = "X-Request-ID"
+
+    # Machine Learning & Model Artifacts
+    model_artifacts_dir: Path = Field(
+        default=Path("artifacts/models"),
+        description="Server-controlled directory for serialized ML model artifacts",
+    )
+    ml_max_validation_alert_rate: float = Field(
+        default=0.05,
+        ge=0.001,
+        le=1.0,
+        description="Maximum validation alert rate constraint for threshold selection",
+    )
 
     @field_validator("log_level")
     @classmethod

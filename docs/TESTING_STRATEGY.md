@@ -1309,6 +1309,50 @@ Phase 5 introduces a dual-scale performance benchmarking protocol to validate Po
   - `/trends` (30 daily buckets): Repo P50 = 134.12 ms, P95 = 140.16 ms, Max = 141.66 ms; HTTP P95 = 148.1 ms (Budget $\le 100\text{ ms}$ — **EXCEEDED**).
 - **Query Plan Findings:** `EXPLAIN (ANALYZE, BUFFERS)` proves that `ix_transactions_occurred_at` handles row filtering in 28.02 ms. The residual ~100 ms is consumed by in-engine memory sorting and CPU aggregation for continuous medians across 80,651 rows and trend hash grouping. Speculative index migrations were intentionally rejected.
 
+### 40.2 Phase 7 ML Anomaly Detection Benchmark Protocol & Test Inventory
+
+Phase 7 introduces machine learning unit tests, integration pipelines, and performance benchmarks for unsupervised anomaly detection.
+
+#### Automated Test Suite Inventory (393 Total Passing Tests, 46 Phase 7 Tests)
+1. **Feature Vectorizer Unit Tests (`tests/unit/test_ml_vectorizer.py`):**
+   - Validates strict 34-feature extraction in canonical order matching `CANONICAL_FEATURE_NAMES`.
+   - Validates float64 conversion, boolean casting (`1.0`/`0.0`), and explicit rejection of null (`None`), `NaN`, or infinite values.
+   - Tests detection of zero-variance constant columns in feature matrices.
+2. **Anomaly Model Unit Tests (`tests/unit/test_ml_model.py`):**
+   - Validates `IsolationForestModel` wrapping scikit-learn's `IsolationForest` with deterministic seeding (`random_state=42`).
+   - Verifies score negation formula: $S(X) = - \text{score\_samples}(X)$, ensuring higher scores indicate higher anomalousness.
+   - Tests consistency between single-sample scoring and batch scoring.
+3. **Chronological Splitter Unit Tests (`tests/unit/test_ml_split.py`):**
+   - Validates chronological sorting by `(occurred_at, str(record_id))`.
+   - Tests indivisible equal-timestamp grouping: transactions sharing the exact same timestamp are never divided across split boundaries.
+   - Verifies target proportions (~60% Train, ~20% Validation, ~20% Test) and asserts failure when fewer than 3 distinct timestamps are present.
+4. **Model Evaluator Unit Tests (`tests/unit/test_ml_evaluator.py`):**
+   - Validates hand-calculated evaluation metrics: Precision, Recall, $F_1$, Alert Rate, FPR, Scenario Recall, Cluster Recall, and PR-AUC.
+   - Tests threshold tuning under the 5% operational alert-rate cap, verifying conservative tie-breaking (preferring higher threshold on equal F1).
+   - Verifies boundary candidate `max_score + 1e-6` producing 0 alerts as a guaranteed non-negative budget baseline.
+5. **Artifact Registry Unit Tests (`tests/unit/test_ml_registry.py`):**
+   - Tests two-phase atomic artifact write (`.tmp` $\to$ `os.replace()`) and companion `metadata.json` generation.
+   - Verifies path-traversal prevention: rejects relative escapes outside `base_dir`.
+   - Verifies pre-deserialization SHA-256 verification: immediately raises `ModelIntegrityError` if file bytes are modified or corrupted on disk.
+6. **Model Repository Integration Tests (`tests/integration/test_model_repository.py`):**
+   - Tests Alembic migration `0004_model_versions` upgrade and downgrade against disposable PostgreSQL.
+   - Tests model registration, lookup by ID, and unique constraint `(name, version)`.
+   - Validates lifecycle transitions (`EXPERIMENTAL -> VALIDATED -> ACTIVE -> RETIRED`) and atomic promotion retiring prior active models.
+   - Tests PostgreSQL partial unique index `uq_model_versions_active_family` rejecting duplicate active models.
+7. **Training Pipeline Integration Tests (`tests/integration/test_ml_training_pipeline.py`):**
+   - Tests end-to-end training workflow: feature extraction, unsupervised fitting, validation threshold selection, holdout test evaluation, artifact persistence, and database registration.
+8. **Performance Benchmark Suite (`tests/integration/test_ml_benchmark.py`):**
+   - Measures vectorization latency, pure single-sample scoring, batch throughput, training duration, and end-to-end online scoring.
+
+#### Benchmark Methodology & Empirical Measurements
+- **Vectorization Latency:** $N = 1,000$ dummy `FeatureVector` instances converted via `FeatureVectorizer.to_numpy()`. Result: $\approx 7.3\ \mu\text{s}$ per feature vector.
+- **Pure Single-Sample Scoring Latency:** $N = 200$ individual single-sample calls to `model.score_samples()`. Uncontrolled GC, no warm-up, NumPy default percentiles. Results: P50 $\approx 5.30$ ms, P90 $\approx 5.75$ ms, P95 $\approx 5.92$ ms (earlier run $6.26$ ms).
+- **Pure Batch Scoring Throughput:** $N = 10,000$ transactions scored in a single batch call. Result: $\approx 205,302$ transactions/second.
+- **Training Duration:** $N = 5,000$ transactions, 100 decision trees. Result: $\approx 0.12$ seconds.
+- **End-to-End Online Scoring Latency:** $N = 50$ real synthetic transactions scored via `MLService.score_transaction()` (includes PostgreSQL active-model lookup, feature extraction, vectorization, and scoring) following 1 warm-up call. Results: P50 $\approx 8.7$ ms, P90 $\approx 9.5$ ms, P95 $\approx 9.88$ ms.
+- **Environment Scope:** Measured on a local Windows development workstation running Python 3.12 with local PostgreSQL.
+- **Proposed Target:** A pure single-sample scoring latency target of **P95 $\le 8.0$ ms** is proposed for the measured development environment, pending formal project-owner approval.
+
 ---
 
 # 41. End-to-End Testing

@@ -619,34 +619,56 @@ The module must enforce temporal correctness.
 
 ---
 
-# 25. Risk Module
+# 24.1 Machine Learning Subsystem (`finsignal.ml` — Phase 7 Implemented)
 
-Responsibilities:
+The machine learning subsystem (`src/finsignal/ml/`) delivers unsupervised anomaly detection over canonical 34-feature vectors.
+
+### Core Architecture & Components
+- **Feature Vectorizer (`FeatureVectorizer`):** Validates feature schema contracts (`FEATURE_VERSION = "v1.0"`) and converts `FeatureVector` sequences to 2D NumPy `float64` matrices of shape `(N, 34)` adhering strictly to `CANONICAL_FEATURE_NAMES`. Rejects null/NaN values.
+- **Model Wrapper (`IsolationForestModel`):** Implements `AnomalyModel` protocol, encapsulating scikit-learn's `IsolationForest` (`n_estimators=100`, `random_state=42`). Negates scikit-learn's raw output so higher scores reflect greater anomalousness: $S(X) = - \text{score\_samples}(X)$.
+- **Chronological Data Splitter (`ChronologicalSplitter`):** Partitions transaction datasets targeting 60% Train, 20% Validation, and 20% Holdout Test without temporal lookahead leakage. Gathers equal-timestamp transactions into indivisible groups, ensuring equal-timestamp blocks are never split across boundaries.
+- **Model Evaluator (`ModelEvaluator`):** Selects optimal validation threshold $\tau^*$ maximizing F1 score subject to an operational alert-rate budget ($\le 5\%$) using ground-truth scenario labels, then performs a single-pass holdout evaluation over the test split.
+- **Artifact Store (`ModelArtifactStore`):** Persists model binaries (`model.joblib`) and metadata (`metadata.json`) with path traversal validation (`.resolve().relative_to()`), two-phase atomic `.tmp` file renaming, and pre-load SHA-256 integrity verification.
+- **Model Repository (`ModelRepository`):** Manages `model_versions` table persistence, enforcing lifecycle transitions (`EXPERIMENTAL -> VALIDATED -> ACTIVE -> RETIRED`), row-level locks (`SELECT ... FOR UPDATE`), and the PostgreSQL partial unique index `uq_model_versions_active_family`.
+- **Service Orchestrator (`MLService`):** End-to-end service coordinating model training, dynamic active-model lookup from PostgreSQL on every scoring call, in-memory caching validated against stored `artifact_hash`, and point-in-time anomaly scoring.
+
+### Concurrency & Visibility Model
+- Every scoring call queries PostgreSQL for the current active model, ensuring that promotions committed in Read Committed isolation are detected on subsequent queries across worker processes.
+- Each worker process maintains a local in-memory cache keyed by `model_id`. Models are reloaded from disk only if absent from cache or if the database `artifact_hash` changes.
+- Promotion atomically retires the currently active model and activates the candidate model within a single row-locked transaction.
+
+---
+
+# 25. Risk Module (Phase 8 Deferred)
+
+Responsibilities (deferred to Phase 8):
 
 - Rule-based risk signals
-- ML anomaly detection
-- Risk score calculation
-- Risk-level mapping
-- Model version tracking
-- Risk-factor generation
+- ML anomaly score integration
+- Normalized 0–100 composite risk score calculation
+- Risk-level mapping (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL`)
+- Model version tracking for risk analyses
+- Risk-factor generation and explanation
+
+Phase 7 strictly implements the unsupervised ML anomaly detection layer (raw anomaly scores and binary anomaly decisions). Phase 8 will introduce the hybrid risk engine synthesizing ML anomaly scores with deterministic financial heuristics.
 
 Conceptual flow:
 
 ```text
 Features
    |
-   +--------> Rule Signals
+   +--------> Rule Signals (Phase 8)
    |
-   +--------> ML Model
+   +--------> ML Model (Phase 7: Isolation Forest)
                  |
                  v
-          Anomaly Score
+          Anomaly Score (Phase 7: -score_samples)
                  |
                  v
-           Risk Analysis
+           Risk Analysis (Phase 8: 0-100 Score)
                  |
                  v
-           Risk Factors
+           Risk Factors (Phase 8: Explanations)
 ```
 
 ---

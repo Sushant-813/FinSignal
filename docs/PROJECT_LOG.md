@@ -1238,7 +1238,57 @@ Implement an on-demand, in-memory, point-in-time feature-engineering module (`sr
 Phase 6 implementation is complete, fully verified against PostgreSQL, and reconciled with all project documentation. All exit criteria are satisfied.
 
 ### Next Steps
-1. Proceed to Phase 7: ML / Anomaly Detection (Isolation Forest baseline, chronological train/validation/test splits, unsupervised anomaly scoring, and model versioning).
+1. Complete Phase 7 documentation reconciliation across architecture, database, security, and testing documents.
+2. Submit technical recommendations and proposed ADRs (ADR-067 to ADR-069) for project-owner review.
+3. Proceed to Phase 8: Risk Analysis & Explainability.
+
+---
+
+## 2026-10-26 — Phase 7: ML / Anomaly Detection Implementation, Testing & Benchmark Verification
+
+### Context & Objectives
+Phase 7 introduces machine learning anomaly detection to FinSignal, providing an unsupervised multivariate baseline model capable of identifying anomalous transactions without ground-truth label leakage.
+
+### What Changed
+1. **Machine Learning Package (`src/finsignal/ml/`):**
+   - Implemented `FeatureVectorizer` (`vectorizer.py`) converting Phase 6 `FeatureVector` instances into (N, 34) 2D NumPy `float64` matrices adhering strictly to `CANONICAL_FEATURE_NAMES` and `FEATURE_VERSION = "v1.0"`. Enforced rejection of null, NaN, and non-finite values.
+   - Implemented `IsolationForestModel` (`model.py`) wrapping scikit-learn's `IsolationForest` (`n_estimators=100`, `random_state=42`, `contamination="auto"`). Formulated monotonic anomaly score $S(X) = - \text{score\_samples}(X)$ so higher scores signify greater anomalousness.
+   - Implemented `ChronologicalSplitter` (`split.py`) partitioning transactions chronologically targeting 60% Train, 20% Validation, and 20% Holdout Test. Enforced deterministic sorting `(occurred_at, str(record_id))` and indivisible equal-timestamp grouping to prevent lookahead leakage across partition cuts.
+   - Implemented `ModelEvaluator` (`evaluator.py`) optimizing operating decision threshold $\tau^*$ on validation data to maximize F1 score subject to an operational alert-rate budget ($\le 5\%$), with boundary candidate `max_score + 1e-6` guaranteeing zero-alert baseline. Implemented single-pass holdout test evaluation (Precision, Recall, F1, PR-AUC, Alert Rate, Scenario Recall, Cluster Recall).
+   - Implemented `ModelArtifactStore` (`registry.py`) providing two-phase atomic persistence (`.tmp` $\to$ `os.replace()`), path containment defense (`.resolve().relative_to()`), and pre-deserialization SHA-256 integrity verification.
+   - Implemented `ModelRepository` (`repository.py`) managing `model_versions` table persistence, lifecycle state machine (`EXPERIMENTAL -> VALIDATED -> ACTIVE -> RETIRED`), and row-locked atomic promotion (`SELECT ... FOR UPDATE`).
+   - Implemented `MLService` (`service.py`) orchestrating training pipelines, dynamic active-model lookup from PostgreSQL on every scoring call, and in-memory caching validated against `artifact_hash`.
+
+2. **Database Migration (`migrations/versions/0004_model_versions.py`):**
+   - Created `model_versions` table with columns: `id`, `name`, `version`, `algorithm`, `feature_version`, `dataset_version_id`, `parameters`, `metrics`, `artifact_uri`, `artifact_hash`, `status`, `created_at`.
+   - Applied status check constraint `chk_model_versions_status`, unique constraint `uq_model_versions_name_version`, and partial unique index `uq_model_versions_active_family` on `(name)` where `status = 'ACTIVE'`.
+   - Set down-revision to `0003_account_import_namespace`.
+
+3. **Dependencies (`pyproject.toml`, `uv.lock`):**
+   - Added `scikit-learn>=1.5.0,<2.0.0`, `joblib>=1.4.0,<2.0.0`, and `numpy>=2.0.0,<3.0.0`.
+   - Locked exact runtime versions in `uv.lock`: `scikit-learn 1.9.1`, `joblib 1.6.0`, `numpy 2.5.4`, `scipy 1.18.1`.
+
+4. **Empirical Validation & Benchmark Results:**
+   - **Test Suite Growth:** 393 total passing tests in repository (+46 Phase 7 tests covering vectorizer, model, split, evaluator, registry, repository, end-to-end training pipeline, and performance benchmarks).
+   - **Static Analysis:** `ruff check .` clean, `ruff format --check .` clean, `mypy src tests` clean.
+   - **Empirical Benchmarks (measured on local Windows/Python 3.12 workstation):**
+     - Feature vectorization ($N = 1,000$): $\approx 7.3\ \mu\text{s}$ per feature vector.
+     - Pure single-sample scoring ($N = 200$): P50 $\approx 5.30$ ms, P90 $\approx 5.75$ ms, P95 $\approx 5.92$ ms (earlier run $6.26$ ms).
+     - Pure batch scoring throughput ($N = 10,000$): $\approx 205,302$ transactions/second.
+     - Model training duration ($N = 5,000$, 100 trees): $\approx 0.12$ seconds.
+     - End-to-end online scoring ($N = 50$, including DB query + feature extraction + vectorization + scoring): P50 $\approx 8.7$ ms, P90 $\approx 9.5$ ms, P95 $\approx 9.88$ ms.
+
+### Technical Baselines & Recommendations Submitted for Review
+1. **Artifact Integrity Trust Boundary:** SHA-256 verification acts as an integrity and corruption check against disk corruption or tampering prior to deserialization; it does not protect against an attacker who has compromised both database and filesystem write permissions (no asymmetric PKI).
+2. **Single-Sample Scoring Latency Target:** Pure single-sample scoring target of P95 $\le 8.0$ ms submitted for approval, scoped to the measured Windows/Python 3.12 development environment.
+3. **Artifact Cleanup & Recovery Blocker:** Interrupted training pipelines can leave unreferenced artifact directories on disk. Automated deletion in exception handlers was rejected due to commit ambiguity. An administrative pruning tool (`finsignal-admin prune-unreferenced-artifacts`) is required prior to production release.
+4. **Promotion Concurrency:** Verified for sequential promotion and direct SQL duplicate rejection. Multi-session concurrent race conditions remain unverified under concurrent test fixtures.
+
+### Result & Status
+- Phase 7 implementation and automated tests: **100% Completed**.
+- Documentation reconciliation: **In Progress**.
+- Production release gate: **Not Passed** pending artifact cleanup implementation.
+- Next development phase: **Phase 8 (Risk Analysis & Explainability)**.
 
 ---
 

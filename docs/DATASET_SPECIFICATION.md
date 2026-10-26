@@ -1524,6 +1524,13 @@ metadata.json                  -> Dataset metadata, configuration hash, seed, an
 
 Production `transactions.csv` contains only material transaction columns; ground truth metadata resides solely in `transactions_ground_truth.csv` and is never exposed through production ingest.
 
+### Phase 7 Machine Learning Label Usage
+Ground-truth fraud labels (`is_fraud`, `fraud_scenario`, `scenario_instance_id`) exported to `transactions_ground_truth.csv` are strictly isolated from the unsupervised model fitting split:
+1. **Unsupervised Training Split:** The Isolation Forest model trains exclusively on unsupervised feature vectors with zero fraud labels exposed.
+2. **Validation Split:** Ground-truth labels are consumed strictly during validation-only threshold tuning to maximize F1 under an operational alert-rate budget ($\le 5\%$).
+3. **Holdout Test Split:** Ground-truth labels are consumed in a single evaluation pass over the holdout test set to compute objective benchmark metrics (Precision, Recall, F1, PR-AUC).
+Production online inference transactions never contain ground-truth labels.
+
 ---
 
 # 58. Privacy Requirements

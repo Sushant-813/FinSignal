@@ -16,7 +16,7 @@ FinSignal is built as a clean modular monolith adhering to strict domain separat
 - **Language & Runtime:** Python 3.12+ managed with `uv`
 - **API Framework:** FastAPI with strict Pydantic v2 schemas (`extra="forbid"`)
 - **Database:** PostgreSQL with asynchronous SQLAlchemy 2.0 and `asyncpg`
-- **Database Migrations:** Alembic (current head: `0003_account_import_namespace`)
+- **Database Migrations:** Alembic (current head: `0004_model_versions`)
 - **Authentication & Security:** Argon2id password hashing, Bearer JWT tokens, and centralized role-based access control (`ADMIN`, `ANALYST`, `INVESTIGATOR`)
 - **Mathematical Precision:** Python `Decimal` and PostgreSQL `NUMERIC(18,2)` with strict two-decimal `ROUND_HALF_UP` string serialization (`MoneyStr`)
 
@@ -24,7 +24,7 @@ FinSignal is built as a clean modular monolith adhering to strict domain separat
 
 ## Implementation Status
 
-### Completed Phases (Backend Milestone 1–6)
+### Completed Phases (Backend Milestone 1–7)
 
 | Phase | Module | Key Capabilities | Status |
 |:---:|---|---|:---:|
@@ -34,14 +34,28 @@ FinSignal is built as a clean modular monolith adhering to strict domain separat
 | **Phase 4** | Synthetic Data & Ingestion | Deterministic PRNG generator (seed 42, 250k transactions, 5k accounts, 7 fraud scenarios), idempotent CSV ingestion, advisory locking, row-level provenance | **Completed** |
 | **Phase 5** | Financial Analytics | 6 REST analytics endpoints, PostgreSQL window aggregations, timezone-aware trends, statistical median outliers | **Completed with Documented Benchmark Limitation** |
 | **Phase 6** | Feature Engineering | 34-feature point-in-time contract, pure functional engine, O(N log N) streaming batch extraction, zero temporal leakage, live PostgreSQL index-scan aggregation | **Completed with Documented Benchmark Deviation** |
+| **Phase 7** | ML / Anomaly Detection | Isolation Forest baseline, canonical 34-feature vector contract (`v1.0`), chronological train/validation/test split, validation-only threshold tuning under 5% alert-rate budget, SHA-256 artifact integrity verification, PostgreSQL model versioning registry | **Completed with Documented Pre-Release Operational Limitation** |
 
 ### Deferred Phases
 
-- **Phase 7 — Machine Learning Models:** Multivariate anomaly detection (Isolation Forest, supervised benchmark) and continuous risk scoring.
-- **Phase 8 — Risk Engine:** Rule-based heuristics, multi-factor risk scoring, and alert generation.
+- **Phase 8 — Risk Engine:** Rule-based heuristics, multi-factor risk scoring, calibrated risk scores (0–100), and alert generation.
 - **Phase 9 — Investigation Workflows:** Human investigation cases, evidence assembly, and resolution lifecycle (`CONFIRMED_FRAUD`, `LEGITIMATE`, `SUSPICIOUS`, `INCONCLUSIVE`).
 - **Phase 10 — AI Investigation Assistant:** Grounded, provider-abstracted LLM investigation summaries strictly bounded by structured evidence.
 - **Phase 11 — Frontend Dashboard:** React, TypeScript, and Vite user interface.
+
+---
+
+## Machine Learning Subsystem (Phase 7)
+
+Phase 7 implements unsupervised multivariate anomaly detection, artifact management, and model lifecycle governance (`src/finsignal/ml/`):
+
+- **Canonical 34-Feature Vector (`FeatureVectorizer`):** Transforms Phase 6 `FeatureVector` into 1D/2D IEEE 754 `float64` NumPy arrays adhering strictly to `CANONICAL_FEATURE_NAMES` in fixed order (`FEATURE_VERSION = "v1.0"`). Rejects `NaN`, `Inf`, and missing values at boundary.
+- **Isolation Forest Baseline (`IsolationForestModel`):** Wraps `scikit-learn` Isolation Forest with deterministic score negation $S(X) = -\text{score\_samples}(X)$. Higher values indicate greater anomaly severity. Binary anomaly classification is determined by $A(X) = \mathbb{I}(S(X) \ge \tau)$. Anomaly scores represent uncalibrated severity, strictly separated from calibrated fraud probabilities (deferred to Phase 8).
+- **Chronological Data Splitter (`ChronologicalSplitter`):** Enforces temporal ordering `(occurred_at, str(record_id))` and partitions datasets into target proportions (60% train, 20% validation, 20% holdout test) while keeping equal-timestamp groups indivisible to prevent lookahead leakage.
+- **Validation-Only Threshold Tuning (`ModelEvaluator`):** Selects decision threshold $\tau$ strictly on the validation set to maximize F1 under an operational alert-rate budget constraint ($\text{AlertRate} \le 5.0\%$). Evaluates generalized performance on the untouched holdout test partition.
+- **Cryptographic Artifact Integrity (`ModelArtifactStore`):** Manages model serialization with atomic two-phase write (`.tmp` write followed by atomic replace), strict filesystem path-containment checks (`.resolve().relative_to()`), and constant-time SHA-256 digest validation prior to `joblib` deserialization.
+- **Database Model Registry & Lifecycle (`ModelRepository`, `MLService`):** Tracks model lifecycle states (`TRAINED`, `VALIDATED`, `ACTIVE`, `DEPRECATED`, `FAILED`) in PostgreSQL `model_versions` table via Alembic migration `0004_model_versions.py`. Enforces a partial unique index ensuring at most one active model per algorithm family, safe transactional row-level promotion locking (`SELECT ... FOR UPDATE`), and in-memory active-model caching verified against database digest.
+- **Operational Limitation:** Safe administrative artifact pruning and reconciliation for unreferenced disk artifacts remains an identified pre-release task (unimplemented).
 
 ---
 
@@ -83,7 +97,7 @@ Phase 5 exposes six deterministic financial intelligence endpoints under `/api/v
 The implementation is verified by an exhaustive automated test suite and strict type-checking:
 
 ```bash
-# Run complete test suite (347 tests)
+# Run complete test suite (393 tests)
 uv run pytest
 
 # Static analysis and linting
@@ -117,3 +131,11 @@ uv run alembic heads
   - Peak memory overhead: **27.82 MB** (Budget $\le 50.0\text{ MB}$)
   - Online single evaluation latency: P50 = 7.23 ms, P90 = 8.51 ms, P95 = 8.84 ms (Exceeds aspirational 5.0 ms budget due to unpooled local asyncpg DB roundtrips in development; pure computation engine executes in $< 50\ \mu\text{s}$)
   - Query plan (`EXPLAIN (ANALYZE, BUFFERS)`) confirms `ix_transactions_account_occurred` index range scan executes in 0.041 ms with 3 shared buffer hits and 0 sequential scans.
+
+#### Machine Learning Anomaly Detection Benchmark (Phase 7)
+- **Empirical Results (Local Windows Test Environment, Python 3.12, scikit-learn 1.9.1, AMD Ryzen 7 5800H):**
+  - **Feature Vectorization ($N=1,000$):** Mean latency $\approx 7.3\ \mu\text{s}$ per feature vector.
+  - **Pure Single-Sample Scoring ($N=200$):** Mean $= 5.09\text{ ms}$, P50 $= 5.01\text{ ms}$, P90 $= 5.46\text{ ms}$, P95 $= 5.92\text{ ms}$, P99 $= 6.57\text{ ms}$ (Satisfies proposed P95 $\le 8.0\text{ ms}$ target for measured environment).
+  - **Batch Inference Throughput ($N=10,000$):** Total time $= 48.7\text{ ms}$ ($\approx 205,000\text{ transactions/second}$).
+  - **Model Training Throughput ($N=5,000$, 100 trees):** Total time $= 0.12\text{ s}$ ($\approx 41,000\text{ samples/second}$).
+  - **End-to-End Single-Sample Scoring ($N=50$):** P95 $= 9.88\text{ ms}$ (includes async database query, point-in-time feature generation, array vectorization, and model inference).

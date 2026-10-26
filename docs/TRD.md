@@ -128,16 +128,25 @@ NumPy should be used where numerical operations benefit from array-based computa
 
 **Primary ML framework:** scikit-learn
 
-Initial ML capabilities may include:
+### Dependency Specifications
+- **Declared Constraints (`pyproject.toml`):**
+  - `scikit-learn>=1.5.0,<2.0.0`
+  - `joblib>=1.4.0,<2.0.0`
+  - `numpy>=2.0.0,<3.0.0`
+- **Locked Runtime Versions (`uv.lock`):**
+  - `scikit-learn`: `1.9.1`
+  - `joblib`: `1.6.0`
+  - `numpy`: `2.5.4`
+  - `scipy`: `1.18.1` (transitive runtime dependency)
 
-- Isolation Forest
-- Standard preprocessing
-- Feature scaling
-- Model evaluation
-- Classification metrics
-- Model persistence where appropriate
-
-The initial architecture should not require a dedicated ML serving platform.
+### Implemented Phase 7 ML Capabilities
+- **Model Wrapper (`IsolationForestModel`):** Encapsulates scikit-learn's `IsolationForest` (`n_estimators=100`, `random_state=42`) with score negation $S(X) = - \text{score\_samples}(X)$.
+- **Feature Extraction (`FeatureVectorizer`):** Converts 34-feature vectors to `(N, 34)` float64 arrays under `FEATURE_VERSION = "v1.0"`.
+- **Chronological Data Partitioning (`ChronologicalSplitter`):** Target 60% Train, 20% Validation, 20% Test split with equal-timestamp group preservation.
+- **Constrained Threshold Tuning (`ModelEvaluator`):** Maximizes validation F1 subject to $\text{alert\_rate} \le 0.05$ (5%), with boundary candidate zero-alert fallback and single-pass holdout evaluation.
+- **Artifact Security & Integrity (`ModelArtifactStore`):** Two-phase atomic tempfile writes, SHA-256 digest computation, path containment verification, and pre-deserialization validation.
+- **Model Registry (`ModelRepository`):** Managed via SQLAlchemy ORM and Alembic migration `0004_model_versions` (parent: `0003_account_import_namespace`), enforcing row-level locking during promotion and partial unique index `uq_model_versions_active_family`.
+- **Inference Service (`MLService`):** Orchestrates dynamic PostgreSQL active-model resolution, in-memory caching validated against `artifact_hash`, and online scoring.
 
 ---
 
@@ -1010,23 +1019,19 @@ The exact score-combination strategy belongs in `ML_DESIGN.md`.
 
 ---
 
-# 34. Model Versioning
+# 34. Model Versioning & Lifecycle Registry
 
-Every stored risk analysis should identify the model version.
-
-Example:
-
-```text
-model_version = isolation_forest_v1
-```
-
-A future analysis may use:
-
-```text
-isolation_forest_v2
-```
-
-This enables model comparison and historical reproducibility.
+Every trained model and subsequent risk assessment is tracked in PostgreSQL via `model_versions` (migration `0004_model_versions.py`):
+- **Family & Version Identity:** Indexed by family `name` (e.g. `transaction_anomaly_isolation_forest`) and semantic `version` (e.g. `1.0.0`), enforced by unique constraint `uq_model_versions_name_version`.
+- **Feature Contract:** Bound to `feature_version = "v1.0"`.
+- **Dataset Link:** Bound to `dataset_version_id REFERENCES dataset_versions(id) ON DELETE RESTRICT`.
+- **Artifact Security:** Stores relative path `artifact_uri` and hexadecimal `artifact_hash` (SHA-256) for pre-load integrity verification.
+- **Lifecycle State Machine:**
+  - `EXPERIMENTAL -> VALIDATED, RETIRED`
+  - `VALIDATED -> ACTIVE (via promote_to_active), RETIRED`
+  - `ACTIVE -> RETIRED`
+  - `RETIRED -> (terminal)`
+- **Concurrency & Promotion:** Active model resolution queries PostgreSQL dynamically on each scoring call. Promotion uses `SELECT ... FOR UPDATE` row locks to retire the existing active model and activate the candidate within a single transaction, enforced by partial unique index `uq_model_versions_active_family`.
 
 ---
 
