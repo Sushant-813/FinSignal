@@ -639,36 +639,52 @@ The machine learning subsystem (`src/finsignal/ml/`) delivers unsupervised anoma
 
 ---
 
-# 25. Risk Module (Phase 8 Deferred)
+# 25. Risk Module (`finsignal.risk` — Phase 8 Implemented)
 
-Responsibilities (deferred to Phase 8):
+The risk module (`src/finsignal/risk/`) delivers deterministic hybrid risk prioritization, validation-anchored score normalization, structured explainability factors, and immutable analysis persistence.
 
-- Rule-based risk signals
-- ML anomaly score integration
-- Normalized 0–100 composite risk score calculation
-- Risk-level mapping (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL`)
-- Model version tracking for risk analyses
-- Risk-factor generation and explanation
+### 25.1 Internal Package Structure
+- `src/finsignal/risk/__init__.py`: Public domain exports (`RiskService`, `RiskRepository`, `HybridScoringEngine`, `RiskRuleEngine`, `RiskFactorGenerator`).
+- `src/finsignal/risk/constants.py`: Feature contracts (`RISK_FEATURE_VERSION = "v1.0"`), scoring defaults ($w_{\text{ml}}=0.60, w_{\text{rule}}=0.40$), default tier cutoffs ($25.0, 50.0, 75.0$), severity floors ($50.0, 75.0$), and rule points mapping.
+- `src/finsignal/risk/schemas.py`: Pydantic v2 schemas (`RiskAnalysisResponse`, `RiskFactorDTO`, `RiskScoringConfig`, `RiskAnalyzeRequest`), enums (`RiskLevel`, `RiskSeverity`, `RiskFactorCode`), and effective configuration identity calculation (`effective_config_version`).
+- `src/finsignal/risk/models.py`: SQLAlchemy declarative models (`RiskAnalysis`, `RiskFactor`) with check constraints and composite unique constraint `uq_risk_analyses_identity`.
+- `src/finsignal/risk/normalization.py`: Piecewise linear score normalization (`normalize_ml_score`) anchoring empirical validation bounds ($s_{\min} \mapsto 0.0, \tau^* \mapsto 50.0, s_{\max} \mapsto 100.0$) and enforcing $s_{\min} < \tau^* < s_{\max}$.
+- `src/finsignal/risk/rules.py`: Deterministic heuristic engine (`RiskRuleEngine`) evaluating 9 rules across velocity, amount deviation, entity novelty, temporal deviations, and cold-start accounts into bounded rule score $S_{\text{rule}} \in [0.0, 100.0]$.
+- `src/finsignal/risk/factors.py`: Factor generator (`RiskFactorGenerator`) translating fired heuristic rules into typed `RiskFactorDTO` instances with point-in-time evidence snapshots.
+- `src/finsignal/risk/scoring.py`: Hybrid scoring engine (`HybridScoringEngine`) computing linear weighted combination $\text{raw} = w_{\text{ml}} \cdot S_{\text{norm}} + w_{\text{rule}} \cdot S_{\text{rule}}$, optional escalation floors, score clamping $[0.00, 100.00]$, and tier mapping.
+- `src/finsignal/risk/fingerprint.py`: Canonical 64-character SHA-256 fingerprinting (`compute_feature_fingerprint`) over 34 features and contextual attributes.
+- `src/finsignal/risk/repository.py`: Async repository managing savepoint persistence (`session.begin_nested()`), cascade deletions, and PostgreSQL driver-specific unique violation classification (`is_risk_identity_conflict`).
+- `src/finsignal/risk/service.py`: Orchestration service handling context assembly, model lifecycle eligibility checks (`EXPERIMENTAL` blocked, `VALIDATED` restricted to `ADMIN`), inference, normalization, scoring, savepoint persistence, and audit logging.
+- `src/finsignal/api/v1/risk.py`: FastAPI endpoints for latest analysis retrieval and on-demand risk analysis.
 
-Phase 7 strictly implements the unsupervised ML anomaly detection layer (raw anomaly scores and binary anomaly decisions). Phase 8 will introduce the hybrid risk engine synthesizing ML anomaly scores with deterministic financial heuristics.
+### 25.2 Architectural Guarantees
+- **Separation of Concerns:** Raw financial facts remain immutable. Risk analyses and factors are stored in separate intelligence tables (`risk_analyses`, `risk_factors`).
+- **Prioritization Index vs. Probability:** The composite score $[0.00, 100.00]$ is an operational investigation prioritization index, not an empirical fraud probability.
+- **Idempotency & Concurrency:** Canonical feature fingerprinting + effective config hash + composite unique constraint `uq_risk_analyses_identity` guarantee idempotent reuse and race safety under concurrent execution.
+- **Model Lineage:** Every risk analysis strictly records the `model_version_id`, `config_version`, and `feature_vector_hash` that generated it, enabling historical auditability even after model retirement.
 
 Conceptual flow:
 
 ```text
-Features
-   |
-   +--------> Rule Signals (Phase 8)
-   |
-   +--------> ML Model (Phase 7: Isolation Forest)
-                 |
-                 v
-          Anomaly Score (Phase 7: -score_samples)
-                 |
-                 v
-           Risk Analysis (Phase 8: 0-100 Score)
-                 |
-                 v
-           Risk Factors (Phase 8: Explanations)
+Point-in-Time Features + Context
+   │
+   ├────────> Rule Engine ─────────────> Rule Score [0, 100] + Fired Factors
+   │                                           │
+   └────────> Isolation Forest ─> Raw Score    │
+                    │                          │
+                    ▼                          │
+             Validation-Anchored               │
+             Piecewise Normalization           │
+                    │                          │
+                    ▼                          ▼
+             Normalized Score ───> Hybrid Scoring Engine (0.60 ML + 0.40 Rules)
+             [0, 100]                          │
+                                               ▼
+                                  Clamping & Escalation Floors
+                                               │
+                                               ▼
+                                  Prioritization Score [0.00, 100.00]
+                                  + Risk Tier (LOW / MEDIUM / HIGH / CRITICAL)
 ```
 
 ---
@@ -875,29 +891,40 @@ HTTP Response (JSON)
 # 34. Risk Analysis Flow
 
 ```text
-Transaction History
-        |
-        v
-Historical Feature Generation
-        |
-        v
-Feature Vector
-        |
-        +------------------+
-        |                  |
-        v                  v
-Rule Engine         Isolation Forest
-        |                  |
-        +--------+---------+
-                 |
-                 v
-           Risk Calculation
-                 |
-                 v
-           Risk Analysis
-                 |
-                 v
-            Risk Factors
+Evaluated Transaction (Historical Context)
+        │
+        ▼
+Point-in-Time Feature Computation (34 Canonical Features)
+        │
+        ├─────────────────────────────────────────────────┐
+        ▼                                                 ▼
+Unsupervised ML Scoring (Isolation Forest)       Deterministic Rule Engine (9 Rules)
+Continuous Score: S(X) = -score_samples(X)       Points: CRITICAL=40, HIGH=25, MED=15, LOW=5
+        │                                                 │
+        ▼                                                 ▼
+Piecewise Linear Normalization                   Fired Rules & Factor Generation
+Anchors: (s_min -> 0, tau* -> 50, s_max -> 100)  Typed RiskFactorDTO (labels, descriptions,
+Normalized ML Score in [0, 100]                  numeric/text values, evidence snapshot)
+        │                                        Rule Score in [0, 100]
+        │                                                 │
+        └────────────────────────┬────────────────────────┘
+                                 ▼
+                     Hybrid Scoring Engine
+          Linear Combination: raw = 0.60 * S_norm + 0.40 * S_rule
+          Evidence-Gated Severity Floors (Optional):
+            CRITICAL factor -> floor >= 75.0
+            HIGH factor     -> floor >= 50.0
+          Clamping: [0.00, 100.00] rounded to 2 decimal places
+                                 │
+                                 ▼
+                     Risk Tier Mapping
+             [LOW: < 25, MEDIUM: < 50, HIGH: < 75, CRITICAL: >= 75]
+                                 │
+                                 ▼
+                     Atomic Savepoint Persistence
+             Parent risk_analyses + Child risk_factors
+             Idempotency via (tx_id, model_id, config_version, feature_hash)
+             Transactional Audit Event: TRANSACTION_RISK_ANALYZED
 ```
 
 ---

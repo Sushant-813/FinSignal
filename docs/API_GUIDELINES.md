@@ -323,7 +323,9 @@ Conceptual permissions:
 | View transactions | Yes | Yes | Yes |
 | Import datasets | Yes | Yes | Optional |
 | Run analytics | Yes | Yes | Yes |
-| View risk results | Yes | Yes | Yes |
+| View risk results (`GET /risk`) | Yes | Yes | Yes |
+| Analyze risk with Active model (`POST /risk/analyze`) | Yes | Yes | Yes |
+| Analyze risk with Validated model (`POST /risk/analyze`) | Yes | No | No |
 | Create investigations | Yes | Yes | Yes |
 | Assign investigations | Yes | Limited | Yes |
 | Add evidence | Yes | Yes | Yes |
@@ -1087,31 +1089,80 @@ A debit transaction is flagged if $\text{amount} \ge \text{threshold}$ (inclusiv
 
 ---
 
-# 26. Risk API
+# 26. Risk API (Phase 8 Implemented)
 
-## 26.1 Transaction Risk
+The Risk API provides endpoints for retrieving historical transaction risk evaluations and generating on-demand deterministic assessments combining unsupervised ML anomaly scores and deterministic rules.
 
+## 26.1 Retrieve Transaction Risk (`GET /api/v1/transactions/{transaction_id}/risk`)
+
+Retrieves the latest persisted risk analysis for a specific transaction along with its explainability factors.
+
+### Operational Semantics
+- **Pure Read Operation:** Does not invoke ML inference, feature extraction, or create audit events.
+- **Ordering:** When multiple analyses exist for a transaction across different model versions or scoring configurations, returns the latest evaluation ordered by `(created_at DESC, id DESC)`.
+- **RBAC Requirement:** Accessible by `ADMIN`, `ANALYST`, and `INVESTIGATOR` roles.
+
+### Request
 ```http
-GET /api/v1/transactions/{transaction_id}/risk
+GET /api/v1/transactions/550e8400-e29b-41d4-a716-446655440000/risk HTTP/1.1
+Authorization: Bearer <access_token>
 ```
 
-Example:
+### Status Codes
+- `200 OK`: Analysis successfully found and returned.
+- `401 Unauthorized`: Missing, expired, or invalid JWT bearer token.
+- `403 Forbidden`: Authenticated user lacks required role.
+- `404 Not Found`: Transaction does not exist, or no risk analysis has been generated for this transaction (`RISK_ANALYSIS_NOT_FOUND`).
 
+### Response Schema (`RiskAnalysisResponse`)
 ```json
 {
-  "score": 91.4,
-  "risk_level": "CRITICAL",
-  "model_version": "transaction-anomaly-1.0.0",
+  "id": "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d",
+  "transaction_id": "550e8400-e29b-41d4-a716-446655440000",
+  "model_version_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+  "config_version": "rc_v1.0#3a9f0b2c1d8e",
+  "feature_vector_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "score": 68.50,
+  "risk_level": "HIGH",
+  "ml_anomaly_score": 0.428150,
+  "ml_threshold": 0.350000,
+  "normalized_ml_score": 62.40,
+  "rule_score": 40.00,
+  "normalization_params": {
+    "method": "piecewise_linear_anchored_v1",
+    "score_min": 0.05,
+    "threshold": 0.35,
+    "score_max": 0.85
+  },
+  "created_at": "2026-10-30T14:32:00Z",
   "factors": [
     {
-      "code": "AMOUNT_ANOMALY",
+      "id": "f1e2d3c4-b5a6-7890-1234-56789abcdef0",
+      "factor_code": "HIGH_VELOCITY",
+      "factor_label": "High Transaction Velocity",
       "severity": "HIGH",
-      "description": "Amount is 7.8x the account's 30-day median."
+      "description": "5 transactions observed within the trailing 24-hour window.",
+      "value_numeric": 5.0,
+      "value_text": null,
+      "evidence": {
+        "velocity_24h": 5,
+        "threshold": 5
+      },
+      "created_at": "2026-10-30T14:32:00Z"
     },
     {
-      "code": "NEW_DEVICE",
-      "severity": "HIGH",
-      "description": "Device has not previously been associated with this account."
+      "id": "f2e3d4c5-b6a7-8901-2345-6789abcdef01",
+      "factor_code": "NEW_DEVICE",
+      "factor_label": "Unrecognized Device",
+      "severity": "MEDIUM",
+      "description": "Device 987fcdeb-51a2-43f7-9012-345678abcdef has not been seen on this account before.",
+      "value_numeric": null,
+      "value_text": "987fcdeb-51a2-43f7-9012-345678abcdef",
+      "evidence": {
+        "device_id": "987fcdeb-51a2-43f7-9012-345678abcdef",
+        "prior_account_devices": 1
+      },
+      "created_at": "2026-10-30T14:32:00Z"
     }
   ]
 }
@@ -1119,21 +1170,45 @@ Example:
 
 ---
 
-# 27. Risk Reprocessing
+# 27. On-Demand Risk Analysis (`POST /api/v1/transactions/{transaction_id}/risk/analyze`)
 
-Model reprocessing should be an explicit operation.
+Generates a new risk assessment or idempotently returns an existing identical assessment for a transaction.
 
-Potential endpoint:
+### Operational Semantics
+1. **Model Resolution:** Resolves target model version. Defaults to currently `ACTIVE` model if `model_version_id` is omitted in the request body.
+2. **Lifecycle Eligibility Enforcement:**
+   - `ACTIVE` models: Allowed for `ADMIN`, `ANALYST`, and `INVESTIGATOR`.
+   - `VALIDATED` models: Restricted to `ADMIN` (shadow/canary evaluation); returns `403 Forbidden` for other roles.
+   - `EXPERIMENTAL` models: Ineligible for transaction evaluation; returns `400 Bad Request` (`MODEL_STATUS_INVALID`).
+   - `RETIRED` models: Ineligible for new analysis generation; returns `400 Bad Request` (`MODEL_STATUS_INVALID`).
+3. **Feature Computation:** Extracts 34 behavioral features as of transaction `occurred_at` (preserving temporal correctness) and computes the canonical SHA-256 feature fingerprint.
+4. **Scoring & Normalization:**
+   - Computes raw ML anomaly score $S(X) = -\text{score\_samples}(X)$.
+   - Normalizes ML score via piecewise linear anchoring $[s_{\min}, \tau^*, s_{\max}] \mapsto [0, 50, 100]$.
+   - Runs deterministic rule engine to produce activated `risk_factors` and cumulative `rule_score`.
+   - Computes weighted composite score: $\text{score} = w_{\text{ml}} \cdot S_{\text{norm}} + w_{\text{rule}} \cdot S_{\text{rule}}$ (defaults: $w_{\text{ml}}=0.60, w_{\text{rule}}=0.40$).
+5. **Idempotency & Concurrency:**
+   - If an analysis matching the 4-tuple `(transaction_id, model_version_id, config_version, feature_vector_hash)` already exists and `force_recalculate=False`, the existing analysis is returned immediately without duplicate DB write.
+   - If writing concurrently, database savepoint `session.begin_nested()` catches PostgreSQL unique violation `23505` on `uq_risk_analyses_identity`, rolls back the savepoint, and cleanly recovers by returning the existing analysis.
+6. **Audit Integration:**
+   - Records an immutable `TRANSACTION_RISK_ANALYZED` audit event within the same database transaction.
 
-```http
-POST /api/v1/transactions/{transaction_id}/risk/analyze
+### Request Body (`RiskAnalyzeRequest`)
+```json
+{
+  "model_version_id": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+  "force_recalculate": false
+}
 ```
+*Note:* Both fields are optional. If body is omitted or empty, `model_version_id` defaults to `null` (resolving active model) and `force_recalculate` defaults to `false`.
 
-This may be restricted to authorized users or internal service workflows.
-
-The endpoint should never silently replace historical model results.
-
-Each analysis is associated with a model version.
+### Status Codes
+- `200 OK`: Analysis successfully generated or retrieved.
+- `400 Bad Request`: Ineligible model status (`MODEL_STATUS_INVALID`), missing model artifact, or feature extraction failure.
+- `401 Unauthorized`: Missing or invalid authentication token.
+- `403 Forbidden`: User lacks necessary role, or non-admin attempted analysis with a `VALIDATED` model.
+- `404 Not Found`: Transaction ID or specified Model Version ID does not exist.
+- `422 Unprocessable Entity`: Invalid request payload formatting.
 
 ---
 

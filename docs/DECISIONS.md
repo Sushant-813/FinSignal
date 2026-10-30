@@ -2018,6 +2018,38 @@ Implement a standalone administrative CLI tool (`finsignal-admin prune-unreferen
 
 ---
 
+# Proposed ADR-070 — Hybrid Risk Scoring, Validation-Anchored Normalization, and Canonical Analysis Identity
+
+**Status:** PROPOSED (Phase 8 Implemented, Pending Project-Owner Formal Acceptance)
+
+**Date:** 2026-10-30
+
+**Related decisions:** ADR-017, ADR-018, ADR-019, ADR-020, ADR-027, Proposed ADR-067, Proposed ADR-068
+
+## Context
+
+Financial transaction intelligence requires combining multivariate unsupervised anomaly detection (Isolation Forest) with domain-specific deterministic heuristics (velocity surges, amount deviations, entity novelty, temporal anomalies) into an interpretable investigation prioritization score. Furthermore, raw Isolation Forest scores are uncalibrated and continuous, requiring normalization that preserves decision threshold alignment without leaking sealed test data or violating temporal discipline.
+
+## Proposed Decision
+
+1. **Hybrid Scoring Formulation:** Linear weighted combination:
+   $$\text{raw} = (w_{\text{ml}} \cdot S_{\text{norm}}) + (w_{\text{rule}} \cdot S_{\text{rule}})$$
+   with defaults $w_{\text{ml}} = 0.60, w_{\text{rule}} = 0.40$ ($w_{\text{ml}} + w_{\text{rule}} = 1.0$).
+2. **Piecewise Linear Normalization (`piecewise_linear_anchored_v1`):**
+   Raw anomaly scores $S(X) = -\text{score\_samples}(X)$ are mapped to $[0.0, 100.0]$ anchored to validation-derived bounds:
+   $$s_{\min} \mapsto 0.0, \quad \tau^* \mapsto 50.0, \quad s_{\max} \mapsto 100.0$$
+   Enforces invariant $s_{\min} < \tau^* < s_{\max}$. The sealed holdout test partition is strictly protected and never accessed during threshold selection or calibration.
+3. **Deterministic Heuristic Rules:** Evaluates 9 deterministic financial heuristics yielding structured, explainable `risk_factors` with cumulative rule score $S_{\text{rule}} = \min(100.0, \sum \text{points})$.
+4. **Canonical Analysis Identity & Concurrency:**
+   Each analysis is uniquely identified by the 4-tuple `(transaction_id, model_version_id, config_version, feature_vector_hash)` enforced by PostgreSQL unique constraint `uq_risk_analyses_identity`.
+   In-flight concurrency races are handled via atomic savepoint rollback (`session.begin_nested()`) on PostgreSQL SQLSTATE `23505`, recovering the existing analysis record safely.
+5. **Role-Based & Lifecycle Access Gating:**
+   `ACTIVE` models are accessible by `ADMIN`, `ANALYST`, and `INVESTIGATOR`.
+   `VALIDATED` models are restricted to `ADMIN` (shadow/canary testing).
+   `EXPERIMENTAL` and `RETIRED` models are ineligible for transaction evaluation.
+
+---
+
 # 4. Decision Dependency Map
 
 ```text
@@ -2092,8 +2124,8 @@ The following decisions remain intentionally open until implementation provides 
 3. Exact model artifact storage location — Implementation-informed recommendation (Phase 7): Default to filesystem directory `{model_artifacts_dir}/{model_id}/model.joblib` with companion `metadata.json`. (Status: OPEN, recommendation pending owner approval).
 4. Exact LLM provider.
 5. Exact AI model.
-6. Exact risk-score thresholds.
-7. Exact feature normalization strategy.
+6. Exact risk-score thresholds — Implementation-informed resolution (Phase 8): Defaults to linear cutoffs [0.00, 25.00) LOW, [25.00, 50.00) MEDIUM, [50.00, 75.00) HIGH, [75.00, 100.00] CRITICAL, with configurable escalation floors. (Status: RESOLVED).
+7. Exact feature normalization strategy — Implementation-informed resolution (Phase 8): Resolved via piecewise_linear_anchored_v1, anchoring validation score bounds [score_min, tau*, score_max] -> [0.0, 50.0, 100.0]. (Status: RESOLVED).
 8. Exact model artifact serialization format — Implementation-informed recommendation (Phase 7): Use `joblib.dump()` with two-phase atomic temporary file rename and pre-deserialization SHA-256 integrity check. (Status: OPEN, recommendation pending owner approval).
 9. Exact deployment platform.
 10. Exact rate-limiting implementation defaults.

@@ -125,7 +125,7 @@ async def populated_dataset(
     db_transactions = (await async_session.execute(tx_stmt)).scalars().all()
 
     # Build ground truth mapping by transaction ID string
-    gt_map = {str(gt.transaction_id): gt for gt in tx_ds.ground_truth}
+    gt_map = {gt.transaction_id: gt for gt in tx_ds.ground_truth}
 
     return {
         "dataset_version_id": ds_version.id,
@@ -175,6 +175,11 @@ async def test_end_to_end_ml_pipeline_lifecycle(
     # Check metrics payload
     assert model_record.metrics is not None
     assert "threshold" in model_record.metrics
+    assert "score_min" in model_record.metrics
+    assert "score_max" in model_record.metrics
+    assert isinstance(model_record.metrics["score_min"], float)
+    assert isinstance(model_record.metrics["score_max"], float)
+    assert model_record.metrics["score_min"] < model_record.metrics["score_max"]
     assert "validation" in model_record.metrics
     assert "test" in model_record.metrics
     assert "split" in model_record.metrics

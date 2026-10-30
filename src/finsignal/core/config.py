@@ -37,6 +37,28 @@ class Settings(BaseSettings):
         description="Maximum validation alert rate constraint for threshold selection",
     )
 
+    # Risk Scoring & Explainability (Phase 8)
+    risk_config_version: str = Field(
+        default="rc_v1.0",
+        description="Immutable risk scoring configuration version identifier",
+    )
+    risk_weight_ml: float = Field(
+        default=0.60,
+        ge=0.0,
+        le=1.0,
+        description="Weight of normalized ML anomaly signal in composite risk score",
+    )
+    risk_weight_rule: float = Field(
+        default=0.40,
+        ge=0.0,
+        le=1.0,
+        description="Weight of deterministic rule score in composite risk score",
+    )
+    risk_escalation_floor_enabled: bool = Field(
+        default=False,
+        description="Whether rule-severity escalation floors are applied to composite risk score",
+    )
+
     @field_validator("log_level")
     @classmethod
     def validate_log_level(cls, v: str) -> str:

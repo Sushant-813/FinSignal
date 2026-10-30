@@ -148,6 +148,14 @@ NumPy should be used where numerical operations benefit from array-based computa
 - **Model Registry (`ModelRepository`):** Managed via SQLAlchemy ORM and Alembic migration `0004_model_versions` (parent: `0003_account_import_namespace`), enforcing row-level locking during promotion and partial unique index `uq_model_versions_active_family`.
 - **Inference Service (`MLService`):** Orchestrates dynamic PostgreSQL active-model resolution, in-memory caching validated against `artifact_hash`, and online scoring.
 
+### Implemented Phase 8 Risk Analysis & Explainability Capabilities
+- **Risk Scoring Engine (`HybridScoringEngine`):** Combines normalized ML anomaly scores and deterministic rule scores: $\text{raw} = (w_{\text{ml}} \cdot S_{\text{norm}}) + (w_{\text{rule}} \cdot S_{\text{rule}})$ ($w_{\text{ml}}=0.60, w_{\text{rule}}=0.40$), clamped to $[0.00, 100.00]$ and mapped to tiers (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL`).
+- **Validation-Anchored Normalization (`normalize_ml_score`):** Piecewise linear interpolation anchored to empirical validation bounds $(s_{\min} \mapsto 0.0, \tau^* \mapsto 50.0, s_{\max} \mapsto 100.0)$ enforcing $s_{\min} < \tau^* < s_{\max}$.
+- **Deterministic Heuristic Rules (`RiskRuleEngine`):** Evaluates 9 financial heuristics across velocity, amount deviation, entity novelty, temporal deviations, and cold-start accounts into bounded rule score $S_{\text{rule}} \in [0.0, 100.0]$.
+- **Fingerprinting & Idempotency:** Canonical 34-feature SHA-256 fingerprinting and effective config identity hash (`effective_config_version`) backed by composite unique constraint `uq_risk_analyses_identity`.
+- **Persistence & Conflict Recovery (`RiskRepository`):** Managed via SQLAlchemy ORM and Alembic migration `0005_intelligence_risk_models` (down-revision `0004_model_versions`). Implements atomic nested transaction savepoint (`session.begin_nested()`) recovering from PostgreSQL unique violation `23505` on `uq_risk_analyses_identity`.
+- **Protected API Endpoints (`RiskService` & API Router):** `GET /api/v1/transactions/{id}/risk` and `POST /api/v1/transactions/{id}/risk/analyze` with role-based authorization (`ADMIN`, `ANALYST`, `INVESTIGATOR`), model lifecycle eligibility gates, and `TRANSACTION_RISK_ANALYZED` audit events.
+
 ---
 
 ## 3.5 Frontend
@@ -609,48 +617,50 @@ Risk analysis belongs in a separate representation.
 
 ---
 
-# 19. Risk Analysis Model
+# 19. Risk Analysis Model (Phase 8 Implemented)
 
-Risk analysis should be stored separately from transactions.
-
-Conceptual fields:
+Risk analyses are persisted separately from transactions in PostgreSQL (`risk_analyses`), implemented in Phase 8 via migration `0005_intelligence_risk_models.py` (down-revision `0004_model_versions`):
 
 ```text
-risk_analysis_id
-transaction_id
-model_version
-score
-risk_level
-created_at
+id                     UUID PRIMARY KEY
+transaction_id         UUID REFERENCES transactions(id) ON DELETE RESTRICT
+model_version_id       UUID REFERENCES model_versions(id) ON DELETE RESTRICT
+config_version         VARCHAR(32) (base version + 12-char SHA-256 hash)
+feature_vector_hash    VARCHAR(64) (SHA-256 of 34 features & context)
+score                  NUMERIC(8,3) CHECK (score >= 0.0 AND score <= 100.0)
+risk_level             VARCHAR(16) CHECK (risk_level IN ('LOW','MEDIUM','HIGH','CRITICAL'))
+ml_anomaly_score       FLOAT (raw continuous score)
+ml_threshold           FLOAT (operating decision threshold tau*)
+normalized_ml_score    FLOAT (piecewise linear score in [0.0, 100.0])
+rule_score             FLOAT (cumulative bounded rule score in [0.0, 100.0])
+normalization_params   JSONB (calibration bounds snapshot)
+created_at             TIMESTAMPTZ DEFAULT now()
 ```
 
-This separation allows:
-
-- Multiple model versions
-- Re-analysis
-- Model comparison
-- Historical risk results
-- Auditable model output
+### Constraints & Idempotency
+- Unique constraint `uq_risk_analyses_identity` on `(transaction_id, model_version_id, config_version, feature_vector_hash)` enforces identity and idempotency while enabling re-evaluation across different model versions, configuration fingerprints, or updated features.
+- In-flight concurrency races are handled via atomic savepoint rollback (`session.begin_nested()`) on PostgreSQL SQLSTATE `23505`.
 
 ---
 
-# 20. Risk Factors
+# 20. Risk Factors (Phase 8 Implemented)
 
-Structured risk factors should be represented separately where appropriate.
-
-Example:
+Structured explainability factors are stored in PostgreSQL (`risk_factors`), linked to parent risk analyses with cascading delete:
 
 ```text
-risk_analysis
-      |
-      +---- amount_deviation
-      +---- new_device
-      +---- new_location
-      +---- unusual_time
-      +---- transaction_velocity
+id                  UUID PRIMARY KEY
+risk_analysis_id    UUID REFERENCES risk_analyses(id) ON DELETE CASCADE
+factor_code         VARCHAR(64) (e.g. HIGH_VELOCITY, LARGE_AMOUNT_DEVIATION)
+factor_label        VARCHAR(255) (human-readable title)
+severity            VARCHAR(16) CHECK (severity IN ('INFO','LOW','MEDIUM','HIGH','CRITICAL'))
+description         TEXT (detailed contextual narrative)
+value_numeric       NUMERIC(18,6) (optional quantitative metric)
+value_text          TEXT (optional textual identifier)
+evidence            JSONB (structured supporting metadata dictionary)
+created_at          TIMESTAMPTZ DEFAULT now()
 ```
 
-Each factor should be explainable and traceable to the underlying evidence.
+Phase 8 implements 9 standardized factor codes: `COLD_START_ACCOUNT`, `HIGH_VELOCITY`, `LARGE_AMOUNT_DEVIATION`, `NEW_DEVICE`, `NEW_LOCATION`, `UNUSUAL_TIME`, `BEHAVIORAL_SHIFT`, `NEW_MERCHANT`, `NEW_CATEGORY`.
 
 ---
 

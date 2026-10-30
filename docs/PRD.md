@@ -586,7 +586,7 @@ FinSignal provides deterministic financial intelligence and aggregation capabili
 - **Phase 5 (Implemented):** Deterministic SQL aggregates, exact monetary calculations, calendar trend bucketing, and statistical median-based outlier filtering.
 - **Phase 6 (Implemented):** Sliding-window behavioral feature engineering producing the validated 34-feature `FeatureVector` under `FEATURE_VERSION = "v1.0"`.
 - **Phase 7 (Implemented):** Machine learning anomaly detection via `IsolationForestModel`, chronological partitioning with equal-timestamp grouping, validation-only threshold tuning under an operational alert-rate cap ($\le 5\%$), pre-deserialization SHA-256 integrity verification, and active model promotion.
-- **Phase 8 (Deferred):** Hybrid risk scoring combining anomaly scores with deterministic financial heuristics into a normalized 0–100 composite risk score, risk-level mapping (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL`), and explainable risk-factor generation.
+- **Phase 8 (Implemented):** Hybrid risk scoring combining normalized unsupervised ML anomaly scores with deterministic financial heuristics into a 0–100 composite risk score, risk-tier mapping (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL`), structured explainable risk factors, and protected API endpoints with atomic PostgreSQL persistence and audit logging.
 - **Phase 9 (Deferred):** Case management, alert triage, evidence attachment, and investigator resolution workflows.
 
 ---
@@ -673,45 +673,47 @@ $$S(X) = - \text{score\_samples}(X)$$
 
 Operating decision thresholds are tuned on validation data subject to an operational alert-rate budget ($\le 5\%$). Future supervised models may be evaluated against this anomaly-detection baseline.
 
-### 13.3 Risk Score
+### 13.3 Risk Score (Phase 8 Implemented)
 
-The system should produce a risk/anomaly score.
+The system produces an investigation prioritization risk score via a hybrid formula combining normalized machine learning anomaly scores and deterministic financial heuristics:
 
-Example:
+$$\text{raw} = (w_{\text{ml}} \cdot S_{\text{norm}}) + (w_{\text{rule}} \cdot S_{\text{rule}})$$
+
+- **Default Weights:** $w_{\text{ml}} = 0.60$ (60% ML anomaly weight), $w_{\text{rule}} = 0.40$ (40% heuristic rule weight).
+- **Score Bounds:** Clamped strictly to $[0.00, 100.00]$ and rounded to 2 decimal places.
+- **Risk Severity Tiers:**
+  - $0.00 \le \text{score} < 25.00 \implies \textbf{LOW}$
+  - $25.00 \le \text{score} < 50.00 \implies \textbf{MEDIUM}$
+  - $50.00 \le \text{score} < 75.00 \implies \textbf{HIGH}$
+  - $75.00 \le \text{score} \le 100.00 \implies \textbf{CRITICAL}$
+
+The score is an **investigation prioritization score**, not a probability of fraud:
 
 ```text
-Risk Score: 92 / 100
+Risk Score: 68.50 / 100.00
 Risk Level: HIGH
 ```
 
-The score should not automatically be described as:
-
-```text
-92% probability of fraud
-```
-
-unless the model is explicitly calibrated and validated for probabilistic interpretation.
+The score must never be described as "68.50% probability of fraud" because it reflects multidimensional anomalousness and policy indicators rather than posterior fraud probability.
 
 ---
 
-## 14. Risk Factors
+## 14. Risk Factors (Phase 8 Implemented)
 
-Every flagged transaction should expose structured risk factors where available.
+Every evaluated transaction produces structured, evidence-based explainability factors persisted in PostgreSQL (`risk_factors`).
 
-Example:
+Phase 8 implements 9 standardized factor codes:
+1. `COLD_START_ACCOUNT` (`INFO`, 0 pts) — Account history $< 5$ transactions; prevents false amount penalties.
+2. `HIGH_VELOCITY` (`MEDIUM`: 15, `HIGH`: 25, `CRITICAL`: 40 pts) — Velocity surges within 1h or 24h windows.
+3. `LARGE_AMOUNT_DEVIATION` (`MEDIUM`: 15, `HIGH`: 25, `CRITICAL`: 40 pts) — Significant amount z-score deviation.
+4. `NEW_DEVICE` (`MEDIUM`: 15, `HIGH`: 25 pts) — Unrecognized device; escalates if shared across accounts.
+5. `NEW_LOCATION` (`MEDIUM`: 15, `HIGH`: 25 pts) — Unrecognized location; escalates on international transactions.
+6. `UNUSUAL_TIME` (`LOW`: 5, `MEDIUM`: 15 pts) — Activity outside normal hours; escalates during late night (01:00–05:00).
+7. `BEHAVIORAL_SHIFT` (`MEDIUM`: 15, `HIGH`: 25 pts) — Trailing spending surge vs 30-day baseline.
+8. `NEW_MERCHANT` (`LOW`: 5 pts) — First transaction with merchant on account.
+9. `NEW_CATEGORY` (`LOW`: 5 pts) — First transaction in category (suppressed if `BEHAVIORAL_SHIFT` active).
 
-```text
-Risk Score: 92
-
-Risk Factors:
-- Amount 4.8x above account median
-- New device detected
-- New location detected
-- Activity occurred outside normal hours
-- 7 transactions within 10 minutes
-```
-
-Risk factors should be derived from observable transaction/account behavior.
+Risk factors are strictly derived from observable transaction and account feature data, guaranteeing traceable and unhallucinated explanations.
 
 ---
 

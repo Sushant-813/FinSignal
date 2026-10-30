@@ -661,123 +661,105 @@ Changing the semantics of a feature requires a new feature version.
 
 ---
 
-# 27. Hybrid Risk Scoring
+# 27. Hybrid Risk Scoring (Phase 8 Implemented)
 
-The final FinSignal risk score should not depend exclusively on the anomaly model.
+The FinSignal risk score combines unsupervised machine learning anomaly detection with deterministic expert rules into a transparent, explainable investigation prioritization metric:
 
-Conceptually:
+$$\text{raw\_composite} = (w_{\text{ml}} \cdot S_{\text{norm}}) + (w_{\text{rule}} \cdot S_{\text{rule}})$$
 
-```text
-risk_score =
-    weighted(
-        ml_anomaly_signal,
-        behavioral_signals,
-        velocity_signals,
-        device_signals,
-        location_signals,
-        temporal_signals
-    )
-```
+### Implemented Scoring Constants and Defaults
+- $w_{\text{ml}} = 0.60$ (60% weight allocated to normalized ML anomaly detection)
+- $w_{\text{rule}} = 0.40$ (40% weight allocated to cumulative deterministic heuristic rules)
+- Invariant: $w_{\text{ml}} + w_{\text{rule}} = 1.0$ (enforced by `RiskScoringConfig`)
+- Score bounds: Clamped strictly to $[0.00, 100.00]$ and rounded to 2 decimal places.
 
-The exact weights must be empirically evaluated.
+### Piecewise Linear ML Score Normalization (`piecewise_linear_anchored_v1`)
+Because raw Isolation Forest anomaly scores $S(X) = -\text{score\_samples}(X)$ are continuous and uncalibrated, FinSignal anchors the raw score to empirical validation-derived bounds:
+- $s_{\min} \mapsto 0.0$ (minimum score observed on validation split)
+- $\tau^* \mapsto 50.0$ (operating decision threshold selected on validation split under alert-rate constraint)
+- $s_{\max} \mapsto 100.0$ (maximum score observed on validation split)
 
-The initial implementation may use a transparent weighted scoring framework rather than a second opaque ML model.
+Mathematically, for any input raw score $s$:
+$$S_{\text{norm}}(s) = \begin{cases}
+0.0 & \text{if } s \le s_{\min} \\
+50.0 \times \frac{s - s_{\min}}{\tau^* - s_{\min}} & \text{if } s_{\min} < s \le \tau^* \\
+50.0 + 50.0 \times \frac{s - \tau^*}{s_{\max} - \tau^*} & \text{if } \tau^* < s < s_{\max} \\
+100.0 & \text{if } s \ge s_{\max}
+\end{cases}$$
 
----
-
-# 28. Example Hybrid Score
-
-Conceptual example:
-
-```text
-ML anomaly signal       40%
-Behavior deviation      20%
-Velocity                15%
-New device              10%
-New location             5%
-Unusual time             5%
-New merchant             5%
-```
-
-These percentages are **starting hypotheses**, not final production values.
-
-They must be validated against:
-
-- precision
-- recall
-- PR-AUC
-- false-positive rate
-- alert volume
-- scenario coverage
+### Strict Partition Isolation & Invariants
+- **Validation-Derived Only:** Calibration parameters $(s_{\min}, s_{\max}, \tau^*)$ are derived exclusively from the chronological validation split during model training and registration.
+- **Sealed Holdout Protection:** The holdout test partition is **never** accessed or used for threshold selection or calibration bound derivation.
+- **Ordering Invariant:** Training and registration strictly assert $s_{\min} < \tau^* < s_{\max}$. If validation reference distributions are degenerate ($s_{\min} \ge \tau^*$ or $\tau^* \ge s_{\max}$), model registration fails safely.
+- **Metadata Persistence:** `score_min` and `score_max` are persisted in `model_versions.metrics` and copied into `risk_analyses.normalization_params` for absolute historical audit reproducibility.
 
 ---
 
-# 29. Risk Score Semantics
+# 28. Deterministic Rule Engine
 
-The FinSignal risk score is a **prioritization score**, not automatically a probability of fraud.
+The deterministic rule engine (`RiskRuleEngine`) evaluates 9 explicit financial domain heuristics against point-in-time behavioral features:
 
-Example:
+$$S_{\text{rule}} = \min\left(100.0, \sum_{i} \text{points}_i\right)$$
 
-```text
-0–24    LOW
-25–49   MEDIUM
-50–74   HIGH
-75–100  CRITICAL
-```
+Each activated rule yields an explainable `RiskFactorDTO` with severity, numerical measurements, textual identifiers, and structured JSON evidence.
 
-These thresholds are configurable and should be validated against actual investigation capacity.
-
-A score of:
-
-```text
-90
-```
-
-does not mean:
-
-```text
-90% probability of fraud
-```
-
-unless a separately calibrated probability model has been introduced and validated.
+| Rule / Factor Code | Severity | Points | Activation Logic |
+|---|---|---|---|
+| `COLD_START_ACCOUNT` | `INFO` | 0 | Prior account history $< 5$ transactions. Flags baseline uncertainty without penalizing score. |
+| `HIGH_VELOCITY` | `MEDIUM` / `HIGH` / `CRITICAL` | 15 / 25 / 40 | Window velocity: 1h $\ge 3$ or 24h $\ge 5$ (`MEDIUM`), 1h $\ge 5$ or 24h $\ge 10$ (`HIGH`), 1h $\ge 10$ or 24h $\ge 20$ (`CRITICAL`). |
+| `LARGE_AMOUNT_DEVIATION` | `MEDIUM` / `HIGH` / `CRITICAL` | 15 / 25 / 40 | Account amount z-score: $z \ge 3.0$ (`MEDIUM`), $z \ge 4.0$ (`HIGH`), $z \ge 5.0$ (`CRITICAL`). Suppressed for cold-start accounts. |
+| `NEW_DEVICE` | `MEDIUM` / `HIGH` | 15 / 25 | Unrecognized device for account. Escalated to `HIGH` if device is shared across $\ge 2$ other accounts. |
+| `NEW_LOCATION` | `MEDIUM` / `HIGH` | 15 / 25 | Unrecognized geographic location. Escalated to `HIGH` if flagged as international or high-risk. |
+| `UNUSUAL_TIME` | `LOW` / `MEDIUM` | 5 / 15 | Hour outside account habitual active window. Escalated to `MEDIUM` if between 01:00 and 05:00 local time. |
+| `BEHAVIORAL_SHIFT` | `MEDIUM` / `HIGH` | 15 / 25 | Trailing spending surge ratio: 24h/30d ratio $\ge 2.5$ (`MEDIUM`), $\ge 4.0$ (`HIGH`). |
+| `NEW_MERCHANT` | `LOW` | 5 | First interaction with merchant on this account. |
+| `NEW_CATEGORY` | `LOW` | 5 | First interaction in merchant category. Suppressed if `BEHAVIORAL_SHIFT` already fired. |
 
 ---
 
-# 30. Risk Factor Generation
+# 29. Risk Score Semantics & Tier Classification
 
-Every high-risk result should produce structured risk factors.
+The FinSignal composite risk score is an **investigation prioritization score**, strictly separated from fraud probability:
 
-Example:
+- **Not Fraud Probability:** The score reflects multivariate anomalousness and heuristic policy risk. It does not represent a posterior probability $P(\text{fraud} \mid X)$.
+- **Deterministic Cutoffs:**
+  - $[0.00, 25.00) \implies \textbf{LOW}$ (routine transaction; no immediate investigative action)
+  - $[25.00, 50.00) \implies \textbf{MEDIUM}$ (moderate risk; retained for analyst triage or batch review)
+  - $[50.00, 75.00) \implies \textbf{HIGH}$ (elevated risk; candidate for automated or expedited investigation)
+  - $[75.00, 100.00] \implies \textbf{CRITICAL}$ (extreme risk; highest investigation priority)
 
-```text
-AMOUNT_ANOMALY
-severity = HIGH
-value_numeric = 8.7
+### Optional Severity Floors
+The scoring engine supports optional escalation floors (`escalation_floor_enabled`, default `False`):
+- If activated and any risk factor has `severity == CRITICAL`, final score $\ge 75.0$ (`CRITICAL` tier).
+- If activated and any risk factor has `severity == HIGH`, final score $\ge 50.0$ (`HIGH` tier).
+
+---
+
+# 30. Explainability & Risk Factor Contracts
+
+Every generated risk analysis emits a list of structured `risk_factors` persisted to PostgreSQL. Factors provide concrete evidence linking behavioral observations to established investigation rules:
+
+```json
+{
+  "factor_code": "LARGE_AMOUNT_DEVIATION",
+  "factor_label": "Unusual Transaction Amount",
+  "severity": "HIGH",
+  "description": "Transaction amount $4,500.00 deviates significantly from account baseline (z-score = 4.25).",
+  "value_numeric": 4.25,
+  "value_text": null,
+  "evidence": {
+    "amount": 4500.0,
+    "account_mean_30d": 350.0,
+    "account_std_30d": 976.47,
+    "z_score": 4.25
+  }
+}
 ```
 
-```text
-NEW_DEVICE
-severity = MEDIUM
-```
-
-```text
-NEW_LOCATION
-severity = HIGH
-```
-
-```text
-HIGH_VELOCITY
-severity = HIGH
-value_numeric = 12
-```
-
-This structured representation becomes the foundation for:
-
-- investigator UI
-- explanations
-- investigation evidence
-- AI summaries
-- model debugging
+### Explainability Guarantees
+1. **Evidence-Based:** Every factor contains the exact quantitative metric (`value_numeric`) or identifier (`value_text`) and supporting context (`evidence`).
+2. **Stable Codes:** Factor codes use uppercase snake_case identifiers guaranteed stable across model and application versions.
+3. **No Hallucination:** Deterministic rules are evaluated purely against extracted feature data; no generative AI or heuristic guessing is involved in factor generation.
 
 ---
 
@@ -851,7 +833,9 @@ F006 — Account Takeover
 F007 — Behavioral Spending Shift
 ```
 
-The ML system should be evaluated both globally and by scenario.
+### Test Scenario Cohort Boundary
+- **Synthetic Test Fixture Only:** The 200-transaction synthetic scenario cohort (`test_risk_scenarios.py`) is an integration test harness designed to verify that the scoring pipeline and rule engine activate expected factors and risk tiers under targeted conditions.
+- **Not Empirical Performance:** The synthetic scenario cohort is **not** an empirical validation or production dataset. Its alert rate and tier distribution must never be presented as empirical model performance or production alert volume.
 
 ---
 
@@ -1030,7 +1014,7 @@ account_risk =
   flagging debit transactions where $\text{amount} \ge \text{threshold}$ within the requested reporting window. It does **not** employ a machine learning model or multivariate feature weights.
 - **Phase 6 (Implemented):** Point-in-time temporal and behavioral feature engineering producing the validated 34-feature `FeatureVector` under `FEATURE_VERSION = "v1.0"` with strict half-open window intervals $[t - \Delta, t)$ to prevent lookahead leakage.
 - **Phase 7 (Implemented):** Unsupervised multivariate anomaly detection via `IsolationForestModel`, extracting canonical 34-feature matrices, performing chronological partitioning with timestamp grouping, optimizing decision thresholds on validation data under an operational alert-rate budget ($\le 5\%$), and verifying artifact SHA-256 integrity.
-- **Phase 8 (Deferred / Out of Scope):** Hybrid risk scoring combining anomaly scores with deterministic financial heuristics into a normalized 0–100 composite risk score, classifying risk tiers (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL`), generating explainable risk factors, and driving automated investigation workflows.
+- **Phase 8 (Implemented):** Hybrid risk scoring combining normalized unsupervised ML anomaly scores with deterministic financial heuristics into a 0–100 composite risk score, classifying risk tiers (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL`), generating structured evidence-based explainability factors, and persisting risk results with idempotency and transaction-level audit logging.
 
 ### 40.2 Validation-Only Alert-Rate Constrained Threshold Tuning
 Because unsupervised Isolation Forest anomaly scores $S(X) = - \text{score\_samples}(X)$ are uncalibrated, FinSignal utilizes validation split scenario labels to select an optimal operating threshold $\tau^*$:

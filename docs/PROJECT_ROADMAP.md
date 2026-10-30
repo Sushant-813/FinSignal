@@ -651,72 +651,82 @@ Registry Persistence & Promotion (ModelRepository, migration 0004_model_versions
 - [ ] **Administrative Model Artifact Pruning Tool:** Interrupted training pipelines can leave unreferenced directories in `{model_artifacts_dir}/{model_id}`. An administrative pruning tool (`finsignal-admin prune-unreferenced-artifacts`) is required prior to production release to reconcile database records against disk and safely prune orphaned artifacts.
 
 ## Next Phase
-- **Phase 8 (Risk Analysis & Explainability):** Hybrid risk scoring combining ML anomaly scores with deterministic financial heuristics into a normalized 0–100 composite risk score, risk tiers (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL`), and explainable risk factors.
+- **Phase 8 (Risk Analysis & Explainability):** Completed.
 
 ---
 
-# 13. Phase 8 — Risk Analysis & Explainability
+# 13. Phase 8 — Risk Analysis & Explainability (Completed)
 
 ## Objective
 
-Convert model outputs and deterministic signals into an interpretable risk assessment.
+Convert unsupervised model outputs and deterministic signals into an interpretable, reproducible risk assessment and evidence-based explainability factors.
 
-## Risk Architecture
-
-```text
-Deterministic Signals
-        +
-ML Anomaly Score
-        ↓
-Hybrid Risk Scoring
-        ↓
-Risk Level
-        ↓
-Risk Factors
-```
-
-## Risk Levels
+## Implemented Architecture
 
 ```text
-LOW
-MEDIUM
-HIGH
-CRITICAL
+Point-in-Time Features (34 canonical features) + Context (amount, currency, direction, entities)
+        │
+        ├─────────────────────────────────────────────────┐
+        ▼                                                 ▼
+Unsupervised ML Inference                        Deterministic Rule Engine
+(Isolation Forest, raw score S(X))               (9 Heuristic Rules)
+        │                                                 │
+        ▼                                                 ▼
+Piecewise Linear Normalization                   Fired Rules & Structured Factors
+(Anchored to validation bounds:                  (Point mapping: INFO=0, LOW=5,
+ s_min -> 0.0, tau* -> 50.0, s_max -> 100.0)      MEDIUM=15, HIGH=25, CRITICAL=40)
+        │                                                 │
+        ▼                                                 ▼
+Normalized ML Score [0, 100]                     Rule Score [0, 100]
+        │                                                 │
+        └────────────────────────┬────────────────────────┘
+                                 ▼
+                     Hybrid Scoring Engine
+          Linear combination: raw = 0.60 * S_norm + 0.40 * S_rule
+          Optional evidence-gated escalation floors:
+            CRITICAL factor -> floor >= 75.0
+            HIGH factor     -> floor >= 50.0
+          Clamping: [0.00, 100.00] (rounded to 2 decimal places)
+                                 │
+                                 ▼
+                     Risk Tier Classification
+             [LOW: < 25, MEDIUM: < 50, HIGH: < 75, CRITICAL: >= 75]
+                                 │
+                                 ▼
+                     Atomic Persistence & Lineage
+             Parent risk_analyses + Child risk_factors
+             Idempotent reuse via 4-tuple identity:
+             (transaction_id, model_version_id, config_version, feature_vector_hash)
+             PostgreSQL unique conflict classification (SQLSTATE 23505)
+             Transactional audit event: TRANSACTION_RISK_ANALYZED
 ```
 
-These thresholds are configuration and must be evaluated rather than arbitrarily assumed.
+## Implemented Tasks & Deliverables
 
-## Risk Factors
+- [x] **Empirical Validation Calibration Bounds:** Captured empirical $s_{\min}$ and $s_{\max}$ alongside operating threshold $\tau^*$ from the validation partition during training (`metrics["score_min"]`, `metrics["score_max"]`); strictly isolated from the sealed holdout test partition.
+- [x] **Piecewise Linear Score Normalization (`normalize_ml_score`):** Transforms continuous anomaly score into $[0.0, 100.0]$ anchored to $(s_{\min} \mapsto 0.0, \tau^* \mapsto 50.0, s_{\max} \mapsto 100.0)$ with strict validation of the invariant $s_{\min} < \tau^* < s_{\max}$.
+- [x] **Deterministic Rule Engine (`RiskRuleEngine`):** Implemented 9 heuristic rules generating structured `RiskFactorDTO` instances:
+  1. `COLD_START_ACCOUNT` (INFO, 0 pts)
+  2. `HIGH_VELOCITY` (MEDIUM: 15 pts, HIGH: 25 pts, CRITICAL: 40 pts)
+  3. `LARGE_AMOUNT_DEVIATION` (MEDIUM: 15 pts, HIGH: 25 pts, CRITICAL: 40 pts)
+  4. `NEW_DEVICE` (MEDIUM: 15 pts, HIGH: 25 pts)
+  5. `NEW_LOCATION` (MEDIUM: 15 pts, HIGH: 25 pts)
+  6. `UNUSUAL_TIME` (LOW: 5 pts, MEDIUM: 15 pts)
+  7. `BEHAVIORAL_SHIFT` (MEDIUM: 15 pts, HIGH: 25 pts)
+  8. `NEW_MERCHANT` (LOW: 5 pts)
+  9. `NEW_CATEGORY` (LOW: 5 pts; suppressed if behavioral shift fired)
+- [x] **Hybrid Scoring Contract (`HybridScoringEngine`):** Configurable weights ($w_{\text{ml}}=0.60, w_{\text{rule}}=0.40$), evidence-gated escalation floors, and 4-tier risk classification (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL`).
+- [x] **Canonical Input Fingerprinting (`compute_feature_fingerprint`):** Computes deterministic 64-character SHA-256 hash over all 34 canonical numeric features and result-affecting context (amount, currency, direction, entity IDs, category).
+- [x] **Effective Configuration Identity Versioning (`effective_config_version`):** Computes a 12-character SHA-256 digest of all scoring weights, thresholds, escalation flags, rule policy versions, and algorithm versions, formatting as `rc_v1.0#<hash>` (fits within `VARCHAR(32)`).
+- [x] **PostgreSQL Schema Migration (`0005_intelligence_risk_models.py`):** Created `risk_analyses` and `risk_factors` tables with check constraints `chk_risk_analyses_score`, `chk_risk_analyses_risk_level`, `chk_risk_factors_severity`, foreign key cascades, and composite unique constraint `uq_risk_analyses_identity` on `(transaction_id, model_version_id, config_version, feature_vector_hash)`.
+- [x] **Atomic Persistence & Race-Safe Recovery (`RiskRepository`):** Atomic persistence of parent and child records using savepoints (`session.begin_nested()`), coupled with PostgreSQL driver-specific unique violation recovery (`23505` on `uq_risk_analyses_identity`) to safely resolve concurrent execution races.
+- [x] **Protected REST API Endpoints (`src/finsignal/api/v1/risk.py`):**
+  - `GET /api/v1/transactions/{transaction_id}/risk`: Pure query returning latest analysis and factors, accessible by `ADMIN`, `ANALYST`, `INVESTIGATOR`.
+  - `POST /api/v1/transactions/{transaction_id}/risk/analyze`: Point-in-time analysis, idempotent reuse, savepoint persistence, and transactional audit event (`TRANSACTION_RISK_ANALYZED`). Enforces model lifecycle eligibility (`EXPERIMENTAL` blocked, `VALIDATED` restricted to `ADMIN`).
+- [x] **Comprehensive Test Suite (+57 tests):** Test coverage spanning unit (schemas, scoring invariants, normalization, rules, scenarios, fingerprinting), integration (migration 0005, atomic persistence, race recovery, driver exception shapes), and API contracts (total repository test suite: 450 passing tests).
 
-Examples:
-
-```text
-NEW_DEVICE
-NEW_LOCATION
-UNUSUAL_TIME
-HIGH_VELOCITY
-LARGE_AMOUNT_DEVIATION
-BEHAVIORAL_SHIFT
-```
-
-## Key Tasks
-
-- risk scoring;
-- threshold configuration;
-- factor generation;
-- evidence generation;
-- risk-analysis persistence;
-- model-version association;
-- risk explanation API.
-
-## Exit Criteria
-
-- risk scores are deterministic for fixed inputs;
-- risk levels map correctly;
-- risk factors correspond to real evidence;
-- model version is recorded;
-- no risk score is presented as calibrated fraud probability without calibration;
-- explainability tests pass.
+## Next Phase
+- **Phase 9 (Investigation & Evidence):** Case management, alert triage, evidence attachment, and investigator resolution workflows.
 
 ---
 

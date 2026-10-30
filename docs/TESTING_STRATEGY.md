@@ -766,61 +766,33 @@ The model lifecycle follows `EXPERIMENTAL -> VALIDATED -> ACTIVE -> RETIRED`. St
 
 ---
 
-# 21. Risk Scoring Tests
+# 21. Risk Scoring Tests (Phase 8 Implemented)
 
-Risk scoring tests should verify:
+Risk scoring tests (`tests/unit/test_risk_scoring.py`, `tests/unit/test_risk_normalization.py`, and `tests/unit/test_risk_schemas.py`) verify:
 
-- scores remain within the documented range;
-- risk levels map consistently to score thresholds;
-- deterministic signals contribute as expected;
-- missing signals do not cause crashes;
-- risk factors are generated from actual evidence;
-- high risk is not automatically equivalent to confirmed fraud.
-
-### Risk Score Range Enforcement Tests (TG-03)
-
-Risk scoring tests must verify strict range boundaries:
-- Scores strictly less than 0 (`score < 0`) must be rejected by Pydantic validators and database check constraints.
-- Scores strictly greater than 100 (`score > 100`) must be rejected by Pydantic validators and database check constraints.
-- Boundary values (`score = 0.00` and `score = 100.00`) are valid and accepted.
-- The hybrid normalization algorithm must guarantee that all output scores fall strictly within `[0.00, 100.00]`.
-
-Mapping to the canonical 4-level vocabulary:
-
-```text
-0  <= score < 25  → LOW
-25 <= score < 50  → MEDIUM
-50 <= score < 75  → HIGH
-75 <= score <= 100 → CRITICAL
-```
-
-Exact thresholds must be treated as configuration and tested at:
-
-- threshold - epsilon;
-- exact threshold;
-- threshold + epsilon.
+- **Weighted Combination Correctness:** Output matches $w_{\text{ml}} \cdot S_{\text{norm}} + w_{\text{rule}} \cdot S_{\text{rule}}$ across varied input distributions.
+- **Normalization Invariants:** `piecewise_linear_anchored_v1` anchors $s_{\min} \mapsto 0.0, \tau^* \mapsto 50.0, s_{\max} \mapsto 100.0$, strictly asserts $s_{\min} < \tau^* < s_{\max}$, and clamps out-of-bounds values to $[0.0, 100.0]$.
+- **Risk Score Range Enforcement (TG-03):** Output is clamped to $[0.00, 100.00]$ and rounded to 2 decimal places. Pydantic schemas and PostgreSQL check constraint `chk_risk_analyses_score` enforce range bounds.
+- **Tier Boundary Transitions:**
+  - $0.00 \le \text{score} < 25.00 \implies \textbf{LOW}$
+  - $25.00 \le \text{score} < 50.00 \implies \textbf{MEDIUM}$
+  - $50.00 \le \text{score} < 75.00 \implies \textbf{HIGH}$
+  - $75.00 \le \text{score} \le 100.00 \implies \textbf{CRITICAL}$
+  Boundary testing at threshold $-\epsilon$, exact threshold, and threshold $+\epsilon$ confirms precise tier assignment.
+- **Escalation Floors:** Optional escalation floors enforce minimum scores of $75.0$ on `CRITICAL` factors and $50.0$ on `HIGH` factors when enabled.
 
 ---
 
-# 22. Risk-Factor Explainability Tests
+# 22. Risk-Factor Explainability Tests (Phase 8 Implemented)
 
-Every generated risk factor must correspond to evidence that actually exists.
+Explainability tests (`tests/unit/test_risk_rules.py`) verify:
 
-For example:
-
-```text
-NEW_DEVICE
-```
-
-must not be emitted if the device is already known for the account.
-
-Tests should verify:
-
-- factor correctness;
-- factor severity;
-- factor evidence;
-- factor ordering if ordering is part of the API contract;
-- no fabricated factors.
+- **Evidence Fidelity:** Factors are generated purely from observed feature vector values and contextual comparisons; no factors are fabricated.
+- **Rule Coverage:** Unit tests verify activation and point calculation across all 9 deterministic rules: `COLD_START_ACCOUNT`, `HIGH_VELOCITY`, `LARGE_AMOUNT_DEVIATION`, `NEW_DEVICE`, `NEW_LOCATION`, `UNUSUAL_TIME`, `BEHAVIORAL_SHIFT`, `NEW_MERCHANT`, `NEW_CATEGORY`.
+- **Severity & Points Scaling:** Velocity and amount deviation scale from `MEDIUM` (15 pts) through `HIGH` (25 pts) to `CRITICAL` (40 pts) as thresholds increase.
+- **Suppression Logic:** `COLD_START_ACCOUNT` suppresses false amount-deviation spikes on unestablished accounts; `NEW_CATEGORY` is suppressed when `BEHAVIORAL_SHIFT` is active to avoid redundant penalties.
+- **Bounded Rule Sum:** Total rule score is bounded: $S_{\text{rule}} = \min(100.0, \sum \text{points})$.
+- **Payload Schema Validation:** Every factor populates `factor_code`, `factor_label`, `severity`, `description`, and structured `evidence` dictionary matching API and DB contracts.
 
 ---
 
@@ -1352,6 +1324,41 @@ Phase 7 introduces machine learning unit tests, integration pipelines, and perfo
 - **End-to-End Online Scoring Latency:** $N = 50$ real synthetic transactions scored via `MLService.score_transaction()` (includes PostgreSQL active-model lookup, feature extraction, vectorization, and scoring) following 1 warm-up call. Results: P50 $\approx 8.7$ ms, P90 $\approx 9.5$ ms, P95 $\approx 9.88$ ms.
 - **Environment Scope:** Measured on a local Windows development workstation running Python 3.12 with local PostgreSQL.
 - **Proposed Target:** A pure single-sample scoring latency target of **P95 $\le 8.0$ ms** is proposed for the measured development environment, pending formal project-owner approval.
+
+### 40.3 Phase 8 Risk Analysis & Explainability Benchmark Protocol & Test Inventory
+
+Phase 8 introduces comprehensive risk analysis unit tests, integration persistence suites, scenario validations, and API endpoint tests, bringing the full test suite to **450 passing tests** (57 dedicated Phase 8 tests).
+
+#### Automated Test Suite Inventory (450 Total Passing Tests, 57 Phase 8 Tests)
+1. **Risk Schema Unit Tests (`tests/unit/test_risk_schemas.py` — 5 tests):**
+   - Validates `RiskScoringConfig` weight bounds ($w_{\text{ml}} + w_{\text{rule}} = 1.0$), non-negative weights, strictly monotonic tier cutoffs ($0 < \text{low} < \text{med} < \text{high} \le 100$), escalation floor flags, and serialization of `RiskFactorDTO` and `RiskAnalysisResult`.
+2. **Score Normalization Unit Tests (`tests/unit/test_risk_normalization.py` — 6 tests):**
+   - Validates piecewise linear interpolation anchoring $[s_{\min}, \tau^*, s_{\max}] \mapsto [0, 50, 100]$.
+   - Enforces calibration bounds invariant $s_{\min} < \tau^* < s_{\max}$.
+   - Tests boundary clipping ($s \le s_{\min} \implies 0.0$, $s \ge s_{\max} \implies 100.0$) and rejection of invalid or degenerate calibration parameters.
+3. **Deterministic Rules Unit Tests (`tests/unit/test_risk_rules.py` — 10 tests):**
+   - Unit tests for all 9 deterministic heuristic rules: `COLD_START_ACCOUNT`, `HIGH_VELOCITY`, `LARGE_AMOUNT_DEVIATION`, `NEW_DEVICE`, `NEW_LOCATION`, `UNUSUAL_TIME`, `BEHAVIORAL_SHIFT`, `NEW_MERCHANT`, `NEW_CATEGORY`.
+   - Verifies severity assignment, point allocation, contextual suppression, and rule score capping at $100.0$.
+4. **Hybrid Scoring Engine Unit Tests (`tests/unit/test_risk_scoring.py` — 8 tests):**
+   - Validates linear weighted score aggregation, rounding to 2 decimal places, tier mapping, and optional escalation floor behavior.
+5. **Synthetic Scenario Integration Tests (`tests/unit/test_risk_scenarios.py` — 4 tests):**
+   - Evaluates full risk pipeline against synthetic 200-transaction scenario cohort (F001–F007).
+   - Confirms that targeted fraud scenarios reliably activate expected rules and risk tiers.
+   - *Note:* The 200-transaction cohort is strictly an integration test fixture, not an empirical performance dataset.
+6. **Feature and Config Fingerprinting Unit Tests (`tests/unit/test_risk_fingerprint.py` — 4 tests):**
+   - Tests canonical SHA-256 feature vector hashing across 34 float64 features and contextual transaction attributes.
+   - Validates effective configuration versioning (`effective_config_version`) incorporating all weights, cutoffs, policy versions, and flags into a safe $\le 32$-character string.
+7. **PostgreSQL Persistence & Concurrency Integration Tests (`tests/integration/test_risk_persistence.py` — 10 tests):**
+   - Tests Alembic migration `0005_intelligence_risk_models` upgrade and downgrade on PostgreSQL.
+   - Tests foreign-key cascade on `risk_factors` and restrict on `transactions` and `model_versions`.
+   - Tests atomic persistence of analysis and factors in a single transaction.
+   - Tests duplicate-identity recovery: PostgreSQL unique violation SQLSTATE `23505` on `uq_risk_analyses_identity` is caught via savepoint rollback (`session.begin_nested()`) and returns existing analysis without failing.
+   - Verifies fail-closed behavior on foreign keys (`23503`), check violations (`23514`), or missing driver metadata.
+8. **Protected Risk API Endpoint Tests (`tests/api/test_risk_api.py` — 10 tests):**
+   - Tests `GET /api/v1/transactions/{id}/risk`: pure historical read, latest analysis ordering, 404 on missing analysis.
+   - Tests `POST /api/v1/transactions/{id}/risk/analyze`: on-demand evaluation, active model resolution, explicit model resolution, idempotency reuse (no duplicate DB insert), and audit event creation (`TRANSACTION_RISK_ANALYZED`).
+   - Tests RBAC authorization: `ADMIN`, `ANALYST`, and `INVESTIGATOR` access; `EXPERIMENTAL` models return HTTP 400; `VALIDATED` models restricted to `ADMIN` (HTTP 403 for `ANALYST`/`INVESTIGATOR`).
+   - Tests unauthenticated (HTTP 401) and invalid UUID (HTTP 422) handling.
 
 ---
 

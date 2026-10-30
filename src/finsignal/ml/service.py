@@ -4,6 +4,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+import numpy as np
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from finsignal.core.config import Settings, get_settings
@@ -177,10 +178,18 @@ class MLService:
             metadata={"version": version},
         )
 
+        # Derive empirical validation calibration bounds S_min and S_max
+        # Note: Validation partition is strictly used for tuning & calibration (never holdout)
+        val_scores_arr = np.asarray(val_scores, dtype=np.float64)
+        score_min_emp = float(np.min(val_scores_arr))
+        score_max_emp = float(np.max(val_scores_arr))
+
         # 8. Record metrics payload
         metrics_payload = {
             "threshold": selected_threshold,
             "target_alert_rate": target_alert_rate,
+            "score_min": score_min_emp,
+            "score_max": score_max_emp,
             "validation": tuning_result.model_dump(mode="json"),
             "test": test_metrics.model_dump(mode="json"),
             "split": split_metadata.model_dump(mode="json"),
@@ -218,6 +227,14 @@ class MLService:
     ) -> ModelVersion:
         """Promote a validated model to active status."""
         return await self.repository.promote_to_active(session, model_id)
+
+    async def resolve_and_load_model(
+        self,
+        session: AsyncSession,
+        model_id: uuid.UUID | None = None,
+    ) -> tuple[ModelVersion, IsolationForestModel, float]:
+        """Resolve requested or active model, verify SHA-256 integrity, and load."""
+        return await self._resolve_and_load_model(session=session, model_id=model_id)
 
     async def _resolve_and_load_model(
         self,
@@ -286,7 +303,7 @@ class MLService:
             model_version=model_record.version,
             anomaly_score=anomaly_score,
             threshold=threshold,
-            is_anomaly=bool(anomaly_score >= threshold),
+            is_anomaly=anomaly_score >= threshold,
         )
 
     async def score_batch(
@@ -314,7 +331,7 @@ class MLService:
                     model_version=model_record.version,
                     anomaly_score=score,
                     threshold=threshold,
-                    is_anomaly=bool(score >= threshold),
+                    is_anomaly=score >= threshold,
                 )
             )
         return predictions

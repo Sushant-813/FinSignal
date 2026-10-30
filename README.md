@@ -16,7 +16,7 @@ FinSignal is built as a clean modular monolith adhering to strict domain separat
 - **Language & Runtime:** Python 3.12+ managed with `uv`
 - **API Framework:** FastAPI with strict Pydantic v2 schemas (`extra="forbid"`)
 - **Database:** PostgreSQL with asynchronous SQLAlchemy 2.0 and `asyncpg`
-- **Database Migrations:** Alembic (current head: `0004_model_versions`)
+- **Database Migrations:** Alembic (current head: `0005_intelligence_risk_models`)
 - **Authentication & Security:** Argon2id password hashing, Bearer JWT tokens, and centralized role-based access control (`ADMIN`, `ANALYST`, `INVESTIGATOR`)
 - **Mathematical Precision:** Python `Decimal` and PostgreSQL `NUMERIC(18,2)` with strict two-decimal `ROUND_HALF_UP` string serialization (`MoneyStr`)
 
@@ -24,7 +24,7 @@ FinSignal is built as a clean modular monolith adhering to strict domain separat
 
 ## Implementation Status
 
-### Completed Phases (Backend Milestone 1–7)
+### Completed Phases (Backend Milestone 1–8)
 
 | Phase | Module | Key Capabilities | Status |
 |:---:|---|---|:---:|
@@ -35,10 +35,10 @@ FinSignal is built as a clean modular monolith adhering to strict domain separat
 | **Phase 5** | Financial Analytics | 6 REST analytics endpoints, PostgreSQL window aggregations, timezone-aware trends, statistical median outliers | **Completed with Documented Benchmark Limitation** |
 | **Phase 6** | Feature Engineering | 34-feature point-in-time contract, pure functional engine, O(N log N) streaming batch extraction, zero temporal leakage, live PostgreSQL index-scan aggregation | **Completed with Documented Benchmark Deviation** |
 | **Phase 7** | ML / Anomaly Detection | Isolation Forest baseline, canonical 34-feature vector contract (`v1.0`), chronological train/validation/test split, validation-only threshold tuning under 5% alert-rate budget, SHA-256 artifact integrity verification, PostgreSQL model versioning registry | **Completed with Documented Pre-Release Operational Limitation** |
+| **Phase 8** | Risk Analysis & Explainability | Deterministic hybrid risk engine ($w_{\text{ml}}=0.60, w_{\text{rule}}=0.40$), validation-anchored piecewise linear score normalization, 9 heuristic rules, 4-tier risk classification, structured factor explainability, idempotent atomic persistence, REST API endpoints | **Completed** |
 
 ### Deferred Phases
 
-- **Phase 8 — Risk Engine:** Rule-based heuristics, multi-factor risk scoring, calibrated risk scores (0–100), and alert generation.
 - **Phase 9 — Investigation Workflows:** Human investigation cases, evidence assembly, and resolution lifecycle (`CONFIRMED_FRAUD`, `LEGITIMATE`, `SUSPICIOUS`, `INCONCLUSIVE`).
 - **Phase 10 — AI Investigation Assistant:** Grounded, provider-abstracted LLM investigation summaries strictly bounded by structured evidence.
 - **Phase 11 — Frontend Dashboard:** React, TypeScript, and Vite user interface.
@@ -92,12 +92,26 @@ Phase 5 exposes six deterministic financial intelligence endpoints under `/api/v
 
 ---
 
+## Risk Analysis & Explainability Subsystem (Phase 8)
+
+Phase 8 introduces deterministic hybrid risk scoring and structured explainability (`src/finsignal/risk/`):
+
+- **Validation-Anchored Normalization (`normalize_ml_score`):** Continuous Isolation Forest anomaly scores are mapped into a version-specific $[0.0, 100.0]$ scale using piecewise linear interpolation anchored to empirical bounds ($s_{\min} \mapsto 0.0$, operating threshold $\tau^* \mapsto 50.0$, $s_{\max} \mapsto 100.0$) derived strictly from the validation split during training.
+- **Deterministic Heuristic Rules (`RiskRuleEngine`):** 9 rule evaluators generate structured `RiskFactorDTO` records across entity velocity, amount deviation, new device/location/merchant/category indicators, and cold-start accounts, summing into a bounded rule score $[0.0, 100.0]$.
+- **Hybrid Scoring Contract (`HybridScoringEngine`):** Linearly combines normalized ML score ($w_{\text{ml}}=0.60$) and rule score ($w_{\text{rule}}=0.40$), with optional evidence-gated escalation floors (`CRITICAL` $\ge 75.0$, `HIGH` $\ge 50.0$) into an investigation prioritization score $[0.00, 100.00]$ mapped to categorical tiers (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL`).
+- **Idempotency & Concurrency Governance:** Guaranteed via canonical 64-character SHA-256 feature fingerprints, composite effective configuration hashes (`rc_v1.0#<hash>`), database identity uniqueness constraint `uq_risk_analyses_identity`, and race-safe PostgreSQL unique violation classification (`23505`).
+- **Protected REST API:**
+  - `GET /api/v1/transactions/{transaction_id}/risk`: Pure historical query returning latest analysis and factors.
+  - `POST /api/v1/transactions/{transaction_id}/risk/analyze`: Point-in-time on-demand risk analysis, idempotent reuse, atomic savepoint persistence, and transactional audit event logging (`TRANSACTION_RISK_ANALYZED`). Restricted to `ADMIN`, `ANALYST`, and `INVESTIGATOR`.
+
+---
+
 ## Verification and Quality Gates
 
 The implementation is verified by an exhaustive automated test suite and strict type-checking:
 
 ```bash
-# Run complete test suite (393 tests)
+# Run complete test suite (450 tests)
 uv run pytest
 
 # Static analysis and linting

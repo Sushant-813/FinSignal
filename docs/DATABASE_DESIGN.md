@@ -761,7 +761,7 @@ Stores metadata, parameters, metrics, artifact pointers, and lifecycle states fo
 | `feature_version` | VARCHAR(64) | Yes | None | Bound feature contract version (e.g. `v1.0`) |
 | `dataset_version_id` | UUID | Yes | None | FK referencing `dataset_versions(id)` ON DELETE RESTRICT |
 | `parameters` | JSONB | Yes | None | Model training hyperparameters (`n_estimators`, `contamination`, `random_state`, `max_alert_rate`) |
-| `metrics` | JSONB | Yes | None | Evaluation metrics payload (`threshold`, `target_alert_rate`, validation metrics, test metrics, and `split` metadata) |
+| `metrics` | JSONB | Yes | None | Evaluation metrics payload (`threshold`, `target_alert_rate`, empirical validation calibration bounds `score_min` and `score_max`, validation metrics, test metrics, and `split` metadata) |
 | `artifact_uri` | TEXT | Yes | None | Relative filesystem path to model artifact (e.g. `{model_id}/model.joblib`) |
 | `artifact_hash` | VARCHAR(64) | Yes | None | SHA-256 hexadecimal digest for pre-deserialization integrity verification |
 | `status` | VARCHAR(32) | No | `'EXPERIMENTAL'` | Lifecycle status (`EXPERIMENTAL`, `VALIDATED`, `ACTIVE`, `RETIRED`) |
@@ -792,68 +792,83 @@ Model promotion uses `SELECT ... FOR UPDATE` row locks to retire the existing ac
 
 ## 9.2 `risk_analyses`
 
-Stores model/risk results for transactions.
+Stores deterministic, reproducible transaction risk assessments, combining normalized unsupervised ML anomaly detection, rule-based heuristics, and calibration metadata (implemented in Phase 8 via migration `0005_intelligence_risk_models.py`).
 
 ### Columns
 
-| Column | Type | Null | Description |
-|---|---|---:|---|
-| `id` | UUID | No | Primary key |
-| `transaction_id` | UUID | No | Transaction evaluated |
-| `model_version_id` | UUID | No | Model that produced result |
-| `score` | NUMERIC(8,3) | No | Normalized risk score |
-| `risk_level` | VARCHAR(16) | No | LOW, MEDIUM, HIGH, CRITICAL |
-| `analysis_status` | VARCHAR(32) | No | COMPLETED or FAILED |
-| `created_at` | TIMESTAMPTZ | No | Analysis timestamp |
+| Column | Type | Null | Default | Description |
+|---|---|---:|---|---|
+| `id` | UUID | No | Primary key | Unique analysis identifier (`uuid4`) |
+| `transaction_id` | UUID | No | None | FK referencing `transactions(id)` ON DELETE RESTRICT |
+| `model_version_id` | UUID | No | None | FK referencing `model_versions(id)` ON DELETE RESTRICT |
+| `config_version` | VARCHAR(32) | No | None | Effective configuration version fingerprint (base + 12-char SHA-256 hash) |
+| `feature_vector_hash` | VARCHAR(64) | No | None | SHA-256 canonical feature and transaction context fingerprint |
+| `score` | NUMERIC(8,3) | No | None | Composite risk score rounded to 2 decimals in $[0.00, 100.00]$ |
+| `risk_level` | VARCHAR(16) | No | None | Risk severity tier: `LOW`, `MEDIUM`, `HIGH`, `CRITICAL` |
+| `ml_anomaly_score` | FLOAT | No | None | Raw continuous anomaly score $S(X) = -\text{score\_samples}(X)$ |
+| `ml_threshold` | FLOAT | No | None | Operating decision threshold $\tau^*$ from model calibration |
+| `normalized_ml_score` | FLOAT | No | None | Piecewise-linear normalized ML anomaly score in $[0.0, 100.0]$ |
+| `rule_score` | FLOAT | No | None | Cumulative bounded heuristic rule score in $[0.0, 100.0]$ |
+| `normalization_params` | JSONB | No | None | Calibration bounds snapshot (`score_min`, `score_max`, `threshold`, `method`) |
+| `created_at` | TIMESTAMPTZ | No | `now()` | Timestamp when analysis was generated and persisted |
 
-### Constraints
+### Database Constraints & Indexes
 
-Score range:
-
-```text
-0 <= score <= 100
-```
-
-Unique constraint:
-
-```text
-(transaction_id, model_version_id)
-```
-
-This permits re-analysis with a new model while preventing accidental duplicate results for the same model version.
+- **Score Range Constraint:** `CheckConstraint("score >= 0.0 AND score <= 100.0", name="chk_risk_analyses_score")`
+- **Risk Level Enum Constraint:** `CheckConstraint("risk_level IN ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL')", name="chk_risk_analyses_risk_level")`
+- **Canonical Identity Uniqueness:** `UniqueConstraint("transaction_id", "model_version_id", "config_version", "feature_vector_hash", name="uq_risk_analyses_identity")`
+  - Guarantees idempotent execution across identical inputs while permitting re-evaluation when model version, effective scoring configuration, or feature data changes.
+- **Foreign Keys:**
+  - `transaction_id` references `transactions(id)` with `ON DELETE RESTRICT`.
+  - `model_version_id` references `model_versions(id)` with `ON DELETE RESTRICT`.
+- **B-tree Indexes:**
+  - `ix_risk_analyses_transaction_id` on `(transaction_id)`
+  - `ix_risk_analyses_model_score` on `(model_version_id, score)`
+  - `ix_risk_analyses_level_created` on `(risk_level, created_at)`
+  - `ix_risk_analyses_tx_created` on `(transaction_id, created_at)`
 
 ---
 
 ## 9.3 `risk_factors`
 
-Stores structured reasons supporting a risk analysis.
+Stores granular, structured explainability factors supporting a risk analysis (implemented in Phase 8 via migration `0005_intelligence_risk_models.py`). Each factor corresponds to an activated deterministic heuristic rule providing concrete investigative rationale.
 
 ### Columns
 
-| Column | Type | Null | Description |
-|---|---|---:|---|
-| `id` | UUID | No | Primary key |
-| `risk_analysis_id` | UUID | No | Parent risk analysis |
-| `factor_code` | VARCHAR(64) | No | Stable machine-readable code |
-| `factor_label` | VARCHAR(255) | No | Human-readable factor |
-| `severity` | VARCHAR(16) | No | INFO, LOW, MEDIUM, HIGH |
-| `value_numeric` | NUMERIC(18,6) | Yes | Optional measured value |
-| `value_text` | TEXT | Yes | Optional textual value |
-| `evidence` | JSONB | Yes | Structured supporting metadata |
-| `created_at` | TIMESTAMPTZ | No | Creation timestamp |
+| Column | Type | Null | Default | Description |
+|---|---|---:|---|---|
+| `id` | UUID | No | Primary key | Unique factor record identifier (`uuid4`) |
+| `risk_analysis_id` | UUID | No | None | FK referencing parent `risk_analyses(id)` ON DELETE CASCADE |
+| `factor_code` | VARCHAR(64) | No | None | Machine-readable stable factor code (e.g., `HIGH_VELOCITY`) |
+| `factor_label` | VARCHAR(255) | No | None | Human-readable factor title (e.g., `High Transaction Velocity`) |
+| `severity` | VARCHAR(16) | No | None | Severity level: `INFO`, `LOW`, `MEDIUM`, `HIGH`, `CRITICAL` |
+| `description` | TEXT | No | None | Detailed human-readable explanation with contextual values |
+| `value_numeric` | NUMERIC(18,6) | Yes | None | Optional primary quantitative metric (e.g., z-score, velocity count) |
+| `value_text` | TEXT | Yes | None | Optional primary textual identifier (e.g., new device ID, location) |
+| `evidence` | JSONB | Yes | None | Structured supporting metadata dictionary (feature values, baseline comparisons) |
+| `created_at` | TIMESTAMPTZ | No | `now()` | Record creation timestamp |
 
-Examples:
+### Constraints & Indexes
 
-```text
-NEW_DEVICE
-UNUSUAL_LOCATION
-HIGH_VELOCITY
-AMOUNT_ANOMALY
-UNUSUAL_TIME
-SPENDING_SHIFT
-```
+- **Severity Check Constraint:** `CheckConstraint("severity IN ('INFO', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL')", name="chk_risk_factors_severity")`
+- **Foreign Key:** `risk_analysis_id` references `risk_analyses(id)` with `ON DELETE CASCADE`.
+- **B-tree Indexes:**
+  - `ix_risk_factors_analysis_id` on `(risk_analysis_id)`
+  - `ix_risk_factors_code` on `(factor_code)`
 
-Risk factors are evidence-oriented and should be understandable by investigators.
+### Standard Factor Codes
+
+| Factor Code | Default Severity | Default Points | Trigger Condition |
+|---|---|---|---|
+| `COLD_START_ACCOUNT` | `INFO` | 0 | Prior account transaction history $< 5$ events |
+| `HIGH_VELOCITY` | `MEDIUM` / `HIGH` / `CRITICAL` | 15 / 25 / 40 | Window velocity $\ge 3$ (1h) or $\ge 5$ (24h) |
+| `LARGE_AMOUNT_DEVIATION` | `MEDIUM` / `HIGH` / `CRITICAL` | 15 / 25 / 40 | Account amount z-score $\ge 3.0$ / $\ge 4.0$ / $\ge 5.0$ |
+| `NEW_DEVICE` | `MEDIUM` / `HIGH` | 15 / 25 | Device never seen before on account (escalated if multiple accounts share device) |
+| `NEW_LOCATION` | `MEDIUM` / `HIGH` | 15 / 25 | Location never seen before on account (escalated if international) |
+| `UNUSUAL_TIME` | `LOW` / `MEDIUM` | 5 / 15 | Hour outside account habitual active window (escalated if late night 01:00–05:00) |
+| `BEHAVIORAL_SHIFT` | `MEDIUM` / `HIGH` | 15 / 25 | Window spending surge ratio $\ge 2.5$ vs 30-day baseline |
+| `NEW_MERCHANT` | `LOW` | 5 | First interaction with merchant on this account |
+| `NEW_CATEGORY` | `LOW` | 5 | First interaction in merchant category (suppressed if `BEHAVIORAL_SHIFT` active) |
 
 ---
 
@@ -1188,13 +1203,25 @@ These support:
 
 ## 15.3 Risk Indexes
 
-Recommended:
+Implemented in Phase 8 via migration `0005_intelligence_risk_models.py`:
 
-```text
-risk_analyses(transaction_id)
-risk_analyses(model_version_id, score)
-risk_analyses(risk_level, created_at)
+```sql
+-- Risk analyses lookup and triage indexes
+CREATE INDEX ix_risk_analyses_transaction_id ON risk_analyses (transaction_id);
+CREATE INDEX ix_risk_analyses_model_score ON risk_analyses (model_version_id, score);
+CREATE INDEX ix_risk_analyses_level_created ON risk_analyses (risk_level, created_at);
+CREATE INDEX ix_risk_analyses_tx_created ON risk_analyses (transaction_id, created_at);
+
+-- Risk factors foreign key and analytical query indexes
+CREATE INDEX ix_risk_factors_analysis_id ON risk_factors (risk_analysis_id);
+CREATE INDEX ix_risk_factors_code ON risk_factors (factor_code);
 ```
+
+These support:
+- Instant retrieval of the latest analysis for a transaction (`GET /api/v1/transactions/{id}/risk`).
+- Triage queries sorting or filtering transactions by risk tier and timestamp.
+- Analytical model performance monitoring by model version and risk score distribution.
+- Cascade joins and explainability factor retrieval for investigator case files.
 
 ---
 
@@ -1379,8 +1406,10 @@ TRANSFER requires counterparty_account_id
 ### Risk Analysis
 
 ```text
-0 <= score <= 100
-(transaction_id, model_version_id) is unique
+0 <= score <= 100 (chk_risk_analyses_score)
+risk_level IN ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL') (chk_risk_analyses_risk_level)
+(transaction_id, model_version_id, config_version, feature_vector_hash) is unique (uq_risk_analyses_identity)
+risk_factors.severity IN ('INFO', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL') (chk_risk_factors_severity)
 ```
 
 ### Investigations
@@ -1405,6 +1434,7 @@ Good candidates:
 dataset_versions.config
 model_versions.parameters
 model_versions.metrics
+risk_analyses.normalization_params
 risk_factors.evidence
 investigation_evidence.payload
 ai_summaries metadata if later required
@@ -1561,9 +1591,17 @@ Examples:
 ### Risk Analysis
 
 ```text
-create risk_analysis
-create risk_factors
-commit
+read transaction, active model, and behavioral features
+compute ML anomaly score, rule scores, composite score, and risk factors
+savepoint / atomic flush (session.begin_nested()):
+  insert risk_analysis record
+  insert risk_factors records
+  flush savepoint
+on unique conflict (PostgreSQL SQLSTATE 23505 uq_risk_analyses_identity):
+  rollback savepoint
+  fetch existing risk analysis with factors
+create audit event (TRANSACTION_RISK_ANALYZED)
+commit transaction
 ```
 
 ### Investigation Creation
@@ -1801,7 +1839,7 @@ None of these are required for the MVP schema.
 | `ai_summaries` | AI-generated summaries | AI |
 | `audit_events` | Important system/user actions | Governance |
 
-*Note on Phase Sequencing (per accepted ADR-063 Option C and accepted ADR-064):* Phase 2 operational core implements 12 tables (`users`, `accounts`, `merchants`, `devices`, `account_devices`, `locations`, `transactions`, `dataset_versions`, `dataset_imports`, `dataset_import_errors`, `transaction_import_records`, `audit_events`). Intelligence, Investigation, and AI tables are realized in their respective scheduled roadmap phases.
+*Note on Phase Sequencing (per accepted ADR-063 Option C and accepted ADR-064):* Phase 2 operational core implements 12 tables (`users`, `accounts`, `merchants`, `devices`, `account_devices`, `locations`, `transactions`, `dataset_versions`, `dataset_imports`, `dataset_import_errors`, `transaction_import_records`, `audit_events`). Phase 7 implemented `model_versions` (migration `0004_model_versions.py`). Phase 8 implemented `risk_analyses` and `risk_factors` (migration `0005_intelligence_risk_models.py`). Investigation and AI tables are realized in their respective scheduled roadmap phases.
 
 ---
 

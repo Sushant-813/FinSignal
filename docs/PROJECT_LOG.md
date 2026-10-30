@@ -1286,13 +1286,68 @@ Phase 7 introduces machine learning anomaly detection to FinSignal, providing an
 
 ### Result & Status
 - Phase 7 implementation and automated tests: **100% Completed**.
-- Documentation reconciliation: **In Progress**.
+- Documentation reconciliation: **Completed**.
 - Production release gate: **Not Passed** pending artifact cleanup implementation.
 - Next development phase: **Phase 8 (Risk Analysis & Explainability)**.
 
 ---
 
-# 26. Log Maintenance Rules
+# 26. Phase 8 — Risk Analysis & Explainability (Completed)
+
+Phase 8 introduces a deterministic, explainable risk-prioritization layer that synthesizes unsupervised Isolation Forest anomaly detections with transparent financial heuristics, producing bounded investigation scores, risk tiers, and structured explainability factors.
+
+### What Changed
+1. **Risk Subsystem Package (`src/finsignal/risk/`):**
+   - Implemented `NormalizationParams` and `normalize_ml_score` (`normalization.py`): Performs piecewise linear mapping from continuous anomaly score $S(X)$ into a calibrated $[0.0, 100.0]$ scale anchored to $(s_{\min} \mapsto 0.0, \tau^* \mapsto 50.0, s_{\max} \mapsto 100.0)$. Enforces invariant $s_{\min} < \tau^* < s_{\max}$.
+   - Implemented `resolve_normalization_bounds` (`normalization.py`): Extracts empirical calibration bounds ($s_{\min}, s_{\max}$) from model metrics persisted during training. Rejects uncalibrated models unless explicit fallback is authorized.
+   - Implemented `RiskRuleEngine` (`rules.py`): Evaluates 9 deterministic rules against features and transaction facts:
+     1. `COLD_START_ACCOUNT` (INFO, 0 pts)
+     2. `HIGH_VELOCITY` (MEDIUM: 15 pts, HIGH: 25 pts, CRITICAL: 40 pts)
+     3. `LARGE_AMOUNT_DEVIATION` (MEDIUM: 15 pts, HIGH: 25 pts, CRITICAL: 40 pts)
+     4. `NEW_DEVICE` (MEDIUM: 15 pts, HIGH: 25 pts)
+     5. `NEW_LOCATION` (MEDIUM: 15 pts, HIGH: 25 pts)
+     6. `UNUSUAL_TIME` (LOW: 5 pts, MEDIUM: 15 pts)
+     7. `BEHAVIORAL_SHIFT` (MEDIUM: 15 pts, HIGH: 25 pts)
+     8. `NEW_MERCHANT` (LOW: 5 pts)
+     9. `NEW_CATEGORY` (LOW: 5 pts; suppressed if behavioral shift fired to prevent double-counting)
+   - Implemented `RiskFactorGenerator` (`factors.py`): Converts fired rules into investigator-facing `RiskFactorDTO` instances with labels, severities, textual explanations, numeric/text values, and point-in-time evidence snapshots.
+   - Implemented `HybridScoringEngine` (`scoring.py`): Computes composite risk score $\text{raw} = w_{\text{ml}} \cdot S_{\text{norm}} + w_{\text{rule}} \cdot S_{\text{rule}}$ ($w_{\text{ml}}=0.60, w_{\text{rule}}=0.40$), applies optional evidence-gated escalation floors (CRITICAL factor $\ge 75.0$, HIGH factor $\ge 50.0$), clamps score to $[0.00, 100.00]$ rounded to two decimal places, and maps to categorical tiers: `LOW` ($< 25.0$), `MEDIUM` ($< 50.0$), `HIGH` ($< 75.0$), `CRITICAL` ($\ge 75.0$).
+   - Implemented `compute_feature_fingerprint` (`fingerprint.py`): Computes canonical 64-character SHA-256 fingerprint over all 34 canonical features and result-affecting context (amount, currency, direction, entity IDs, category).
+   - Implemented `effective_config_version` (`schemas.py`): Computes a 12-character SHA-256 hash of all result-affecting weights, thresholds, policy versions, and escalation flags, appending to base version (e.g. `rc_v1.0#<hash>`) to guarantee detection of configuration drift within `VARCHAR(32)`.
+   - Implemented `RiskRepository` (`repository.py`): Manages atomic savepoint persistence (`session.begin_nested()`) of parent `RiskAnalysis` and child `RiskFactor` records. Includes `is_risk_identity_conflict` to safely recognize PostgreSQL unique-violation code `23505` on `uq_risk_analyses_identity` across asyncpg/SQLAlchemy exception wrappers while failing closed on foreign keys, check violations, or incomplete driver metadata.
+   - Implemented `RiskService` (`service.py`): Orchestrates feature context assembly, model lifecycle eligibility checks (`EXPERIMENTAL` blocked, `VALIDATED` restricted to `ADMIN`), ML inference, normalization, rule evaluation, scoring, savepoint persistence, race recovery, and transactional audit event creation (`TRANSACTION_RISK_ANALYZED`).
+
+2. **Database Migration (`migrations/versions/0005_intelligence_risk_models.py`):**
+   - Created `risk_analyses` table with columns: `id`, `transaction_id`, `model_version_id`, `config_version`, `feature_vector_hash`, `score`, `risk_level`, `ml_anomaly_score`, `ml_threshold`, `normalized_ml_score`, `rule_score`, `normalization_params`, `created_at`.
+   - Applied check constraints `chk_risk_analyses_score` and `chk_risk_analyses_risk_level`, foreign keys to `transactions.id` and `model_versions.id` (`ON DELETE RESTRICT`), and composite unique constraint `uq_risk_analyses_identity` on `(transaction_id, model_version_id, config_version, feature_vector_hash)`.
+   - Created `risk_factors` table with columns: `id`, `risk_analysis_id`, `factor_code`, `factor_label`, `severity`, `description`, `value_numeric`, `value_text`, `evidence`, `created_at`. Foreign key references `risk_analyses.id` (`ON DELETE CASCADE`), with check constraint `chk_risk_factors_severity`.
+   - Set down-revision strictly to `0004_model_versions`.
+
+3. **REST API Router (`src/finsignal/api/v1/risk.py`):**
+   - `GET /api/v1/transactions/{transaction_id}/risk`: Retrieves latest persisted risk assessment without triggering inference. Returns HTTP 200 or 404. Accessible by `ADMIN`, `ANALYST`, and `INVESTIGATOR`.
+   - `POST /api/v1/transactions/{transaction_id}/risk/analyze`: Point-in-time risk evaluation and persistence with idempotent reuse. Returns existing analysis if identity matches; persists new analysis and audit event atomically if inputs differ.
+
+4. **Model Calibration Integration (`src/finsignal/ml/service.py`):**
+   - Updated `MLService.train_and_register` to compute empirical calibration bounds ($s_{\min}, s_{\max}$) strictly over the validation partition and persist them in `model_record.metrics` (`score_min`, `score_max`), preserving sealed isolation of the holdout test partition.
+
+5. **Empirical Verification & Test Results:**
+   - **Test Suite Growth:** 450 total passing tests (+57 Phase 8 tests covering schemas, scoring invariants, piecewise linear normalization, deterministic rules, synthetic scenario cohort, canonical feature fingerprinting, migration 0005, atomic persistence, driver conflict recovery, and REST API endpoints).
+   - **Static Analysis & Linting:** `ruff check .` clean, `ruff format --check .` clean, `mypy src tests` clean, Pyright type analysis clean (0 errors, 0 warnings).
+
+### Technical Baselines & Architecture Notes
+1. **Prioritization Score vs. Fraud Probability:** The composite risk score is an operational investigation prioritization index $[0.00, 100.00]$, not an empirical or posterior fraud probability.
+2. **Validation-Only Calibration:** Normalization bounds ($s_{\min}, s_{\max}$) and threshold ($\tau^*$) are derived strictly from validation data; the sealed holdout dataset is never accessed during training or calibration.
+3. **Synthetic Scenario Cohort Role:** The 200-transaction scenario cohort verifies deterministic rule firing and factor generation under synthetic conditions; its alert rate does not represent empirical model performance.
+4. **Investigation Auto-Triggering:** Automated investigation case generation based on risk tier boundaries is decoupled from risk scoring and deferred to Phase 9.
+
+### Result & Status
+- Phase 8 implementation and automated tests: **100% Completed** (450 passing tests).
+- Production release gate: **Not Passed** pending administrative artifact cleanup tool (Phase 7 blocker) and investigation workflow implementation (Phase 9).
+- Next development phase: **Phase 9 (Investigation & Evidence)**.
+
+---
+
+# 27. Log Maintenance Rules
 
 The project log should be updated when:
 
@@ -1318,7 +1373,7 @@ What happens next?
 
 ---
 
-# 27. Final Principle
+# 28. Final Principle
 
 The project log is a record of **engineering evolution**, not a diary of every command executed.
 
