@@ -717,60 +717,70 @@ Risk factors are strictly derived from observable transaction and account featur
 
 ---
 
-## 15. Investigation Workflow
+## 15. Investigation Workflow (Phase 9 Implemented)
 
-When activity exceeds the configured investigation threshold, FinSignal should allow an investigation to be created.
+FinSignal implements a manual-first investigation workflow for flagged or suspicious transactions.
 
-Conceptual workflow:
+Key workflow characteristics:
+- **Manual-First Case Creation:** Analysts, Investigators, and Admins can create an investigation by specifying a primary transaction ID, priority (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL`), and optional initial notes. Automated risk-triggered case creation is deferred to a future phase.
+- **Shared Investigation Queue:** Newly created cases enter an unassigned shared triage queue (`assigned_to = NULL`, `status = OPEN`). All authenticated roles (`ADMIN`, `INVESTIGATOR`, `ANALYST`) can inspect the queue.
+- **Role-Based Assignment:** Investigators can self-assign unassigned cases or unassign themselves. Admins have global assignment authority. Investigators cannot take a case assigned to a peer or reassign cases across peers.
+- **Primary Transaction Association:** Every successfully committed investigation is atomically associated with exactly one `PRIMARY` transaction. A transaction may serve as the primary subject of multiple investigations.
+- **1-Hop Related Transactions:** Investigators and Admins can link related transactions within the same `source_namespace` that satisfy a direct 1-hop shared-party relationship (matching primary account or counterparty account). Recursive graph traversal is out of scope.
+
+Workflow progression:
 
 ```text
-Flagged Transaction
+Flagged / Suspicious Transaction
         |
         v
-Create Investigation
+Create Investigation (Manual-First: Analyst / Investigator / Admin)
         |
         v
-Review Transaction
+Shared Queue (Unassigned, Status: OPEN)
         |
         v
-Review Account Context
+Case Assignment (Self-Assign by Investigator or Admin Assignment)
         |
         v
-Review Historical Transactions
+Under Review (Status: UNDER_REVIEW)
+        |
+        +---> Review Workspace & Primary Transaction Context
+        +---> Discover & Link 1-Hop Related Transactions
+        +---> Attach Append-Only Evidence Snapshots
         |
         v
-Review Risk Factors
+AI Summary Generation (Phase 10 Deferred)
         |
         v
-Review Related Activity
+Human Decision & Resolution (Admin / Assigned Investigator)
         |
         v
-Generate AI Summary
-        |
-        v
-Human Decision
-        |
-        v
-Resolution
+Resolved Case (Status: RESOLVED - Permanently Immutable)
 ```
 
 ---
 
-## 16. Investigation Status
+## 16. Investigation Status (Phase 9 Implemented)
 
-Investigations should support at least:
+Investigations follow a strict, unidirectional 3-state lifecycle:
 
 ```text
-OPEN
-UNDER_REVIEW
-RESOLVED
+OPEN ──> UNDER_REVIEW ──> RESOLVED
 ```
+
+Lifecycle rules:
+1. `OPEN`: Initial state upon creation. Indicates the case is awaiting triage or assignment.
+2. `UNDER_REVIEW`: Active investigation state. Occurs upon investigator assignment or start of active review.
+3. `RESOLVED`: Terminal state representing completed review. Once resolved, the investigation record, linked transactions, and attached evidence are permanently immutable across all roles, including Admins.
+
+Backward transitions (e.g., `RESOLVED -> UNDER_REVIEW` or `UNDER_REVIEW -> OPEN`) are strictly prohibited.
 
 ---
 
-## 17. Investigation Resolution
+## 17. Investigation Resolution (Phase 9 Implemented)
 
-Investigators should be able to classify an investigation as:
+An investigation in `UNDER_REVIEW` status can be resolved by an Admin or the assigned Investigator into one of four standardized outcomes:
 
 ```text
 LEGITIMATE
@@ -779,30 +789,32 @@ CONFIRMED_FRAUD
 INCONCLUSIVE
 ```
 
-The resolution represents a human decision and must remain distinct from the ML risk score.
+Resolution rules:
+- **Mandatory Notes:** Resolution requires meaningful, non-whitespace explanation notes (`chk_investigations_resolution_state`).
+- **Decoupled from ML Scores:** The human resolution represents an authoritative operational decision and is strictly decoupled from automated ML anomaly scores and risk tiers.
+- **Terminal Immutability:** Resolving a case locks the record against all further mutation, assignment changes, related transaction additions, and evidence attachments.
 
 ---
 
-## 18. Investigation Evidence
+## 18. Investigation Evidence (Phase 9 Implemented)
 
-FinSignal should assemble relevant evidence automatically.
+FinSignal captures structured, append-only evidence snapshots attached to investigations.
 
-Potential evidence includes:
+Supported evidence types and their source entities:
 
-- Transaction details
-- Account history
-- Historical spending statistics
-- Similar transactions
-- Merchant history
-- Device history
-- Location history
-- Transaction velocity
-- Temporal patterns
-- Risk factors
-- Model score
-- Related transactions
+| Evidence Type | Permitted Source Type | Scope & Description |
+|---|---|---|
+| `TRANSACTION_FACT` | `TRANSACTION` | Observable transaction record snapshot |
+| `RISK_SCORE` | `RISK_ANALYSIS` | ML composite score, tier, and execution metadata |
+| `RISK_FACTOR` | `RISK_FACTOR` | Rule-based explainability factor record |
+| `ACCOUNT_PROFILE` | `ACCOUNT` | Account details, KYC status, and risk classification |
+| `DEVICE_PROFILE` | `DEVICE` | Fingerprint, client type, and trust score |
+| `USER_NOTE` | `USER_NOTE` | Freeform investigator note (source_id must be NULL) |
 
-The evidence should be traceable back to system-generated facts.
+Evidence guarantees:
+- **Append-Only & Immutable:** Evidence records lack `updated_at`. Modifying or deleting evidence is rejected by database trigger `trg_no_update_delete_evidence`.
+- **Payload Bounded:** Evidence snapshots support arbitrary structured JSON up to 64 KB per item.
+- **Scope Validated:** Referenced sources are strictly validated to belong to the investigation's account or linked transactions.
 
 ---
 
@@ -1176,17 +1188,17 @@ The MVP should include:
 - Risk level
 - Structured risk factors
 
-**Investigation**
+**Investigation (Phase 9 Implemented)**
 
-- Flagged transaction view
-- Investigation creation
-- Account context
-- Related transaction context
-- Evidence assembly
-- Investigation status
-- Human resolution
+- Manual-first investigation creation and atomic PRIMARY transaction binding
+- Shared triage queue with deterministic pagination and filtering
+- Role-based assignment rules (Admin global, Investigator self-assign/self-unassign)
+- Direct 1-hop related transaction discovery and linking (4-way shared-party predicate)
+- Append-only immutable evidence snapshot storage (6 evidence types, 64 KB JSONB payload, DB trigger enforcement)
+- Strict 3-state lifecycle (`OPEN` -> `UNDER_REVIEW` -> `RESOLVED`)
+- Human resolution (4 outcomes, mandatory notes, terminal immutability)
 
-**AI**
+**AI (Phase 10 Deferred)**
 
 - Evidence-grounded investigation summary
 - Provider abstraction for LLM integration
@@ -1197,6 +1209,9 @@ The MVP should include:
 
 The following features are intentionally deferred:
 
+- Automatic risk-triggered investigation creation (manual-first creation implemented in Phase 9)
+- AI Investigation Assistant summaries (Phase 10)
+- Multi-hop / recursive transaction graph traversal
 - Real-time transaction streaming
 - Kafka
 - Real-time alerting

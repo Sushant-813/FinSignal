@@ -16,7 +16,7 @@ FinSignal is built as a clean modular monolith adhering to strict domain separat
 - **Language & Runtime:** Python 3.12+ managed with `uv`
 - **API Framework:** FastAPI with strict Pydantic v2 schemas (`extra="forbid"`)
 - **Database:** PostgreSQL with asynchronous SQLAlchemy 2.0 and `asyncpg`
-- **Database Migrations:** Alembic (current head: `0005_intelligence_risk_models`)
+- **Database Migrations:** Alembic (current head: `0006_investigation_models`)
 - **Authentication & Security:** Argon2id password hashing, Bearer JWT tokens, and centralized role-based access control (`ADMIN`, `ANALYST`, `INVESTIGATOR`)
 - **Mathematical Precision:** Python `Decimal` and PostgreSQL `NUMERIC(18,2)` with strict two-decimal `ROUND_HALF_UP` string serialization (`MoneyStr`)
 
@@ -36,10 +36,10 @@ FinSignal is built as a clean modular monolith adhering to strict domain separat
 | **Phase 6** | Feature Engineering | 34-feature point-in-time contract, pure functional engine, O(N log N) streaming batch extraction, zero temporal leakage, live PostgreSQL index-scan aggregation | **Completed with Documented Benchmark Deviation** |
 | **Phase 7** | ML / Anomaly Detection | Isolation Forest baseline, canonical 34-feature vector contract (`v1.0`), chronological train/validation/test split, validation-only threshold tuning under 5% alert-rate budget, SHA-256 artifact integrity verification, PostgreSQL model versioning registry | **Completed with Documented Pre-Release Operational Limitation** |
 | **Phase 8** | Risk Analysis & Explainability | Deterministic hybrid risk engine ($w_{\text{ml}}=0.60, w_{\text{rule}}=0.40$), validation-anchored piecewise linear score normalization, 9 heuristic rules, 4-tier risk classification, structured factor explainability, idempotent atomic persistence, REST API endpoints | **Completed** |
+| **Phase 9** | Investigation & Evidence | Shared triage queue, role-based assignment, atomic PRIMARY transaction binding, 1-hop related transactions, append-only immutable evidence snapshots (DB trigger), 4-outcome resolution, pessimistic concurrency locks, 9 REST API endpoints | **Completed** |
 
 ### Deferred Phases
 
-- **Phase 9 — Investigation Workflows:** Human investigation cases, evidence assembly, and resolution lifecycle (`CONFIRMED_FRAUD`, `LEGITIMATE`, `SUSPICIOUS`, `INCONCLUSIVE`).
 - **Phase 10 — AI Investigation Assistant:** Grounded, provider-abstracted LLM investigation summaries strictly bounded by structured evidence.
 - **Phase 11 — Frontend Dashboard:** React, TypeScript, and Vite user interface.
 
@@ -106,12 +106,29 @@ Phase 8 introduces deterministic hybrid risk scoring and structured explainabili
 
 ---
 
+## Investigation & Evidence Subsystem (Phase 9)
+
+Phase 9 implements an end-to-end case management and evidence collection workflow (`src/finsignal/investigations/`):
+
+- **Shared Triage Queue & Lifecycle:** Investigations progress through a unidirectional 3-state lifecycle (`OPEN` -> `UNDER_REVIEW` -> `RESOLVED`). Cases enter an unassigned shared queue with deterministic pagination (`created_at DESC`).
+- **Primary Transaction Semantics:** PostgreSQL partial unique index `uq_investigation_single_primary` ensures at most one PRIMARY transaction association per case at the database level; atomic multi-model insertion guarantees exactly one PRIMARY transaction association for every committed case.
+- **1-Hop Related Transaction Association:** Enables linking related transactions within the primary transaction's `source_namespace` that satisfy a direct 1-hop shared-party predicate (matching account or counterparty account). Multi-hop graph search is strictly excluded.
+- **Append-Only Immutable Evidence:** Captures structured snapshots across 6 supported evidence types (`TRANSACTION_FACT`, `RISK_SCORE`, `RISK_FACTOR`, `ACCOUNT_PROFILE`, `DEVICE_PROFILE`, `USER_NOTE`). Immutability is enforced at the database level by PostgreSQL trigger `trg_no_update_delete_evidence`. Payloads are bounded to 64 KB JSON.
+- **Pessimistic Concurrency & RBAC Protection:**
+  - Row-level lock acquisition (`SELECT ... FOR UPDATE`) protects case mutations against race conditions.
+  - Concurrent self-assignment races yield one winner (200 OK) and one 409 Conflict (`CASE_ALREADY_ASSIGNED`).
+  - Peer takeover attempts are rejected with 403 Forbidden (`FORBIDDEN`).
+  - Terminal case immutability: resolved investigations cannot be modified or amended by any role, including `ADMIN`.
+- **Protected REST API (9 Endpoints under `/api/v1/investigations`):** Provides endpoints for queue listing, atomic case creation, workspace envelope retrieval, PATCH updates, explicit resolution, transaction linking, and evidence attachment.
+- **Transactional Audit Integration:** All state mutations emit structured `AuditEvent` records committed in the same database transaction with authenticated actor attribution.
+---
+
 ## Verification and Quality Gates
 
 The implementation is verified by an exhaustive automated test suite and strict type-checking:
 
 ```bash
-# Run complete test suite (450 tests)
+# Run complete test suite (485 tests)
 uv run pytest
 
 # Static analysis and linting

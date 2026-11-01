@@ -356,10 +356,14 @@ Initial policy:
 | Analyze risk with Active model (`POST /risk/analyze`) | Yes | Yes | Yes |
 | Analyze risk with Validated shadow model (`POST /risk/analyze`) | Yes | No | No |
 | Analyze risk with Experimental/Retired model | No | No | No |
+| View investigations (queue, workspace, evidence) | Yes | Yes | Yes |
 | Create investigation | Yes | Yes | Yes |
-| Assign investigations | Yes | Limited | Yes |
-| Add evidence | Yes | Yes | Yes |
-| Resolve investigation | Yes | Configurable | Yes |
+| Self-assign unassigned investigation | Yes | No | Yes |
+| Reassign / Unassign cases globally | Yes | No | No |
+| Modify assigned investigation (priority, status) | Yes | No | Yes (Self only) |
+| Link related transactions | Yes | No | Yes (Assigned only) |
+| Attach evidence snapshots | Yes | No | Yes (Assigned only) |
+| Resolve investigation | Yes | No | Yes (Assigned only) |
 | Manage users | Yes | No | No |
 | Change system configuration | Yes | No | No |
 
@@ -427,24 +431,44 @@ FinSignal enforces defense-in-depth authorization and model state machine restri
 
 ---
 
-# 17. Investigation Access
+# 17. Investigation Access & Role-Based Workflows (Phase 9 Implemented)
 
-Investigation access should account for assignment and role.
+FinSignal enforces strict role-based access control (RBAC), shared triage queue governance, and terminal case immutability across the entire investigation domain.
 
-Possible policy:
+### 17.1 Role-Based Permissions
+1. **`ADMIN`:**
+   - Full global visibility and write authority across all investigations.
+   - Can assign, reassign, or unassign any case.
+   - Can transition case status (`OPEN -> UNDER_REVIEW`), update priority, link 1-hop transactions, attach evidence, and resolve any case.
+2. **`INVESTIGATOR`:**
+   - Full read access to the shared triage queue and all workspaces.
+   - Can self-assign an unassigned case (`assigned_to = None -> current_user.id`) or self-unassign.
+   - Can modify priority, link 1-hop related transactions, attach append-only evidence, and resolve cases **only when actively assigned to the case**.
+   - **Peer Protection:** Strictly prohibited from assigning a case currently assigned to a peer investigator (rejected with HTTP 403 `FORBIDDEN`).
+   - **No Reassignment:** Prohibited from reassigning cases to other investigators (rejected with HTTP 403 `FORBIDDEN`).
+3. **`ANALYST`:**
+   - Can create unassigned investigation cases (`POST /api/v1/investigations`).
+   - Can view the shared triage queue, case workspace, linked transactions, and evidence snapshots.
+   - Read-only on existing cases: strictly prohibited from modifying cases, self-assigning, linking transactions, attaching evidence, or resolving cases (rejected with HTTP 403 `FORBIDDEN`).
 
-```text
-ADMIN
-    -> all investigations
+### 17.2 Concurrency Race Defense
+- The system employs row-level pessimistic locking (`SELECT ... FOR UPDATE`) during all mutation workflows (`patch_investigation`, `resolve_investigation`).
+- **Concurrent Self-Assignment:** If two investigators attempt to claim the same unassigned case simultaneously, the winner acquires the lock and assigns the case. The loser unblocks, observes `assigned_to` is already claimed, and receives HTTP 409 Conflict (`CASE_ALREADY_ASSIGNED`).
+- **Concurrent Resolution:** Simultaneous resolution requests race on the row lock; the winner resolves the case, while the subsequent caller is rejected with HTTP 409 Conflict (`INVESTIGATION_ALREADY_RESOLVED`).
 
-INVESTIGATOR
-    -> assigned investigations + permitted shared cases
+### 17.3 Terminal Resolved-Case Immutability
+- When an investigation transitions to `RESOLVED`, its state becomes permanently frozen across all roles, including `ADMIN`.
+- Any subsequent attempt to `PATCH`, link related transactions, or attach evidence is rejected with HTTP 409 Conflict (`IMMUTABLE_INVESTIGATION`).
+- Reopening resolved investigations is strictly disallowed at the domain and database levels.
 
-ANALYST
-    -> investigation access according to configured analyst permissions
-```
+### 17.4 Evidence Security & Integrity
+- **Database Trigger Enforcement:** PostgreSQL trigger `trg_no_update_delete_evidence` invokes `trg_enforce_evidence_immutability()` to block all SQL `UPDATE` and `DELETE` queries on `investigation_evidence`.
+- **Payload Size Restriction:** Evidence `payload` is validated and capped at 64 KB (65,536 bytes) to protect the database against denial-of-service / memory exhaustion attacks (`EVIDENCE_PAYLOAD_TOO_LARGE`).
+- **Scope Verification:** The service verifies that referenced source entities exist and belong to the primary or related transactions, accounts, or devices before permitting attachment (`EVIDENCE_SOURCE_OUT_OF_SCOPE`).
 
-The exact ownership model should be finalized before implementation.
+### 17.5 Audit Trail & User Integrity
+- Every mutation (`INVESTIGATION_CREATED`, `INVESTIGATION_ASSIGNED`, `INVESTIGATION_PRIORITY_CHANGED`, `INVESTIGATION_STATUS_CHANGED`, `INVESTIGATION_RESOLVED`, `INVESTIGATION_TRANSACTION_LINKED`, `EVIDENCE_ATTACHED`) transactionally records an `AuditEvent` with `actor_user_id = current_user.id`.
+- Foreign key `assigned_to` references `users(id)` with `ON DELETE RESTRICT`, preventing user deletion while assigned to operational investigations.
 
 ---
 

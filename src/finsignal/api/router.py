@@ -5,6 +5,7 @@ from fastapi import APIRouter
 from finsignal.api.v1.analytics import router as analytics_router
 from finsignal.api.v1.auth import router as auth_router
 from finsignal.api.v1.datasets import router as datasets_router
+from finsignal.api.v1.investigations import router as investigations_router
 from finsignal.api.v1.risk import router as risk_router
 from finsignal.api.v1.system import router as system_router
 
@@ -14,3 +15,4 @@ api_v1_router.include_router(auth_router)
 api_v1_router.include_router(datasets_router)
 api_v1_router.include_router(analytics_router)
 api_v1_router.include_router(risk_router)
+api_v1_router.include_router(investigations_router)

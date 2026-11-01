@@ -397,27 +397,32 @@ The intelligence layer should remain independently testable.
 
 ---
 
-# 13. Investigation Layer
+# 13. Investigation Layer (Phase 9 Implemented)
 
-The investigation layer connects:
+The investigation layer manages operational review workflows for flagged financial activity. It is implemented in `src/finsignal/investigations/` as part of the modular monolith.
 
-```text
-Risk Alert
-    |
-    v
-Investigation
-    |
-    v
-Evidence
-    |
-    v
-AI Summary
-    |
-    v
-Human Resolution
-```
+### 13.1 Module Structure & Responsibilities
 
-The investigation system should not directly modify raw transaction facts.
+The module encapsulates four primary components:
+1. `models.py`: SQLAlchemy ORM definitions for `Investigation`, `InvestigationTransaction`, and `InvestigationEvidence`.
+2. `schemas.py`: Pydantic v2 schemas and enums (`InvestigationStatus`, `InvestigationPriority`, `InvestigationResolution`, `InvestigationRelationshipType`, `EvidenceType`, `EvidenceSourceType`).
+3. `repository.py` (`InvestigationRepository`): Encapsulates all persistence logic, row-level locks, bounded queries, and deterministic sorting.
+4. `service.py` (`InvestigationService`): Enforces RBAC permissions, lifecycle transitions, 1-hop scope boundaries, evidence validation, and transactional audit logging.
+
+### 13.2 Cross-Module Integration
+
+The investigation module integrates directly with existing core modules:
+- **`transactions`:** Validates existence of primary transactions and verifies eligibility of related transactions using a 4-way shared-party predicate within the same `source_namespace`.
+- **`risk`:** Inspects `risk_analyses` and `risk_factors` to populate workspace context and allow snapshotting of risk scores and factors as evidence.
+- **`accounts` & `devices`:** Verifies entity existence and scope when attaching profile evidence snapshots.
+- **`users`:** Verifies user roles (`ADMIN`, `INVESTIGATOR`, `ANALYST`) and enforces assignment ownership rules.
+- **`audit`:** Transactionally records audit events (`INVESTIGATION_CREATED`, `INVESTIGATION_ASSIGNED`, `INVESTIGATION_PRIORITY_CHANGED`, `INVESTIGATION_STATUS_CHANGED`, `INVESTIGATION_RESOLVED`, `INVESTIGATION_TRANSACTION_LINKED`, `EVIDENCE_ATTACHED`) using the authenticated user as actor.
+
+### 13.3 Architectural Guarantees
+
+- **Single Bounded Workspace Query:** The workspace endpoint retrieves the investigation, primary transaction, related transaction summary, latest risk analysis, and attached evidence in a bounded sequence without N+1 query patterns.
+- **Transaction Ownership:** All database mutations (investigation updates, linkings, evidence attachments, and their corresponding audit events) share the application database transaction and commit atomically.
+- **Raw Fact Immutability:** Investigations never alter raw transaction facts, account balances, or ML risk scores. All investigation-specific data is stored in dedicated tables.
 
 ---
 
@@ -1044,8 +1049,9 @@ Conceptual structure:
 |                                                    |
 |  Investigation                                     |
 |  ├── investigations                                |
+|  ├── investigation_transactions                   |
 |  ├── investigation_evidence                        |
-|  └── ai_summaries                                  |
+|  └── ai_summaries (Phase 10 Deferred)              |
 |                                                    |
 +----------------------------------------------------+
 ```
@@ -1171,30 +1177,25 @@ These should either succeed together or fail together where business requirement
 
 ---
 
-# 45. Concurrency
+# 45. Concurrency & Row-Level Locking (Phase 9 Implemented)
 
-The system must account for concurrent updates to mutable investigation state.
+The system protects mutable investigation state against concurrent race conditions using pessimistic row-level locking via PostgreSQL `SELECT ... FOR UPDATE`.
 
-Example:
+### 45.1 Concurrency Implementation
+- When an investigator or admin modifies a case (via `PATCH /api/v1/investigations/{id}` or `POST /api/v1/investigations/{id}/resolve`), `InvestigationRepository.get_for_update()` acquires an exclusive row lock on the target investigation.
+- If two transactions attempt to update the same investigation simultaneously, the second transaction waits until the first commits or rolls back.
 
-```text
-Investigator A
-       |
-       v
-Investigation OPEN
-       |
-       +----------------+
-                        |
-                        v
-                 Investigator B
-                        |
-                        v
-                  RESOLVED
-```
-
-The implementation should prevent stale updates from silently overwriting newer state.
-
-The exact optimistic/pessimistic concurrency strategy will be defined in `DATABASE_DESIGN.md`.
+### 45.2 Deterministic Race Handling
+1. **Concurrent Self-Assignment:**
+   - Two investigators attempt to claim the same unassigned case simultaneously.
+   - Transaction 1 acquires the lock, assigns the case to Investigator 1, and commits.
+   - Transaction 2 unblocks, observes `assigned_to` is already populated, and is rejected with HTTP 409 Conflict (`CASE_ALREADY_ASSIGNED`).
+2. **Explicit Peer Assignment Takeover:**
+   - Investigator 2 attempts to assign a case currently assigned to Investigator 1.
+   - Evaluated under RBAC: rejected with HTTP 403 Forbidden (`FORBIDDEN`).
+3. **Concurrent Resolution:**
+   - If two resolution requests race, the first resolves the case.
+   - The second unblocks, observes `status == 'RESOLVED'`, and is rejected with HTTP 409 Conflict (`INVESTIGATION_ALREADY_RESOLVED`).
 
 ---
 

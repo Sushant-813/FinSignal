@@ -872,122 +872,154 @@ Stores granular, structured explainability factors supporting a risk analysis (i
 
 ---
 
-# 10. Investigation Model
+# 10. Investigation Model (Phase 9 Implemented)
+
+Implemented in Alembic migration `0006_investigation_models.py`.
 
 ## 10.1 `investigations`
 
-Represents a human investigation case.
+Represents an operational human investigation case.
 
 ### Columns
 
-| Column | Type | Null | Description |
-|---|---|---:|---|
-| `id` | UUID | No | Primary key |
-| `assigned_to` | UUID | Yes | Investigator/user |
-| `status` | VARCHAR(32) | No | OPEN, UNDER_REVIEW, RESOLVED |
-| `priority` | VARCHAR(16) | No | LOW, MEDIUM, HIGH, CRITICAL |
-| `resolution` | VARCHAR(32) | Yes | Final resolution |
-| `resolution_notes` | TEXT | Yes | Human explanation |
-| `created_at` | TIMESTAMPTZ | No | Creation timestamp |
-| `updated_at` | TIMESTAMPTZ | No | Last modification |
+| Column | Type | Nullable | Default | Description |
+|---|---|---:|---|---|
+| `id` | UUID | No | *None* | Primary key |
+| `assigned_to` | UUID | Yes | `NULL` | Foreign key to `users.id` (`ON DELETE RESTRICT`) |
+| `status` | VARCHAR(32) | No | `'OPEN'` | Operational lifecycle status (`OPEN`, `UNDER_REVIEW`, `RESOLVED`) |
+| `priority` | VARCHAR(16) | No | `'MEDIUM'` | Triage priority (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL`) |
+| `resolution` | VARCHAR(32) | Yes | `NULL` | Operational conclusion outcome |
+| `resolution_notes` | TEXT | Yes | `NULL` | Mandatory non-whitespace investigator findings |
+| `created_at` | TIMESTAMPTZ | No | `now()` | Case creation timestamp |
+| `updated_at` | TIMESTAMPTZ | No | `now()` | Timestamp of last metadata or assignment modification |
 
-Resolutions:
+> [!NOTE]
+> **No Case Title Design Decision:** The `investigations` table deliberately omits a `title` column. Investigation cases are operational workflow entities anchored strictly to their primary transaction UUID and priority, rather than subjective freeform ticket titles. In contrast, individual evidence items in `investigation_evidence` require a `title` column (`VARCHAR(255)`) to identify and label captured snapshots and user notes.
 
-```text
-LEGITIMATE
-SUSPICIOUS
-CONFIRMED_FRAUD
-INCONCLUSIVE
-```
+### Constraints & Indexes
 
-An investigation is a workflow object, not simply a copy of a risk analysis.
+- **Primary Key:** `PRIMARY KEY (id)`
+- **Foreign Key:** `FOREIGN KEY (assigned_to) REFERENCES users(id) ON DELETE RESTRICT` (prevents deleting active users assigned to investigations)
+- **Check Constraints:**
+  - `chk_investigations_status`: `status IN ('OPEN', 'UNDER_REVIEW', 'RESOLVED')`
+  - `chk_investigations_priority`: `priority IN ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL')`
+  - `chk_investigations_resolution`: `resolution IS NULL OR resolution IN ('LEGITIMATE', 'SUSPICIOUS', 'CONFIRMED_FRAUD', 'INCONCLUSIVE')`
+  - `chk_investigations_resolution_state`:
+    ```sql
+    (status = 'RESOLVED' AND resolution IS NOT NULL AND resolution_notes IS NOT NULL AND length(regexp_replace(resolution_notes, '[[:space:]]', '', 'g')) > 0)
+    OR
+    (status != 'RESOLVED' AND resolution IS NULL AND resolution_notes IS NULL)
+    ```
+- **Indexes:**
+  - `ix_investigations_status_priority` on `(status, priority)`: Optimizes triage queue queries filtered by status and priority.
+  - `ix_investigations_assigned_status` on `(assigned_to, status)`: Optimizes assigned case queries for individual investigators.
+  - `ix_investigations_created_at` on `created_at DESC`: Powers deterministic reverse chronological pagination in queue listings.
 
 ---
 
 ## 10.2 `investigation_transactions`
 
-Allows an investigation to contain multiple related transactions.
+Associates investigations with transactions under review.
 
 ### Columns
 
-| Column | Type | Null | Description |
-|---|---|---:|---|
-| `investigation_id` | UUID | No | Investigation |
-| `transaction_id` | UUID | No | Related transaction |
-| `relationship_type` | VARCHAR(32) | No | PRIMARY or RELATED |
-| `created_at` | TIMESTAMPTZ | No | Relationship creation |
+| Column | Type | Nullable | Default | Description |
+|---|---|---:|---|---|
+| `investigation_id` | UUID | No | *None* | Foreign key to `investigations.id` (`ON DELETE RESTRICT`) |
+| `transaction_id` | UUID | No | *None* | Foreign key to `transactions.id` (`ON DELETE RESTRICT`) |
+| `relationship_type` | VARCHAR(32) | No | *None* | Association type: `'PRIMARY'` or `'RELATED'` |
+| `created_at` | TIMESTAMPTZ | No | `now()` | Association timestamp |
 
-### Constraints
+### Constraints & Indexes
 
-Primary key:
+- **Primary Key:** `PRIMARY KEY (investigation_id, transaction_id)` (prevents associating the same transaction multiple times to one investigation)
+- **Foreign Keys:**
+  - `FOREIGN KEY (investigation_id) REFERENCES investigations(id) ON DELETE RESTRICT`
+  - `FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE RESTRICT`
+- **Check Constraint:** `chk_inv_tx_rel_type`: `relationship_type IN ('PRIMARY', 'RELATED')`
+- **Partial Unique Index:**
+  ```sql
+  CREATE UNIQUE INDEX uq_investigation_single_primary
+  ON investigation_transactions (investigation_id)
+  WHERE relationship_type = 'PRIMARY';
+  ```
+- **Index:** `ix_inv_tx_transaction_id` on `transaction_id`: Supports reverse queries from transactions to active investigations.
 
-```text
-(investigation_id, transaction_id)
-```
+### Primary Transaction Invariant Architecture
 
-An investigation must have exactly one `PRIMARY` transaction at the application/domain level.
-
-This structure allows investigators to move from:
-
-```text
-Flagged transaction
-        ↓
-Related transactions
-        ↓
-Account behavior
-        ↓
-Evidence
-```
-
-without redesigning the investigation model.
+A critical distinction governs the primary transaction invariant:
+1. **Database Guarantee (At Most One):** The partial unique index `uq_investigation_single_primary` physically enforces that an investigation can have **at most one** `PRIMARY` transaction in PostgreSQL. A partial unique index cannot mandate row existence.
+2. **Application Guarantee (Exactly One):** The application workflow (`InvestigationService.create_investigation`) enforces that every successfully created investigation has **exactly one** `PRIMARY` association by creating the `Investigation`, the primary `InvestigationTransaction`, and the `AuditEvent` atomically within a single database transaction. If any part fails, the entire transaction rolls back.
+3. **Multi-Investigation Support:** A transaction can serve as the `PRIMARY` transaction across multiple separate investigations (e.g., if re-investigated or investigated from different perspectives).
 
 ---
 
-# 11. Evidence Model
+# 11. Evidence Model (Phase 9 Implemented)
 
 ## 11.1 `investigation_evidence`
 
-Stores evidence assembled for an investigation.
+Stores immutable evidence snapshots collected during an investigation.
 
 ### Columns
 
-| Column | Type | Null | Description |
-|---|---|---:|---|
-| `id` | UUID | No | Primary key |
-| `investigation_id` | UUID | No | Investigation |
-| `evidence_type` | VARCHAR(64) | No | Evidence classification |
-| `source_type` | VARCHAR(64) | Yes | Source entity |
-| `source_id` | UUID | Yes | Source identifier |
-| `title` | VARCHAR(255) | No | Evidence title |
-| `description` | TEXT | Yes | Human-readable explanation |
-| `payload` | JSONB | Yes | Structured evidence snapshot |
-| `created_at` | TIMESTAMPTZ | No | Evidence creation time |
+| Column | Type | Nullable | Default | Description |
+|---|---|---:|---|---|
+| `id` | UUID | No | *None* | Primary key |
+| `investigation_id` | UUID | No | *None* | Foreign key to `investigations.id` (`ON DELETE RESTRICT`) |
+| `evidence_type` | VARCHAR(64) | No | *None* | Formal evidence classification |
+| `source_type` | VARCHAR(64) | No | *None* | Source entity type |
+| `source_id` | UUID | Yes | `NULL` | Source entity identifier (NULL for USER_NOTE) |
+| `title` | VARCHAR(255) | No | *None* | Investigator or system evidence title |
+| `description` | TEXT | Yes | `NULL` | Explanatory context or observation |
+| `payload` | JSONB | Yes | `NULL` | Structured data snapshot (max 64 KB) |
+| `created_at` | TIMESTAMPTZ | No | `now()` | Evidence attachment timestamp |
 
-### Evidence Immutability Principle
+### Constraints & Validation
 
-Evidence records are strictly append-only and immutable after creation. The table deliberately omits an `updated_at` column; evidence cannot be updated, patched, or overwritten once attached to an investigation. If an investigator uncovers new information or revises an interpretation, a new evidence record is created.
+- **Primary Key:** `PRIMARY KEY (id)`
+- **Foreign Key:** `FOREIGN KEY (investigation_id) REFERENCES investigations(id) ON DELETE RESTRICT`
+- **Check Constraints:**
+  - `chk_inv_evidence_type`: `evidence_type IN ('TRANSACTION_FACT', 'RISK_SCORE', 'RISK_FACTOR', 'ACCOUNT_PROFILE', 'DEVICE_PROFILE', 'USER_NOTE')`
+  - `chk_inv_source_type`: `source_type IN ('TRANSACTION', 'RISK_ANALYSIS', 'RISK_FACTOR', 'ACCOUNT', 'DEVICE', 'USER_NOTE')`
+  - `chk_inv_evidence_type_source_pair`: Enforces strict 1-to-1 pairing:
+    ```sql
+    (evidence_type = 'TRANSACTION_FACT' AND source_type = 'TRANSACTION') OR
+    (evidence_type = 'RISK_SCORE' AND source_type = 'RISK_ANALYSIS') OR
+    (evidence_type = 'RISK_FACTOR' AND source_type = 'RISK_FACTOR') OR
+    (evidence_type = 'ACCOUNT_PROFILE' AND source_type = 'ACCOUNT') OR
+    (evidence_type = 'DEVICE_PROFILE' AND source_type = 'DEVICE') OR
+    (evidence_type = 'USER_NOTE' AND source_type = 'USER_NOTE')
+    ```
+  - `chk_inv_evidence_source_consistency`:
+    ```sql
+    (source_type = 'USER_NOTE' AND source_id IS NULL) OR
+    (source_type != 'USER_NOTE' AND source_id IS NOT NULL)
+    ```
+- **Indexes:**
+  - `ix_inv_evidence_investigation_created` on `(investigation_id, created_at ASC, id ASC)`: Ensures deterministic pagination for evidence listing.
+  - `ix_inv_evidence_source` on `(source_type, source_id)`: Speeds up reverse verification of attached sources.
 
-Evidence should capture the relevant state used during investigation.
+### Append-Only Immutability Trigger
 
-The system should not rely exclusively on re-querying mutable data when reproducing an investigation later.
+Evidence records are strictly append-only snapshots. The table deliberately omits an `updated_at` column.
+Immutability is enforced at the database layer via PostgreSQL trigger:
 
-The `payload` therefore acts as a structured evidence snapshot where appropriate.
+```sql
+CREATE OR REPLACE FUNCTION trg_enforce_evidence_immutability()
+RETURNS TRIGGER AS $$
+BEGIN
+    RAISE EXCEPTION 'investigation_evidence records are append-only and strictly immutable';
+END;
+$$ LANGUAGE plpgsql;
 
-### Polymorphic `source_id` Design Trade-Off
+CREATE TRIGGER trg_no_update_delete_evidence
+BEFORE UPDATE OR DELETE ON investigation_evidence
+FOR EACH ROW EXECUTE FUNCTION trg_enforce_evidence_immutability();
+```
 
-The `source_id` column is a polymorphic reference without a database-level foreign key constraint. Evidence can reference various source entity types:
-- `transaction` (`transactions.id`)
-- `risk_analysis` (`risk_analyses.id`)
-- `risk_factor` (`risk_factors.id`)
-- `account` (`accounts.id`)
-- `device` (`devices.id`)
-- `user_note` / `manual_observation` (null source_id)
-
-Rather than introducing complex schema patterns (such as entity-attribute-value tables or multiple nullable foreign keys for every conceivable entity type), FinSignal deliberately enforces referential and business integrity at the application/domain layer:
-1. `source_type` must be validated against an enumerated set of permitted domain entities.
-2. The application verifies that `source_id` exists in the corresponding entity repository prior to persistence.
-3. The referenced source entity must belong to the scope of the investigation's account or transactions.
-4. Authorization rules verify the investigator has permission to view the referenced entity.
+*Trigger Scope & Guarantees:*
+- Prevents any application or standard SQL `UPDATE` or `DELETE` statement from altering or deleting evidence.
+- *Boundary:* Standard PostgreSQL triggers do not protect against superuser operations that explicitly disable triggers (`ALTER TABLE ... DISABLE TRIGGER`) or table-level `TRUNCATE` operations.
 
 ---
 
@@ -1227,13 +1259,16 @@ These support:
 
 ## 15.4 Investigation Indexes
 
-Recommended:
+Implemented (Migration 0006):
 
 ```text
-investigations(status, priority)
-investigations(assigned_to, status)
-investigation_transactions(transaction_id)
-investigation_evidence(investigation_id, created_at)
+investigations(status, priority)                                            -- ix_investigations_status_priority
+investigations(assigned_to, status)                                         -- ix_investigations_assigned_status
+investigations(created_at DESC)                                             -- ix_investigations_created_at
+investigation_transactions(investigation_id) WHERE relationship_type='PRIMARY' -- uq_investigation_single_primary
+investigation_transactions(transaction_id)                                 -- ix_inv_tx_transaction_id
+investigation_evidence(investigation_id, created_at ASC, id ASC)            -- ix_inv_evidence_investigation_created
+investigation_evidence(source_type, source_id)                              -- ix_inv_evidence_source
 ```
 
 ---

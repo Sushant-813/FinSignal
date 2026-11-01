@@ -732,21 +732,19 @@ Normalized ML Score [0, 100]                     Rule Score [0, 100]
 
 # 14. Phase 9 — Investigation & Evidence
 
+## Status: `COMPLETED`
+
 ## Objective
 
-Turn suspicious activity into a structured investigation workflow.
+Turn suspicious activity into a structured, role-authorized, concurrent, and auditable investigation workflow.
 
-## Investigation Lifecycle
+## Investigation Lifecycle (Implemented)
 
 ```text
-OPEN
-  ↓
-UNDER_REVIEW
-  ↓
-RESOLVED
+OPEN ──> UNDER_REVIEW ──> RESOLVED (Terminal & Immutable)
 ```
 
-## Resolutions
+## Resolutions (Implemented)
 
 ```text
 LEGITIMATE
@@ -755,47 +753,42 @@ CONFIRMED_FRAUD
 INCONCLUSIVE
 ```
 
-## Key Tasks
+## Implemented Deliverables (Milestones P9.0–P9.9)
 
-- investigation creation;
-- investigation assignment;
-- investigation retrieval;
-- related transaction linking;
-- evidence assembly;
-- evidence persistence;
-- investigator notes where supported;
-- investigation status transitions;
-- resolution;
-- audit trail.
+- [x] **Database Schema Migration (`0006_investigation_models.py`):**
+  - Created `investigations`, `investigation_transactions`, and `investigation_evidence` tables.
+  - Foreign key constraints with `ON DELETE RESTRICT` on `assigned_to`, `investigation_id`, and `transaction_id`.
+  - Check constraints: `chk_investigations_status`, `chk_investigations_priority`, `chk_investigations_resolution`, `chk_investigations_resolution_state`, `chk_inv_tx_rel_type`, `chk_inv_evidence_type`, `chk_inv_source_type`, `chk_inv_evidence_type_source_pair`, `chk_inv_evidence_source_consistency`.
+  - Partial unique index: `uq_investigation_single_primary` on `(investigation_id) WHERE relationship_type = 'PRIMARY'`.
+  - PostgreSQL trigger: `trg_no_update_delete_evidence` blocking `UPDATE` and `DELETE` queries on `investigation_evidence`.
+- [x] **Investigation Domain Module (`src/finsignal/investigations/`):**
+  - Domain models (`models.py`), Pydantic v2 request/response schemas (`schemas.py`), bounded queries and row locking in repository (`repository.py`), and business invariants in service (`service.py`).
+- [x] **Primary Transaction Semantics:**
+  - Partial unique index enforces at-most-one PRIMARY link in database.
+  - Atomic application creation workflow (`create_investigation`) guarantees exactly-one PRIMARY link for every committed case.
+  - Single transaction can be PRIMARY across multiple separate cases.
+- [x] **1-Hop Related Transaction Linking:**
+  - Evaluates 4-way shared-party predicate with exact `source_namespace` match. Multi-hop graph search intentionally excluded.
+- [x] **Append-Only Immutable Evidence:**
+  - 6 supported evidence types paired with permitted source types.
+  - 64 KB JSONB payload size limit; database trigger rejection of updates and deletes.
+  - Pre-persistence source existence and investigation scope validation.
+- [x] **Pessimistic Concurrency & RBAC Protection:**
+  - Row-level lock (`SELECT ... FOR UPDATE`) prevents concurrent update collisions.
+  - Concurrent self-assignment races yield one winner (200 OK) and one 409 Conflict (`CASE_ALREADY_ASSIGNED`).
+  - Explicit peer case takeover attempts return HTTP 403 Forbidden (`FORBIDDEN`).
+  - Analyst restricted to case creation and read operations (mutations return 403 `FORBIDDEN`).
+  - Terminal case immutability: resolved investigations cannot be altered or amended by any role, including `ADMIN`.
+- [x] **Protected REST API (9 Endpoints under `/api/v1/investigations`):**
+  - Implemented and registered in `src/finsignal/api/router.py`.
+- [x] **Transactional Audit Integration:**
+  - Emits `AuditEvent` records for all mutations (`INVESTIGATION_CREATED`, `INVESTIGATION_ASSIGNED`, `INVESTIGATION_PRIORITY_CHANGED`, `INVESTIGATION_STATUS_CHANGED`, `INVESTIGATION_RESOLVED`, `INVESTIGATION_TRANSACTION_LINKED`, `EVIDENCE_ATTACHED`) using authenticated user context as actor.
+- [x] **Comprehensive Test Suite (+35 tests):**
+  - Unit tests (schemas, service logic), API route tests, PostgreSQL migration/trigger persistence tests, and multi-connection concurrency tests.
+  - Full project test suite: **485 passing tests** (0 failures, 0 errors).
 
-## Investigation Context
-
-The investigator should be able to access:
-
-```text
-Account
-  ↓
-Transactions
-  ↓
-Risk Analyses
-  ↓
-Risk Factors
-  ↓
-Behavioral Context
-  ↓
-Related Transactions
-  ↓
-Evidence
-```
-
-## Exit Criteria
-
-- suspicious activity can create investigations;
-- investigators can inspect contextual evidence;
-- multiple related transactions can be associated;
-- invalid state transitions are rejected;
-- resolution is authorized and audited;
-- original transaction facts remain immutable.
+## Next Phase
+- **Phase 10 (AI Investigation Assistant):** Evidence summarization, LLM provider abstraction, and AI summary storage (Pending/Deferred).
 
 ---
 

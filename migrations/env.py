@@ -10,6 +10,7 @@ import finsignal.accounts.models  # noqa: F401
 import finsignal.audit.models  # noqa: F401
 import finsignal.dataset.models  # noqa: F401
 import finsignal.devices.models  # noqa: F401
+import finsignal.investigations.models  # noqa: F401
 import finsignal.locations.models  # noqa: F401
 import finsignal.merchants.models  # noqa: F401
 import finsignal.transactions.models  # noqa: F401

@@ -2050,6 +2050,55 @@ Financial transaction intelligence requires combining multivariate unsupervised 
 
 ---
 
+# Proposed ADR-071 — Manual-First Investigation Queue, At-Most-One Primary Transaction Index Invariant, and Append-Only Evidence Immutability
+
+**Status:** PROPOSED (Phase 9 Implemented, Pending Project-Owner Formal Acceptance)
+
+**Date:** 2026-11-01
+
+**Related decisions:** ADR-007, ADR-008, ADR-009, ADR-020, ADR-021, ADR-026, ADR-045, Proposed ADR-070
+
+## Context
+
+Operational investigation of suspicious financial activity requires a dedicated case management and evidence collection workflow. Prior to Phase 9, transactions could be flagged by the hybrid scoring engine and structured risk factors, but no formal workflow existed for investigators to review workspaces, link related transactions, assemble evidence snapshots, and record immutable operational decisions.
+
+Key architectural trade-offs:
+1. **Case Creation Initiation:** Automated threshold-based case creation risks queue flooding and alert fatigue prior to establishing operational triage baselines.
+2. **Primary Transaction Invariant:** Every investigation must focus on a primary transaction, but PostgreSQL schema constraints must balance relational rigor with application atomicity.
+3. **Related Transaction Discovery:** Graph-based multi-hop discovery adds graph traversal and cyclic query complexity to a relational modular monolith.
+4. **Evidence Immutability:** Evidence must represent durable, unalterable historical snapshots rather than volatile live pointers to mutable records.
+5. **Shared Triage Queue & Concurrency:** Multiple investigators review unassigned cases simultaneously, risking assignment race conditions and conflicting resolutions.
+
+## Proposed Decision
+
+1. **Manual-First Case Creation:**
+   - Case creation (`POST /api/v1/investigations`) is initiated manually by `ADMIN`, `INVESTIGATOR`, or `ANALYST` roles.
+   - Cases enter a shared triage queue (`assigned_to = NULL`, `status = 'OPEN'`).
+   - Automated risk-threshold case creation is intentionally deferred to future operational phases.
+2. **Primary Transaction Semantics (At-Most-One DB vs. Exactly-One App Invariant):**
+   - The PostgreSQL partial unique index `uq_investigation_single_primary` on `investigation_transactions(investigation_id) WHERE relationship_type = 'PRIMARY'` guarantees that an investigation can have **at most one** `PRIMARY` transaction link in the database.
+   - The application creation workflow (`InvestigationService.create_investigation`) guarantees that every successfully committed investigation has **exactly one** `PRIMARY` link by inserting the `Investigation`, the primary `InvestigationTransaction`, and the `AuditEvent` in a single uncommitted transaction.
+   - A single transaction can serve as the `PRIMARY` transaction across multiple separate investigations.
+3. **1-Hop Related Transaction Scope (4-Way Shared-Party Predicate):**
+   - Related transactions are strictly limited to direct 1-hop associations sharing the exact same `source_namespace` as the primary transaction.
+   - Must satisfy at least one of four shared-party criteria (`account_id` or `counterparty_account_id` matching). Multi-hop and recursive graph search are out of scope.
+4. **Append-Only Evidence Snapshots & Database Trigger Immutability:**
+   - Supports 6 distinct evidence types paired strictly with their source entities.
+   - Evidence records omit `updated_at`. Modifying or deleting evidence is rejected by database trigger `trg_no_update_delete_evidence`.
+   - Payloads are bounded to 64 KB JSON. Source entity existence and investigation scope are verified before persistence.
+5. **Row-Level Concurrency Protection:**
+   - Mutations employ PostgreSQL `SELECT ... FOR UPDATE` row locks.
+   - Concurrent self-assignment races yield one winner (200 OK) and one 409 Conflict (`CASE_ALREADY_ASSIGNED`).
+   - Explicit attempts by an investigator to take a peer's assigned case are rejected with 403 Forbidden (`FORBIDDEN`).
+   - Terminal case immutability: once `RESOLVED`, an investigation cannot be modified, reassigned, or amended with evidence by any role, including `ADMIN`.
+6. **Transactional Audit Integration:**
+   - Investigation lifecycle changes, assignments, transaction linkings, and evidence attachments emit `AuditEvent` records within the primary database transaction, capturing the authenticated user ID as the actor.
+7. **Entity Title Scope Clarification:**
+   - The `investigations` entity deliberately omits a case `title` column, anchoring cases directly to their primary transaction UUID and priority to eliminate subjective or redundant ticketing metadata.
+   - The `investigation_evidence` entity explicitly requires a `title VARCHAR(255)` column as originally designed, providing human-readable labels for captured snapshots and investigator observations.
+
+---
+
 # 4. Decision Dependency Map
 
 ```text

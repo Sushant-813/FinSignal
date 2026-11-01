@@ -664,46 +664,97 @@ Phase 8 implements 9 standardized factor codes: `COLD_START_ACCOUNT`, `HIGH_VELO
 
 ---
 
-# 21. Investigation Model
+# 21. Investigation Model (Phase 9 Implemented)
 
-An investigation should be associated with suspicious activity.
+Investigations represent formal operational review cases created around flagged or suspicious transactions.
 
-Conceptual fields:
+### 21.1 Investigation Entity (`investigations`)
+
+Operational fields and types:
 
 ```text
-investigation_id
-transaction_id
-status
-priority
-created_at
-updated_at
-resolution
+id                  UUID PRIMARY KEY
+assigned_to         UUID REFERENCES users(id) ON DELETE RESTRICT (nullable)
+status              VARCHAR(32) NOT NULL DEFAULT 'OPEN'
+priority            VARCHAR(16) NOT NULL DEFAULT 'MEDIUM'
+resolution          VARCHAR(32) (nullable)
+resolution_notes    TEXT (nullable)
+created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 ```
 
-An investigation may later support relationships to multiple transactions if the investigation concerns a broader behavioral pattern.
+Operational Enums and Constraints:
+- `status`: `OPEN`, `UNDER_REVIEW`, `RESOLVED` (`chk_investigations_status`).
+- `priority`: `LOW`, `MEDIUM`, `HIGH`, `CRITICAL` (`chk_investigations_priority`).
+- `resolution`: `LEGITIMATE`, `SUSPICIOUS`, `CONFIRMED_FRAUD`, `INCONCLUSIVE` (`chk_investigations_resolution`).
+- Resolution State Integrity (`chk_investigations_resolution_state`): When `status = 'RESOLVED'`, `resolution` and non-whitespace `resolution_notes` are mandatory. Conversely, when `status != 'RESOLVED'`, `resolution` and `resolution_notes` must remain `NULL`.
+- Indexes: `ix_investigations_status_priority` on `(status, priority)`, `ix_investigations_assigned_status` on `(assigned_to, status)`, `ix_investigations_created_at` on `created_at DESC`.
+
+### 21.2 Investigation Transaction Association (`investigation_transactions`)
+
+Enables many-to-many associations between investigations and transactions:
+
+```text
+investigation_id    UUID REFERENCES investigations(id) ON DELETE RESTRICT
+transaction_id      UUID REFERENCES transactions(id) ON DELETE RESTRICT
+relationship_type   VARCHAR(32) NOT NULL ('PRIMARY' or 'RELATED')
+created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+PRIMARY KEY (investigation_id, transaction_id)
+```
+
+Invariants and Scope Rules:
+1. **Primary Transaction Invariant:**
+   - PostgreSQL partial unique index `uq_investigation_single_primary` on `(investigation_id) WHERE relationship_type = 'PRIMARY'` guarantees **at most one** `PRIMARY` association per investigation in the database.
+   - The application-level atomic creation workflow (`InvestigationService.create_investigation`) guarantees **exactly one** `PRIMARY` association for every successfully committed investigation.
+   - A single transaction can serve as the `PRIMARY` subject across multiple separate investigations.
+2. **1-Hop Related Transaction Scope:**
+   - Related transactions are limited strictly to direct 1-hop associations sharing the exact same `source_namespace` as the primary transaction.
+   - Must satisfy at least one of four shared-party matching conditions:
+     - `related.account_id = primary.account_id`
+     - `related.account_id = primary.counterparty_account_id`
+     - `related.counterparty_account_id = primary.account_id`
+     - `related.counterparty_account_id = primary.counterparty_account_id`
+   - Recursive graph search or multi-hop discovery is intentionally excluded.
 
 ---
 
-# 22. Investigation Evidence
+# 22. Investigation Evidence (Phase 9 Implemented)
 
-Evidence should represent structured information used by investigators and the AI assistant.
+Evidence represents structured, immutable snapshots captured to substantiate an investigation.
 
-Possible evidence types:
+### 22.1 Schema (`investigation_evidence`)
 
 ```text
-TRANSACTION
-ACCOUNT_HISTORY
-BEHAVIORAL_DEVIATION
-DEVICE
-LOCATION
-MERCHANT
-VELOCITY
-RELATED_TRANSACTION
-RISK_FACTOR
-MODEL_OUTPUT
+id                  UUID PRIMARY KEY
+investigation_id    UUID REFERENCES investigations(id) ON DELETE RESTRICT NOT NULL
+evidence_type       VARCHAR(64) NOT NULL
+source_type         VARCHAR(64) NOT NULL
+source_id           UUID (nullable)
+title               VARCHAR(255) NOT NULL
+description         TEXT (nullable)
+payload             JSONB (nullable, max 64 KB)
+created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 ```
 
-Evidence should preserve its source where practical.
+### 22.2 Evidence Constraints & Immutability Trigger
+
+1. **Type & Source Pairings (`chk_inv_evidence_type_source_pair`):**
+   - `TRANSACTION_FACT` <-> `TRANSACTION`
+   - `RISK_SCORE` <-> `RISK_ANALYSIS`
+   - `RISK_FACTOR` <-> `RISK_FACTOR`
+   - `ACCOUNT_PROFILE` <-> `ACCOUNT`
+   - `DEVICE_PROFILE` <-> `DEVICE`
+   - `USER_NOTE` <-> `USER_NOTE`
+2. **Source ID Consistency (`chk_inv_evidence_source_consistency`):**
+   - If `source_type = 'USER_NOTE'`, `source_id` MUST be `NULL`.
+   - If `source_type != 'USER_NOTE'`, `source_id` MUST be non-null and point to an existing entity in the current investigation scope.
+3. **Database-Enforced Immutability Trigger:**
+   - Table deliberately omits `updated_at`.
+   - PostgreSQL trigger `trg_no_update_delete_evidence` invokes `trg_enforce_evidence_immutability()` to reject standard SQL `UPDATE` and `DELETE` statements on `investigation_evidence`.
+   - *Boundary Note:* Does not protect against privileged superusers executing `TRUNCATE` or disabling triggers.
+4. **Ordering & Indexing:**
+   - `ix_inv_evidence_investigation_created` on `(investigation_id, created_at ASC, id ASC)` provides deterministic pagination.
+   - `ix_inv_evidence_source` on `(source_type, source_id)` optimizes reverse lookup.
 
 ---
 
@@ -1099,25 +1150,31 @@ The exact period will be determined by the generated dataset.
 
 ---
 
-# 38. Investigation Trigger
+# 38. Investigation Triggering & Creation (Phase 9 Implemented)
 
-A transaction may become investigation-worthy when its calculated risk exceeds a configured threshold.
+FinSignal implements a manual-first investigation creation model in Phase 9.
 
-Conceptually:
+### 38.1 Manual Case Creation Workflow
+- Authenticated users with `ADMIN`, `ANALYST`, or `INVESTIGATOR` roles can explicitly initiate an investigation on any valid transaction.
+- Creation requires:
+  - Valid `transaction_id`.
+  - Triage `priority` (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL`).
+  - Optional initial notes.
+- Upon creation, the case enters the unassigned queue (`assigned_to = NULL`, `status = 'OPEN'`).
+
+### 38.2 Deferred Automated Triggering
+Conceptual automated threshold triggering remains defined as a future capability:
 
 ```text
-Risk Score
+Risk Score / Tier
     |
-    +---- Low -----> No Investigation
-    |
-    +---- Medium --> Review / Optional Investigation
-    |
-    +---- High ----> Investigation Candidate
+    +---- Low --------> Normal Processing (No Investigation)
+    +---- Medium -----> Flagged for Optional Manual Review
+    +---- High -------> Investigation Candidate (Future Auto-Trigger Target)
+    +---- Critical ---> Immediate Escalation (Future Auto-Trigger Target)
 ```
 
-Thresholds must be configurable.
-
-Risk score alone must not be treated as proof of fraud.
+Automated case creation based on configured risk score thresholds or alert triggers is intentionally deferred to future operational phases to prevent alert fatigue prior to operational baseline establishment. Risk scores alone do not constitute proof of fraud.
 
 ---
 
@@ -1702,7 +1759,7 @@ Business rules should remain in service/domain layers rather than repository imp
 
 # 69. Service Requirements
 
-Services should coordinate business workflows.
+Services should coordinate business workflows and domain invariants.
 
 Examples:
 
@@ -1716,6 +1773,26 @@ AuthService
 ```
 
 Services should not become uncontrolled collections of unrelated logic.
+
+### 69.1 InvestigationService & InvestigationRepository (Phase 9 Implemented)
+
+The `Investigation` domain cleanly separates persistence from business and authorization workflows:
+
+1. **`InvestigationRepository` Responsibilities:**
+   - Eager joins and single bounded queries to eliminate N+1 query patterns (e.g., retrieving primary transaction metadata, latest risk analysis score, and audit history in a single structured workspace query).
+   - Row-level lock acquisition using PostgreSQL `SELECT ... FOR UPDATE` during assignment, unassignment, priority change, and resolution mutations.
+   - Deterministic pagination queries for shared queues (`created_at DESC`) and evidence lists (`created_at ASC, id ASC`).
+   - Standard transactional persistence for entities and relation links.
+
+2. **`InvestigationService` Responsibilities:**
+   - Enforce multi-model transactional atomicity: atomically persisting the `Investigation`, the primary `InvestigationTransaction`, and the initial `AuditEvent(INVESTIGATION_CREATED)` in a single uncommitted transaction.
+   - Enforce RBAC rules across roles:
+     - `ADMIN`: Global lifecycle, assignment, linking, attachment, and resolution authority.
+     - `INVESTIGATOR`: Permitted to view all cases, self-assign unassigned cases, self-unassign, edit assigned cases, link 1-hop transactions, attach evidence, and resolve. Explicitly prohibited from taking peer cases (403) or reassigning across peers (403).
+     - `ANALYST`: Permitted to create unassigned cases and read workspace/transactions/evidence; prohibited from mutations, assignment, transaction linking, evidence attachment, and resolution (403).
+   - Guard terminal state immutability: reject any modification or evidence attachment attempt on `RESOLVED` cases with 409 `IMMUTABLE_INVESTIGATION`.
+   - Validate 1-hop related transaction eligibility: verify shared `source_namespace` and test the 4-way shared-party predicate before linking.
+   - Enforce evidence type and source validation matrix and bound payload sizes to 64 KB.
 
 ---
 

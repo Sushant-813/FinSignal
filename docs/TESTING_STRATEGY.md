@@ -1327,7 +1327,7 @@ Phase 7 introduces machine learning unit tests, integration pipelines, and perfo
 
 ### 40.3 Phase 8 Risk Analysis & Explainability Benchmark Protocol & Test Inventory
 
-Phase 8 introduces comprehensive risk analysis unit tests, integration persistence suites, scenario validations, and API endpoint tests, bringing the full test suite to **450 passing tests** (57 dedicated Phase 8 tests).
+Phase 8 introduces comprehensive risk analysis unit tests, integration persistence suites, scenario validations, and API endpoint tests, bringing the full test suite to **450 passing tests** (57 dedicated Phase 8 tests). Phase 9 further expands the automated test suite with 35 dedicated unit, API, PostgreSQL persistence, and independent-connection concurrency tests, bringing the current test suite to **485 passing tests**.
 
 #### Automated Test Suite Inventory (450 Total Passing Tests, 57 Phase 8 Tests)
 1. **Risk Schema Unit Tests (`tests/unit/test_risk_schemas.py` — 5 tests):**
@@ -1359,6 +1359,52 @@ Phase 8 introduces comprehensive risk analysis unit tests, integration persisten
    - Tests `POST /api/v1/transactions/{id}/risk/analyze`: on-demand evaluation, active model resolution, explicit model resolution, idempotency reuse (no duplicate DB insert), and audit event creation (`TRANSACTION_RISK_ANALYZED`).
    - Tests RBAC authorization: `ADMIN`, `ANALYST`, and `INVESTIGATOR` access; `EXPERIMENTAL` models return HTTP 400; `VALIDATED` models restricted to `ADMIN` (HTTP 403 for `ANALYST`/`INVESTIGATOR`).
    - Tests unauthenticated (HTTP 401) and invalid UUID (HTTP 422) handling.
+
+### 40.4 Phase 9 Investigation & Evidence Test Suite & Verification Inventory
+
+Phase 9 implements 35 dedicated tests covering schemas, service domain logic, API routes, database constraints and triggers, and multi-connection race conditions, bringing total passing tests to **485 passing tests**.
+
+#### Automated Test Suite Inventory (485 Total Passing Tests, 35 Phase 9 Tests)
+
+1. **Investigation Schema Unit Tests (`tests/unit/test_investigation_schemas.py` — 9 tests):**
+   - Validates all domain enums (`InvestigationStatus`, `InvestigationPriority`, `InvestigationResolution`, `InvestigationRelationshipType`, `EvidenceType`, `EvidenceSourceType`).
+   - Validates creation payload constraints (`InvestigationCreateRequest`) including transaction UUID format and priority limits.
+   - Tests `InvestigationPatchRequest` partial updating fields.
+   - Tests `InvestigationResolveRequest` rejection of empty or whitespace-only resolution notes.
+   - Validates `InvestigationRelatedTransactionAddRequest` schema.
+   - Validates `InvestigationEvidenceCreateRequest` type-source mapping matrix, mandatory source ID consistency, and 64 KB JSON payload boundaries.
+   - Validates serialization of `InvestigationDetailResponse`, `InvestigationListResponse`, `InvestigationTransactionsListResponse`, and `InvestigationEvidenceListResponse`.
+
+2. **Investigation Service Unit Tests (`tests/unit/test_investigation_service.py` — 5 tests):**
+   - Tests RBAC authorization matrix across `ADMIN`, `ANALYST`, and `INVESTIGATOR` roles.
+   - Tests the 4-way shared-party 1-hop scope predicate for related transactions (all 4 combinations of account and counterparty matching, and rejection of namespace mismatch).
+   - Verifies terminal immutability enforcement on `RESOLVED` investigations (rejecting updates and evidence attachment).
+   - Validates permitted lifecycle status transitions (`OPEN` -> `UNDER_REVIEW`) and rejects invalid state regression.
+   - Validates evidence source consistency and scope checking.
+
+3. **Investigation REST API Tests (`tests/api/test_investigations_api.py` — 12 tests):**
+   - `GET /api/v1/investigations`: shared queue filtering (status, priority, assigned_to, unassigned), pagination, and 400 conflict on invalid filter combinations.
+   - `POST /api/v1/investigations`: atomic case creation, role permissions, and 404 on invalid transaction.
+   - `GET /api/v1/investigations/{id}`: workspace envelope retrieval with primary transaction, risk analysis, risk factors, and evidence summaries; 404 on missing case.
+   - `PATCH /api/v1/investigations/{id}`: assignment, priority change, status progression; 403 on peer case takeover attempt; 403 on analyst caller.
+   - `POST /api/v1/investigations/{id}/resolve`: explicit case resolution, 403 for non-assigned investigator, 422 on whitespace notes, 409 if already resolved or in `OPEN`.
+   - `GET /api/v1/investigations/{id}/transactions`: deterministic listing (PRIMARY first, then RELATED by created_at).
+   - `POST /api/v1/investigations/{id}/transactions`: 1-hop related transaction linking, 400 on unrelated transaction, 409 on duplicate link.
+   - `GET /api/v1/investigations/{id}/evidence`: deterministic pagination ordered by `created_at ASC, id ASC`.
+   - `POST /api/v1/investigations/{id}/evidence`: attach valid snapshot, 422 on invalid type-source pair, 400 on payload > 64 KB, 400 on out-of-scope source.
+
+4. **PostgreSQL Persistence & Constraint Integration Tests (`tests/integration/test_investigation_persistence.py` — 6 tests):**
+   - Tests Alembic migration `0006_investigation_models` upgrade and downgrade on PostgreSQL.
+   - Tests foreign key integrity and `ON DELETE RESTRICT` behavior (preventing user deletion when assigned, and preventing transaction deletion when linked).
+   - Tests atomic rollback: an intentional failure during audit event insertion rolls back the investigation and primary link, preventing partial persistence.
+   - Tests partial unique index `uq_investigation_single_primary`: attempting to insert a second `PRIMARY` transaction raises PostgreSQL unique violation `23505`.
+   - Tests CHECK constraint `chk_investigations_resolution_state`: rejects `RESOLVED` cases with missing or whitespace-only resolution notes.
+   - Tests PostgreSQL trigger `trg_no_update_delete_evidence`: direct SQL `UPDATE` and `DELETE` on `investigation_evidence` are intercepted and rejected with an exception.
+
+5. **Multi-Connection Concurrency Integration Tests (`tests/integration/test_investigation_concurrency.py` — 3 tests):**
+   - Concurrent self-assignment race across two independent PostgreSQL connections: row lock (`SELECT ... FOR UPDATE`) ensures exactly one investigator claims the case (200 OK) while the racing investigator receives 409 `CASE_ALREADY_ASSIGNED`.
+   - Explicit peer takeover prevention: Investigator 2 attempting to claim Investigator 1's assigned case receives 403 `FORBIDDEN`.
+   - Concurrent resolution race across two independent PostgreSQL connections: one caller succeeds, second caller receives 409 `INVESTIGATION_ALREADY_RESOLVED`.
 
 ---
 

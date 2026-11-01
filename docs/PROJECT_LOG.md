@@ -1347,7 +1347,65 @@ Phase 8 introduces a deterministic, explainable risk-prioritization layer that s
 
 ---
 
-# 27. Log Maintenance Rules
+# 27. Phase 9 Implementation: Investigation & Evidence Completion
+
+**Date:** 2026-11-01
+**Scope:** Backend (Modular Monolith)
+**Status:** Completed (Milestones P9.0–P9.9)
+
+### Summary of Completed Work
+
+1. **Investigation Domain Subsystem (`src/finsignal/investigations/`):**
+   - Implemented `models.py`: `Investigation`, `InvestigationTransaction`, and `InvestigationEvidence` SQLAlchemy ORM models.
+   - Implemented `schemas.py`: Pydantic v2 domain schemas, DTOs, and serialization contracts. Enforces non-whitespace resolution notes (`min_length=1`), valid payload boundaries (64 KB JSONB), and type-source consistency mappings.
+   - Implemented `repository.py` (`InvestigationRepository`): Encapsulates persistence logic, row-level pessimistic locks (`SELECT ... FOR UPDATE`), eager joins to avoid N+1 query loops, deterministic queue ordering (`created_at DESC`), and deterministic evidence ordering (`created_at ASC, id ASC`).
+   - Implemented `service.py` (`InvestigationService`): Orchestrates core business invariants:
+     - Multi-model atomicity: atomically creates the investigation, primary transaction link, and `INVESTIGATION_CREATED` audit event.
+     - Role-based authorization: `ADMIN` has global authority; `INVESTIGATOR` can self-assign unassigned cases, self-unassign, edit assigned cases, link 1-hop transactions, attach evidence, and resolve; `ANALYST` is restricted to case creation and read operations (mutations return 403 `FORBIDDEN`).
+     - Peer protection: investigators attempting to claim a peer's assigned case receive 403 `FORBIDDEN`.
+     - 4-way 1-hop scope predicate: validates related transactions across all 4 account/counterparty matching conditions within the exact same `source_namespace`.
+     - Terminal case immutability: resolved investigations cannot be altered or amended with evidence by any role (returns 409 `IMMUTABLE_INVESTIGATION`).
+     - Evidence validation: validates source existence in database and confirms source belongs to investigation scope (`EVIDENCE_SOURCE_OUT_OF_SCOPE`).
+     - Transactional audit integration: records `AuditEvent` rows with authenticated actor attribution within the shared transaction.
+
+2. **Database Migration (`migrations/versions/0006_investigation_models.py`):**
+   - Created `investigations`, `investigation_transactions`, and `investigation_evidence` tables.
+   - Foreign key constraints with `ON DELETE RESTRICT` on `assigned_to`, `investigation_id`, and `transaction_id`.
+   - Check constraints: `chk_investigations_status`, `chk_investigations_priority`, `chk_investigations_resolution`, `chk_investigations_resolution_state`, `chk_inv_tx_rel_type`, `chk_inv_evidence_type`, `chk_inv_source_type`, `chk_inv_evidence_type_source_pair`, `chk_inv_evidence_source_consistency`.
+   - Partial unique index: `uq_investigation_single_primary` on `investigation_transactions(investigation_id) WHERE relationship_type = 'PRIMARY'`.
+   - PostgreSQL trigger: `trg_no_update_delete_evidence` calling `trg_enforce_evidence_immutability()` to reject SQL `UPDATE` and `DELETE` on `investigation_evidence`.
+
+3. **REST API Router (`src/finsignal/api/v1/investigations.py`):**
+   - Implemented 9 endpoints mounted at `/api/v1/investigations` and registered in `src/finsignal/api/router.py`:
+     1. `GET /api/v1/investigations`: Shared triage queue listing and filtering.
+     2. `POST /api/v1/investigations`: Manual-first atomic case creation.
+     3. `GET /api/v1/investigations/{id}`: Full workspace context envelope retrieval.
+     4. `PATCH /api/v1/investigations/{id}`: Row-locked case mutation (assignment, priority, status).
+     5. `POST /api/v1/investigations/{id}/resolve`: Explicit resolution into 4 outcomes with mandatory notes.
+     6. `GET /api/v1/investigations/{id}/transactions`: List primary and related transactions.
+     7. `POST /api/v1/investigations/{id}/transactions`: Link 1-hop related transactions.
+     8. `GET /api/v1/investigations/{id}/evidence`: Deterministic paginated evidence listing.
+     9. `POST /api/v1/investigations/{id}/evidence`: Attach append-only immutable evidence snapshot.
+
+4. **Empirical Verification & Test Results:**
+   - **Test Suite Growth:** 485 total passing tests (+35 Phase 9 tests covering schemas, service authorization and invariants, REST API contracts, PostgreSQL persistence/triggers/rollbacks, and multi-connection concurrency races).
+   - **Concurrency Verification:** Multi-connection integration tests confirm that concurrent self-assignment races cleanly yield one winner (200 OK) and one 409 Conflict (`CASE_ALREADY_ASSIGNED`), and peer takeovers return 403 `FORBIDDEN`.
+   - **Static Analysis & Linting:** `ruff check .` clean, `ruff format --check .` clean, `mypy src tests` clean (0 errors across 175 source files).
+
+### Architecture & Engineering Invariants Established
+1. **Primary Transaction Guarantee:** The partial unique index enforces at-most-one PRIMARY link at the database level, while the atomic application creation workflow ensures exactly-one PRIMARY link for every committed case.
+2. **1-Hop Bounded Scope:** Related transactions are strictly constrained to direct 1-hop associations within the primary transaction's `source_namespace`, avoiding recursive graph traversal complexity.
+3. **Evidence Immutability Boundary:** Append-only evidence snapshots are protected by database trigger against application-level modification or deletion.
+4. **Decoupled Resolution:** Human investigation resolution is strictly decoupled from automated ML risk scores and represents the final operational verdict.
+5. **Deferred Automation:** Automatic risk-triggered case creation and Phase 10 AI Investigation Assistant summaries remain intentionally deferred.
+
+### Result & Status
+- Phase 9 implementation and automated tests: **100% Completed** (485 passing tests).
+- Next development phase: **Phase 10 (AI Investigation Assistant)**.
+
+---
+
+# 28. Log Maintenance Rules
 
 The project log should be updated when:
 
@@ -1373,7 +1431,7 @@ What happens next?
 
 ---
 
-# 28. Final Principle
+# 29. Final Principle
 
 The project log is a record of **engineering evolution**, not a diary of every command executed.
 

@@ -1212,231 +1212,362 @@ Generates a new risk assessment or idempotently returns an existing identical as
 
 ---
 
-# 28. Investigation API
+# 28. Investigation & Evidence API Specification (Phase 9 Implemented)
 
-## 28.1 List Investigations
+All investigation endpoints are mounted under `/api/v1/investigations` and require a valid Bearer JWT.
+
+Nine REST endpoints are implemented across operational triage, workspace context, assignment, 1-hop related transaction associations, and immutable evidence management.
+
+---
+
+## 28.1 List & Filter Investigations
 
 ```http
 GET /api/v1/investigations
 ```
 
-Filters may include:
-
-```text
-status
-priority
-assigned_to
-resolution
-risk_level
-created_from
-created_to
-```
+- **Summary:** List investigations in the shared triage queue with deterministic ordering.
+- **Allowed Roles:** `ADMIN`, `INVESTIGATOR`, `ANALYST`
+- **Query Parameters:**
+  - `page` (int, optional, ge=1, default=1): 1-indexed page number.
+  - `page_size` (int, optional, ge=1, le=100, default=25): Page size.
+  - `status` (string enum, optional): Filter by `OPEN`, `UNDER_REVIEW`, `RESOLVED`.
+  - `priority` (string enum, optional): Filter by `LOW`, `MEDIUM`, `HIGH`, `CRITICAL`.
+  - `assigned_to` (UUID, optional): Filter by assigned investigator user UUID.
+  - `unassigned` (bool, optional): Filter for unassigned investigations (`assigned_to IS NULL`).
+- **Conflict Rule:** Supplying both `assigned_to` and `unassigned=true` returns HTTP 400 Bad Request (`FILTER_CONFLICT`).
+- **Response Schema (`200 OK` - `InvestigationListResponse`):**
+  ```json
+  {
+    "items": [
+      {
+        "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "status": "OPEN",
+        "priority": "HIGH",
+        "assigned_to": null,
+        "resolution": null,
+        "created_at": "2026-11-01T12:00:00Z",
+        "updated_at": "2026-11-01T12:00:00Z",
+        "primary_transaction_id": "4fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "primary_account_id": "5fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "primary_amount": "12500.00",
+        "primary_currency": "USD",
+        "primary_timestamp": "2026-11-01T11:45:00Z",
+        "primary_source_namespace": "production-core",
+        "latest_composite_risk_score": 87.5,
+        "latest_risk_level": "HIGH",
+        "evidence_count": 0
+      }
+    ],
+    "total": 1,
+    "page": 1,
+    "page_size": 25,
+    "pages": 1
+  }
+  ```
 
 ---
 
-## 28.2 Get Investigation
-
-```http
-GET /api/v1/investigations/{investigation_id}
-```
-
-The response should provide enough context for the investigation workspace.
-
-Potential sections:
-
-```text
-case metadata
-primary transaction
-related transactions
-risk result
-risk factors
-assignment
-status
-resolution
-```
-
----
-
-## 28.3 Create Investigation
+## 28.2 Create Investigation (Manual-First)
 
 ```http
 POST /api/v1/investigations
 ```
 
-Request:
-
-```json
-{
-  "transaction_id": "uuid",
-  "priority": "HIGH"
-}
-```
-
-The server should:
-
-1. validate the transaction
-2. create the investigation
-3. create the primary transaction relationship
-4. record the relevant audit event
-
-These operations should occur transactionally.
-
----
-
-# 29. Investigation Assignment
-
-```http
-PATCH /api/v1/investigations/{investigation_id}
-```
-
-Example:
-
-```json
-{
-  "assigned_to": "uuid"
-}
-```
-
-Authorization must verify that the acting user is allowed to assign cases.
-
----
-
-# 30. Investigation Status
-
-Allowed transitions should be explicit.
-
-Example:
-
-```text
-OPEN
-  ↓
-UNDER_REVIEW
-  ↓
-RESOLVED
-```
-
-Invalid transitions should return:
-
-```text
-409 Conflict
-```
-
-rather than silently changing the case.
-
----
-
-# 31. Investigation Resolution
-
-Example:
-
-```http
-PATCH /api/v1/investigations/{investigation_id}
-```
-
-Request:
-
-```json
-{
-  "resolution": "LEGITIMATE",
-  "resolution_notes": "Verified as annual insurance payment."
-}
-```
-
-Valid resolutions:
-
-```text
-LEGITIMATE
-SUSPICIOUS
-CONFIRMED_FRAUD
-INCONCLUSIVE
-```
-
-A resolved investigation should generally require a resolution.
-
----
-
-# 32. Related Transactions
-
-```http
-GET /api/v1/investigations/{investigation_id}/transactions
-```
-
-This endpoint returns:
-
-- primary transaction
-- related transactions
-- relationship type
-
-Example:
-
-```json
-{
-  "items": [
-    {
-      "transaction_id": "uuid",
-      "relationship_type": "PRIMARY"
-    },
-    {
-      "transaction_id": "uuid",
-      "relationship_type": "RELATED"
-    }
-  ]
-}
-```
-
----
-
-# 33. Evidence API
-
-## 33.1 List Evidence
-
-```http
-GET /api/v1/investigations/{investigation_id}/evidence
-```
-
----
-
-## 33.2 Add Evidence
-
-```http
-POST /api/v1/investigations/{investigation_id}/evidence
-```
-
-Example:
-
-```json
-{
-  "evidence_type": "BEHAVIOR_DEVIATION",
-  "title": "Unusual transaction amount",
-  "description": "Amount is significantly above the account baseline.",
-  "payload": {
-    "current_amount": "75000.00",
-    "baseline_median": "2100.00"
+- **Summary:** Atomically create an unassigned investigation linked to a PRIMARY transaction.
+- **Allowed Roles:** `ADMIN`, `INVESTIGATOR`, `ANALYST`
+- **Request Body (`InvestigationCreateRequest`):**
+  ```json
+  {
+    "transaction_id": "4fa85f64-5717-4562-b3fc-2c963f66afa6",
+    "priority": "HIGH",
+    "notes": "Initiating investigation due to surge in transaction velocity."
   }
-}
-```
-
-Evidence should be traceable and should not be silently overwritten.
-
----
-
-# 34. Evidence Immutability
-
-Investigation evidence is strictly append-only and immutable after creation.
-
-There are no `PUT` or `PATCH` endpoints for evidence records:
-```text
-PUT   /api/v1/investigations/{id}/evidence/{evidence_id}  -> Not Implemented / 405 Method Not Allowed
-PATCH /api/v1/investigations/{id}/evidence/{evidence_id}  -> Not Implemented / 405 Method Not Allowed
-```
-
-If an evidence interpretation changes or an investigator adds new observations, create a new evidence record (`POST /api/v1/investigations/{id}/evidence`) rather than mutating existing historical evidence.
-
-This preserves investigative audit integrity and prevents evidence tampering.
+  ```
+- **Execution Invariant:** Atomically inserts:
+  1. `Investigation` (`status = 'OPEN'`, `assigned_to = NULL`).
+  2. `InvestigationTransaction` with `relationship_type = 'PRIMARY'`.
+  3. `AuditEvent` with action `'INVESTIGATION_CREATED'`.
+- **Response Schema (`201 Created` - `InvestigationDetailResponse`):** Returns complete workspace envelope.
+- **Error Responses:**
+  - `404 Not Found`: Primary transaction does not exist (`TRANSACTION_NOT_FOUND`).
+  - `422 Unprocessable Entity`: Validation failure on payload parameters.
 
 ---
 
-# 35. AI Summary API
+## 28.3 Get Investigation Workspace
+
+```http
+GET /api/v1/investigations/{id}
+```
+
+- **Summary:** Retrieve complete workspace context for an investigation avoiding N+1 queries.
+- **Allowed Roles:** `ADMIN`, `INVESTIGATOR`, `ANALYST`
+- **Path Parameter:** `id` (UUID) - Investigation identifier.
+- **Response Schema (`200 OK` - `InvestigationDetailResponse`):**
+  ```json
+  {
+    "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+    "status": "UNDER_REVIEW",
+    "priority": "HIGH",
+    "assigned_to": "7fa85f64-5717-4562-b3fc-2c963f66afa6",
+    "resolution": null,
+    "resolution_notes": null,
+    "created_at": "2026-11-01T12:00:00Z",
+    "updated_at": "2026-11-01T12:05:00Z",
+    "primary_transaction": {
+      "id": "4fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "account_id": "5fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "counterparty_account_id": "6fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "amount": "12500.00",
+      "currency": "USD",
+      "timestamp": "2026-11-01T11:45:00Z",
+      "source_namespace": "production-core",
+      "merchant_id": null,
+      "device_id": null
+    },
+    "related_transactions_count": 2,
+    "latest_risk_analysis": {
+      "id": "8fa85f64-5717-4562-b3fc-2c963f66afa6",
+      "composite_risk_score": 87.5,
+      "risk_level": "HIGH",
+      "created_at": "2026-11-01T11:46:00Z"
+    },
+    "risk_factors": [
+      {
+        "id": "9fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "factor_code": "HIGH_VELOCITY",
+        "severity": "HIGH",
+        "score_impact": 25.0,
+        "description": "Surge of 8 transactions in 1 hour."
+      }
+    ],
+    "evidence_count": 1,
+    "recent_evidence": [
+      {
+        "id": "afa85f64-5717-4562-b3fc-2c963f66afa6",
+        "investigation_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "evidence_type": "TRANSACTION_FACT",
+        "source_type": "TRANSACTION",
+        "source_id": "4fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "title": "Primary transaction snapshot",
+        "description": "Baseline transaction captured at case creation",
+        "payload": {},
+        "created_at": "2026-11-01T12:00:00Z"
+      }
+    ]
+  }
+  ```
+- **Error Responses:**
+  - `404 Not Found`: Investigation does not exist (`INVESTIGATION_NOT_FOUND`).
+
+---
+
+## 28.4 Update Investigation (Assignment, Priority, Status)
+
+```http
+PATCH /api/v1/investigations/{id}
+```
+
+- **Summary:** Modify mutable case attributes protected by row-level locking (`SELECT ... FOR UPDATE`).
+- **Allowed Roles:** `ADMIN`, `INVESTIGATOR`
+- **Path Parameter:** `id` (UUID) - Investigation identifier.
+- **Request Body (`InvestigationPatchRequest`):**
+  ```json
+  {
+    "assigned_to": "7fa85f64-5717-4562-b3fc-2c963f66afa6",
+    "priority": "CRITICAL",
+    "status": "UNDER_REVIEW"
+  }
+  ```
+- **Business & Authorization Rules:**
+  - `ADMIN`: Permitted to reassign any case, change priority, or transition status (`OPEN -> UNDER_REVIEW`).
+  - `INVESTIGATOR`: Permitted to self-assign unassigned cases (`assigned_to = current_user.id`), self-unassign (`assigned_to = None`), or modify priority on assigned cases. Prohibited from taking peer cases (returns HTTP 403 `FORBIDDEN`) or reassigning to another user (returns HTTP 403 `FORBIDDEN`).
+  - Race Condition: If an unassigned case is claimed concurrently, the loser receives HTTP 409 Conflict (`CASE_ALREADY_ASSIGNED`).
+  - Immutability: Attempting to modify an already `RESOLVED` case returns HTTP 409 Conflict (`IMMUTABLE_INVESTIGATION`).
+  - Invalid Transitions: Explicitly moving status backwards (e.g., `RESOLVED -> UNDER_REVIEW`) or attempting to resolve via PATCH returns HTTP 409 Conflict (`INVALID_LIFECYCLE_TRANSITION`). (Resolution must use `/resolve`).
+- **Response Schema (`200 OK` - `InvestigationDetailResponse`)**
+
+---
+
+## 28.5 Explicitly Resolve Investigation
+
+```http
+POST /api/v1/investigations/{id}/resolve
+```
+
+- **Summary:** Resolve an investigation in `UNDER_REVIEW` status and render it permanently immutable.
+- **Allowed Roles:** `ADMIN`, `INVESTIGATOR` (caller must be an Admin or the assigned Investigator)
+- **Path Parameter:** `id` (UUID) - Investigation identifier.
+- **Request Body (`InvestigationResolveRequest`):**
+  ```json
+  {
+    "resolution": "CONFIRMED_FRAUD",
+    "resolution_notes": "Counterparty account confirmed on external mule registry. Confirmed unauthorized takeover."
+  }
+  ```
+- **Business Rules:**
+  - Resolution requires non-empty, non-whitespace `resolution_notes`.
+  - Permitted outcomes: `LEGITIMATE`, `SUSPICIOUS`, `CONFIRMED_FRAUD`, `INCONCLUSIVE`.
+  - Caller must be `ADMIN` or the assigned `INVESTIGATOR`. An unassigned investigator or peer investigator receives HTTP 403 Forbidden (`FORBIDDEN`).
+  - Case must currently be in `UNDER_REVIEW` status. If already resolved, returns HTTP 409 Conflict (`INVESTIGATION_ALREADY_RESOLVED`). If in `OPEN`, returns HTTP 409 Conflict (`INVALID_LIFECYCLE_TRANSITION`).
+  - Atomically sets `status = 'RESOLVED'`, populates resolution fields, updates `updated_at`, and creates an `AuditEvent(INVESTIGATION_RESOLVED)`.
+- **Response Schema (`200 OK` - `InvestigationDetailResponse`)**
+
+---
+
+## 28.6 List Associated Transactions
+
+```http
+GET /api/v1/investigations/{id}/transactions
+```
+
+- **Summary:** Retrieve primary and related transaction associations in deterministic order (`relationship_type` PRIMARY first, then `created_at ASC`).
+- **Allowed Roles:** `ADMIN`, `INVESTIGATOR`, `ANALYST`
+- **Path Parameter:** `id` (UUID) - Investigation identifier.
+- **Response Schema (`200 OK` - `InvestigationTransactionsListResponse`):**
+  ```json
+  {
+    "items": [
+      {
+        "investigation_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "transaction_id": "4fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "relationship_type": "PRIMARY",
+        "created_at": "2026-11-01T12:00:00Z"
+      },
+      {
+        "investigation_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "transaction_id": "bfa85f64-5717-4562-b3fc-2c963f66afa6",
+        "relationship_type": "RELATED",
+        "created_at": "2026-11-01T12:10:00Z"
+      }
+    ],
+    "total": 2
+  }
+  ```
+
+---
+
+## 28.7 Link Related Transaction (1-Hop Scope)
+
+```http
+POST /api/v1/investigations/{id}/transactions
+```
+
+- **Summary:** Associate a related transaction satisfying the direct 1-hop shared-party predicate.
+- **Allowed Roles:** `ADMIN`, `INVESTIGATOR` (Admin or assigned Investigator)
+- **Path Parameter:** `id` (UUID) - Investigation identifier.
+- **Request Body (`InvestigationRelatedTransactionAddRequest`):**
+  ```json
+  {
+    "transaction_id": "bfa85f64-5717-4562-b3fc-2c963f66afa6",
+    "notes": "Burst payment originating from identical sender account."
+  }
+  ```
+- **Validation Rules (4-Way 1-Hop Predicate):**
+  1. Transaction must share the exact same `source_namespace` as the primary transaction.
+  2. Transaction must share at least one account entity with the primary transaction:
+     - `related.account_id == primary.account_id` OR
+     - `related.account_id == primary.counterparty_account_id` OR
+     - `related.counterparty_account_id == primary.account_id` OR
+     - `related.counterparty_account_id == primary.counterparty_account_id`
+  3. Fails if candidate is already linked as `PRIMARY` or `RELATED` (HTTP 409 Conflict: `TRANSACTION_ALREADY_LINKED`).
+  4. Fails if predicate not met or namespace mismatch (HTTP 400 Bad Request: `TRANSACTION_NOT_RELATED`).
+  5. Fails if case is `RESOLVED` (HTTP 409 Conflict: `IMMUTABLE_INVESTIGATION`).
+- **Response Schema (`201 Created` - `InvestigationTransactionItem`)**
+
+---
+
+## 28.8 List Investigation Evidence
+
+```http
+GET /api/v1/investigations/{id}/evidence
+```
+
+- **Summary:** Retrieve append-only evidence items ordered deterministically by `created_at ASC, id ASC`.
+- **Allowed Roles:** `ADMIN`, `INVESTIGATOR`, `ANALYST`
+- **Path Parameter:** `id` (UUID) - Investigation identifier.
+- **Query Parameters:**
+  - `page` (int, optional, ge=1, default=1): 1-indexed page number.
+  - `page_size` (int, optional, ge=1, le=100, default=50): Items per page.
+- **Response Schema (`200 OK` - `InvestigationEvidenceListResponse`):**
+  ```json
+  {
+    "items": [
+      {
+        "id": "afa85f64-5717-4562-b3fc-2c963f66afa6",
+        "investigation_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "evidence_type": "RISK_SCORE",
+        "source_type": "RISK_ANALYSIS",
+        "source_id": "8fa85f64-5717-4562-b3fc-2c963f66afa6",
+        "title": "Initial ML Anomaly Evaluation",
+        "description": "Baseline risk score snapshot at triage time.",
+        "payload": {
+          "composite_risk_score": 87.5,
+          "risk_level": "HIGH",
+          "rules_score": 75.0,
+          "anomaly_score": 0.88
+        },
+        "created_at": "2026-11-01T12:00:00Z"
+      }
+    ],
+    "total": 1,
+    "page": 1,
+    "page_size": 50,
+    "pages": 1
+  }
+  ```
+
+---
+
+## 28.9 Attach Append-Only Evidence
+
+```http
+POST /api/v1/investigations/{id}/evidence
+```
+
+- **Summary:** Validate source authority, construct immutable snapshot, and persist evidence.
+- **Allowed Roles:** `ADMIN`, `INVESTIGATOR` (Admin or assigned Investigator)
+- **Path Parameter:** `id` (UUID) - Investigation identifier.
+- **Request Body (`InvestigationEvidenceCreateRequest`):**
+  ```json
+  {
+    "evidence_type": "RISK_FACTOR",
+    "source_type": "RISK_FACTOR",
+    "source_id": "9fa85f64-5717-4562-b3fc-2c963f66afa6",
+    "title": "Velocity Spike Factor",
+    "description": "Severe velocity surge triggered on source account.",
+    "payload": {
+      "factor_code": "HIGH_VELOCITY",
+      "severity": "HIGH",
+      "score_impact": 25.0
+    }
+  }
+  ```
+- **Validation Rules:**
+  1. `payload` max size 64 KB (65,536 bytes serialized JSON) (`EVIDENCE_PAYLOAD_TOO_LARGE`).
+  2. Mismatched `evidence_type` and `source_type` rejected with HTTP 422.
+  3. `source_id` must be NULL if and only if `source_type == 'USER_NOTE'`.
+  4. Referenced source entity existence verified in database (`EVIDENCE_SOURCE_NOT_FOUND`).
+  5. Referenced entity verified to belong to investigation scope (primary/related transactions or primary account/device) (`EVIDENCE_SOURCE_OUT_OF_SCOPE`).
+  6. Fails if case is `RESOLVED` (HTTP 409 Conflict: `IMMUTABLE_INVESTIGATION`).
+- **Response Schema (`201 Created` - `InvestigationEvidenceResponse`)**
+
+---
+
+## 28.10 Evidence Immutability Principle
+
+Evidence records are strictly append-only and immutable. Modifying or deleting evidence records via HTTP `PUT`, `PATCH`, or `DELETE` is unsupported:
+```http
+PUT    /api/v1/investigations/{id}/evidence/{evidence_id}  --> 405 Method Not Allowed
+PATCH  /api/v1/investigations/{id}/evidence/{evidence_id}  --> 405 Method Not Allowed
+DELETE /api/v1/investigations/{id}/evidence/{evidence_id}  --> 405 Method Not Allowed
+```
+Direct SQL `UPDATE` and `DELETE` queries are aborted by PostgreSQL trigger `trg_no_update_delete_evidence`.
+
+---
+
+# 29. AI Investigation Assistant (Phase 10 Deferred Specification)
 
 ## 35.1 Generate Summary
 
@@ -2363,18 +2494,25 @@ GET    /api/v1/devices/{device_id}/accounts
 GET    /api/v1/devices/{device_id}/transactions
 ```
 
-### Investigations
+### Investigations (Phase 9 Implemented)
 
 ```text
 GET    /api/v1/investigations
 POST   /api/v1/investigations
-GET    /api/v1/investigations/{investigation_id}
-PATCH  /api/v1/investigations/{investigation_id}
-GET    /api/v1/investigations/{investigation_id}/transactions
-GET    /api/v1/investigations/{investigation_id}/evidence
-POST   /api/v1/investigations/{investigation_id}/evidence
-POST   /api/v1/investigations/{investigation_id}/ai-summary
-GET    /api/v1/investigations/{investigation_id}/ai-summary
+GET    /api/v1/investigations/{id}
+PATCH  /api/v1/investigations/{id}
+POST   /api/v1/investigations/{id}/resolve
+GET    /api/v1/investigations/{id}/transactions
+POST   /api/v1/investigations/{id}/transactions
+GET    /api/v1/investigations/{id}/evidence
+POST   /api/v1/investigations/{id}/evidence
+```
+
+### AI Investigation Assistant (Phase 10 Deferred)
+
+```text
+POST   /api/v1/investigations/{id}/ai-summary
+GET    /api/v1/investigations/{id}/ai-summary
 ```
 
 ### System

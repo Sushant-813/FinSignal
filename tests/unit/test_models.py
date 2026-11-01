@@ -7,6 +7,7 @@ import finsignal.accounts.models  # noqa: F401
 import finsignal.audit.models  # noqa: F401
 import finsignal.dataset.models  # noqa: F401
 import finsignal.devices.models  # noqa: F401
+import finsignal.investigations.models  # noqa: F401
 import finsignal.locations.models  # noqa: F401
 import finsignal.merchants.models  # noqa: F401
 import finsignal.ml.models  # noqa: F401
@@ -34,6 +35,9 @@ def test_metadata_contains_all_12_operational_tables() -> None:
         "model_versions",
         "risk_analyses",
         "risk_factors",
+        "investigations",
+        "investigation_transactions",
+        "investigation_evidence",
     }
     actual_tables = set(Base.metadata.tables.keys())
     assert actual_tables == expected_tables
