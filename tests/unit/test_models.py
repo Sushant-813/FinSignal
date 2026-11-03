@@ -4,6 +4,7 @@ from sqlalchemy import CheckConstraint, UniqueConstraint
 
 # Import all models to ensure Base.metadata is self-contained when running test in isolation
 import finsignal.accounts.models  # noqa: F401
+import finsignal.ai.models  # noqa: F401
 import finsignal.audit.models  # noqa: F401
 import finsignal.dataset.models  # noqa: F401
 import finsignal.devices.models  # noqa: F401
@@ -38,6 +39,7 @@ def test_metadata_contains_all_12_operational_tables() -> None:
         "investigations",
         "investigation_transactions",
         "investigation_evidence",
+        "ai_summaries",
     }
     actual_tables = set(Base.metadata.tables.keys())
     assert actual_tables == expected_tables

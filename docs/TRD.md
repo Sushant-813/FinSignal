@@ -156,6 +156,17 @@ NumPy should be used where numerical operations benefit from array-based computa
 - **Persistence & Conflict Recovery (`RiskRepository`):** Managed via SQLAlchemy ORM and Alembic migration `0005_intelligence_risk_models` (down-revision `0004_model_versions`). Implements atomic nested transaction savepoint (`session.begin_nested()`) recovering from PostgreSQL unique violation `23505` on `uq_risk_analyses_identity`.
 - **Protected API Endpoints (`RiskService` & API Router):** `GET /api/v1/transactions/{id}/risk` and `POST /api/v1/transactions/{id}/risk/analyze` with role-based authorization (`ADMIN`, `ANALYST`, `INVESTIGATOR`), model lifecycle eligibility gates, and `TRANSACTION_RISK_ANALYZED` audit events.
 
+### Implemented Phase 10 AI Investigation Assistant Capabilities
+- **Dedicated AI Domain Package (`src/finsignal/ai/`):** Isolates prompt engineering, context serialization, LLM provider integration, persistence, and grounding validation from case management.
+- **Two-Transaction Lifecycle under REPEATABLE READ Snapshot Isolation:**
+  - *Transaction 1:* Binds connection with `isolation_level="REPEATABLE READ"`, locks case row (`FOR UPDATE`), evaluates assignment and non-terminal state, lazily recovers expired pending attempts, verifies no active pending attempt, loads complete case graph eagerly, computes dual fingerprints, and inserts a `PENDING` summary row with a cryptographically unique `generation_token`. Implements bounded exponential backoff retries for serialization failure `40001`.
+  - *Provider Execution:* Runs strictly outside database transactions, eliminating connection pool starvation during upstream model latency.
+  - *Transaction 2:* Persists terminal result (`COMPLETED` or `FAILED`) using compare-and-swap (CAS) token fencing (`WHERE id = :id AND status = 'PENDING' AND generation_token = :token`), accompanied by atomic `AuditEvent` logging (`AI_SUMMARY_GENERATED` or `AI_SUMMARY_FAILED`). Late-arriving responses on rotated tokens are safely discarded.
+- **Lazy Expired PENDING Recovery:** Automatically transitions orphaned `PENDING` attempts older than `ai_pending_timeout_seconds` to `FAILED` with generation token rotation, writing an `AI_SUMMARY_FAILED` audit event atomically in the same transaction only when the conditional update succeeds (`rowcount == 1`).
+- **Dual Fingerprinting & Account Standing Invalidation:** Authoritative `evidence_hash` covers case metadata, primary transaction, risk analysis, risk factors, related transactions, evidence items, and account `status` and `account_type`. Mutating account standing (e.g., `ACTIVE` to `FROZEN`) alters the hash, enabling dynamic staleness detection (`is_stale: true`) on `GET`.
+- **Structured Schema & Grounding Validation:** Enforces strict Pydantic v2 schema `AISummaryOutput` (`executive_summary`, `observed_facts`, `derived_signals`, `potential_interpretations`, `uncertainties_and_limitations`) with automated entity citation validation.
+- **Provider Abstraction (`BaseAIProvider`):** Implemented via `MockAIProvider` with simulated latency, deterministic scenario generation, and fault injection. Production external LLMs remain deferred.
+
 ---
 
 ## 3.5 Frontend
@@ -758,22 +769,53 @@ created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 
 ---
 
-# 23. AI Summary Storage
+# 23. AI Summary Storage (Phase 10 Implemented)
 
-AI-generated investigation summaries should be stored separately from the evidence.
+AI-generated investigation summaries are stored in the `ai_summaries` table (Alembic migration `0007_ai_models.py`), retaining complete provenance and lifecycle auditability separate from investigation evidence snapshots.
 
-Conceptual fields:
+### 23.1 Relational Schema (`ai_summaries`)
 
-```text
-ai_summary_id
-investigation_id
-provider
-model
-summary
-generated_at
-```
+| Column | Type | Nullable | Default | Description |
+|---|---|:---:|---|---|
+| `id` | UUID | No | `uuid4()` | Primary key |
+| `investigation_id` | UUID | No | — | Foreign key to `investigations.id` (`ON DELETE RESTRICT`) |
+| `provider` | VARCHAR(64) | No | — | Provider identifier (`mock`, etc.) |
+| `model` | VARCHAR(128) | No | — | Model version string (`mock-v1`) |
+| `prompt_version` | VARCHAR(64) | No | — | Prompt template version identifier (`pv_1.0`) |
+| `evidence_hash` | VARCHAR(64) | No | — | Authoritative SHA-256 fingerprint over complete case context & account standing |
+| `context_hash` | VARCHAR(64) | No | — | SHA-256 fingerprint over budget-bounded prompt payload |
+| `generation_token` | UUID | No | — | Lease token for compare-and-swap (CAS) fencing |
+| `status` | VARCHAR(32) | No | `'PENDING'` | Lifecycle state: `PENDING`, `COMPLETED`, or `FAILED` |
+| `summary` | JSONB | Yes | `NULL` | Structured `AISummaryOutput` payload (`JSONB(none_as_null=True)`) |
+| `error_message` | TEXT | Yes | `NULL` | Upstream provider, timeout, or grounding validation failure details |
+| `generated_at` | TIMESTAMPTZ | No | — | Timestamp when generation attempt was initiated |
+| `completed_at` | TIMESTAMPTZ | Yes | `NULL` | Timestamp when attempt reached terminal state (`COMPLETED` or `FAILED`) |
+| `created_at` | TIMESTAMPTZ | No | `now()` | Record insertion timestamp |
 
-The system should retain enough metadata to understand which model/provider generated a summary.
+### 23.2 Schema Invariants & Database Constraints
+1. **Lifecycle Check Constraint (`chk_ai_summaries_lifecycle_state`):**
+   ```sql
+   CHECK (
+       (status = 'PENDING' AND completed_at IS NULL AND summary IS NULL AND error_message IS NULL) OR
+       (status = 'COMPLETED' AND completed_at IS NOT NULL AND summary IS NOT NULL AND error_message IS NULL) OR
+       (status = 'FAILED' AND completed_at IS NOT NULL AND summary IS NULL AND error_message IS NOT NULL)
+   )
+   ```
+2. **Status Enum Check Constraint (`chk_ai_summaries_status`):**
+   ```sql
+   CHECK (status IN ('PENDING', 'COMPLETED', 'FAILED'))
+   ```
+3. **Partial Unique Index (`uq_ai_summaries_one_pending_per_investigation`):**
+   ```sql
+   CREATE UNIQUE INDEX uq_ai_summaries_one_pending_per_investigation
+   ON ai_summaries (investigation_id)
+   WHERE status = 'PENDING';
+   ```
+   Guarantees at the database engine level that no two concurrent workers can execute active generations simultaneously for the same investigation.
+4. **Deterministic Retrieval Index (`ix_ai_summaries_investigation_created`):**
+   Composite index on `(investigation_id, created_at DESC, id)` optimizing chronological history retrieval and latest-summary queries.
+5. **Referential Integrity & Retention (`ON DELETE RESTRICT`):**
+   Deleting an investigation with attached AI summary history is blocked by foreign key constraint `fk_ai_summaries_investigation_id`. In the ORM, `Investigation.ai_summaries` is mapped with `passive_deletes="all"` to avoid emitting speculative nullifying queries.
 
 ---
 
@@ -1586,8 +1628,9 @@ Potential events:
 - Risk analysis execution
 - Investigation creation
 - Investigation update
-- Investigation resolution
-- AI summary generation
+- Investigation resolution (`INVESTIGATION_RESOLVED`)
+- AI summary generation (`AI_SUMMARY_GENERATED`)
+- AI summary recovery / failure (`AI_SUMMARY_FAILED`)
 
 The audit implementation will be finalized in the architecture and security documentation.
 
@@ -1793,6 +1836,34 @@ The `Investigation` domain cleanly separates persistence from business and autho
    - Guard terminal state immutability: reject any modification or evidence attachment attempt on `RESOLVED` cases with 409 `IMMUTABLE_INVESTIGATION`.
    - Validate 1-hop related transaction eligibility: verify shared `source_namespace` and test the 4-way shared-party predicate before linking.
    - Enforce evidence type and source validation matrix and bound payload sizes to 64 KB.
+
+### 69.2 AISummaryService & AISummaryRepository (Phase 10 Implemented)
+
+The `src/finsignal/ai/` domain separates persistence from LLM orchestration, fingerprinting, and grounding validation:
+
+1. **`AISummaryRepository` Responsibilities:**
+   - Manage persistence of `AISummary` records and handle partial unique index conflict translation (`AI_SUMMARY_IN_PROGRESS`).
+   - Execute conditional CAS state transitions:
+     ```python
+     update(AISummary).where(
+         AISummary.id == summary_id,
+         AISummary.status == "PENDING",
+         AISummary.generation_token == token,
+     ).values(...)
+     ```
+   - Execute lazy expired pending recovery (`recover_expired_pending`), atomically transitioning timed-out attempts to `FAILED` with generation token rotation and staging an `AI_SUMMARY_FAILED` audit event when `rowcount == 1`.
+   - Provide deterministic pagination for summary history (`created_at DESC, id DESC`).
+
+2. **`AISummaryService` Responsibilities:**
+   - Coordinate the two-transaction lifecycle under `REPEATABLE READ` snapshot isolation, with exponential backoff retries for SQLSTATE `40001`.
+   - Enforce RBAC access policies:
+     - `ADMIN`: Global generation and retrieval permissions across all cases.
+     - `INVESTIGATOR`: Permitted to generate and view summaries for cases assigned to themselves; accessing unassigned or peer-assigned cases returns 403 `FORBIDDEN`.
+     - `ANALYST`: Permitted to retrieve summaries (`GET /ai-summary` and `/history`); generation attempts return 403 `FORBIDDEN`.
+   - Guard terminal state: reject generation on `RESOLVED` or `CLOSED` cases with 409 `INVESTIGATION_ALREADY_RESOLVED`.
+   - Coordinate authoritative evidence hashing, bounded prompt context assembly, and dynamic staleness detection.
+   - Enforce strict two-stage output validation: Pydantic structural validation (`AISummaryOutput`) followed by citation existence grounding validation.
+   - Execute provider generation strictly outside database transactions.
 
 ---
 

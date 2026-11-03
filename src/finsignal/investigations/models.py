@@ -80,6 +80,13 @@ class Investigation(Base, UUIDPrimaryKeyMixin, UpdatedAtMixin):
         cascade="all, delete-orphan",
         order_by="[InvestigationEvidence.created_at.asc(), InvestigationEvidence.id.asc()]",
     )
+    ai_summaries = relationship(
+        "AISummary",
+        back_populates="investigation",
+        cascade="save-update, merge",
+        passive_deletes="all",
+        order_by="[AISummary.created_at.desc(), AISummary.id.desc()]",
+    )
 
 
 class InvestigationTransaction(Base, CreatedAtMixin):

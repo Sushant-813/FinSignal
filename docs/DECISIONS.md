@@ -2099,6 +2099,78 @@ Key architectural trade-offs:
 
 ---
 
+# Proposed ADR-072 — Two-Phase Synchronous AI Summary Generation, REPEATABLE READ Snapshot Isolation, Dual-Fingerprint Staleness Detection, and CAS Token Fencing
+
+**Status:** PROPOSED (Phase 10 Implemented, Pending Project-Owner Formal Acceptance)
+
+**Date:** 2026-11-04
+
+**Related decisions:** ADR-007, ADR-022, ADR-023, ADR-024, ADR-025, ADR-026, ADR-045, ADR-046, Proposed ADR-071
+
+## Context
+
+Human investigators reviewing complex financial transaction cases require rapid, objective, structured briefings that summarize observed transaction activity, risk factors, related counterparties, and attached evidence records. However, integrating Large Language Models (LLMs) into financial investigation workflows presents severe architectural and security risks:
+1. **Advisory Boundary Integrity:** LLMs can generate plausible but ungrounded claims or hallucinated evidence. The AI assistant must never make definitive fraud determinations, alter investigation status, modify evidence, or bypass human review.
+2. **Transaction Concurrency & Database Lock Starvation:** LLM API calls or model inference introduce high latency (seconds). Holding database connections or row locks during external provider execution would quickly exhaust connection pools and freeze concurrent investigation workflows.
+3. **Snapshot Consistency & Race Conditions:** Concurrent additions of evidence, related transactions, or risk re-analyses while an AI summary is generating could yield an internally inconsistent context snapshot or silently overwrite newer findings.
+4. **Prompt Injection & Untrusted Data:** Financial transaction descriptions, merchant names, investigator notes, and evidence payloads are untrusted strings that could contain prompt injection attacks designed to force specific classification verdicts.
+5. **Orphaned / Stale Leases:** Workers or processes crashing mid-generation could leave records permanently stranded in `PENDING` state, blocking future summary requests.
+
+## Proposed Decision
+
+1. **Dedicated AI Package Separation (`src/finsignal/ai/`):**
+   - Decouple all AI-specific concerns into a dedicated domain package. `src/finsignal/investigations/` maintains investigation case workflows and evidence without importing or coupling to LLM dependencies.
+2. **Two-Transaction Lifecycle under `REPEATABLE READ` Isolation:**
+   - **Transaction 1 (Reservation & Consistent Snapshot):**
+     - Opens with `conn.execution_options(isolation_level="REPEATABLE READ")` before calling `session.begin()`.
+     - Locks the `investigation` row via `SELECT ... FOR UPDATE` to serialize case mutation checks.
+     - Verifies authorization (investigator assignment) and rejects terminal cases (`RESOLVED` or `CLOSED` return 409 Conflict).
+     - Lazily recovers expired pending attempts and verifies no active pending attempt is in progress.
+     - Loads the complete investigation graph (primary transaction, related transactions, risk analysis, risk factors, evidence records, and account standing) in a single consistent read snapshot.
+     - Computes dual cryptographic fingerprints (`evidence_hash` and `context_hash`).
+     - Inserts a `PENDING` record with a cryptographically unique `generation_token` (UUID) into `ai_summaries` and commits.
+     - Handles PostgreSQL serialization failures (SQLSTATE `40001`) with bounded exponential backoff retries (up to 3 attempts).
+   - **Provider Execution Outside Transactions:**
+     - Executes provider generation strictly outside database transaction boundaries. Zero database connections or locks are held during external model latency.
+   - **Transaction 2 (Terminal Update & CAS Fencing):**
+     - Opens a separate database transaction to persist the terminal result.
+     - Uses atomic compare-and-swap (CAS) matching on `(id = :summary_id AND status = 'PENDING' AND generation_token = :token)`.
+     - If the token was rotated by recovery, the CAS update affects 0 rows, safely discarding the late response.
+     - Atomically commits the terminal status (`COMPLETED` or `FAILED`), structured output, and an `AuditEvent` (`AI_SUMMARY_GENERATED` or `AI_SUMMARY_FAILED`).
+3. **Database Constraints & Prevention of Concurrent Active Attempts:**
+   - Enforce database check constraint `chk_ai_summaries_lifecycle_state` requiring:
+     - `PENDING`: `completed_at IS NULL AND summary IS NULL AND error_message IS NULL`
+     - `COMPLETED`: `completed_at IS NOT NULL AND summary IS NOT NULL AND error_message IS NULL`
+     - `FAILED`: `completed_at IS NOT NULL AND summary IS NULL AND error_message IS NOT NULL`
+   - Enforce PostgreSQL partial unique index `uq_ai_summaries_one_pending_per_investigation` on `(investigation_id) WHERE status = 'PENDING'` guaranteeing at the database engine level that no two workers can execute active generations concurrently for the same case.
+   - Enforce `ON DELETE RESTRICT` on `fk_ai_summaries_investigation_id` with SQLAlchemy ORM `passive_deletes="all"`.
+4. **Expired PENDING Recovery with Transactional Audit Logging:**
+   - Pending summaries older than `ai_pending_timeout_seconds` (default 60s) are lazily transitioned to `FAILED` with generation token rotation.
+   - Persists an `AI_SUMMARY_FAILED` audit event in the same transaction if and only if the conditional recovery update affects a row (`cursor_res.rowcount == 1`), eliminating duplicate audit records and guaranteeing all-or-nothing rollback atomicity.
+5. **Authoritative Evidence Hashing & Dynamic Staleness Detection:**
+   - Compute `evidence_hash` via SHA-256 over canonical sorted JSON of case metadata, primary transaction, risk analysis, risk factors, related transactions, evidence items, and account `status` and `account_type`.
+   - Modifying account standing (e.g. `ACTIVE` to `FROZEN`) or account classification (`CHECKING` to `SAVINGS`) materially alters the hash.
+   - `GET /api/v1/investigations/{id}/ai-summary` recomputes the authoritative hash and dynamically sets `is_stale: true` when underlying case or account facts have changed, allowing clients to request updated summaries via `POST` with `force_refresh=True`.
+6. **Prompt Delimiter Isolation & Defense-in-Depth:**
+   - Wraps structured JSON case context in cryptographic nonce tags (`<case_context nonce="{uuid}">`).
+   - Neutralizes closing tag delimiters in untrusted input (`</` -> `<\u002F`).
+   - System prompt explicitly declares all transaction descriptions, notes, and merchant names as untrusted data, forbidding the model from executing embedded instructions.
+7. **Two-Stage Output and Grounding Validation:**
+   - Validates JSON output against Pydantic schema `AISummaryOutput` (`executive_summary`, `observed_facts`, `derived_signals`, `potential_interpretations`, `uncertainties_and_limitations`).
+   - Grounding check validates that every cited UUID in `cited_evidence_ids` and `cited_transaction_ids` exists in the context snapshot. Fabricated references trigger `AISummaryGroundingError` (HTTP 502).
+   - Validating citation existence verifies reference integrity, but semantic claim verification remains human-investigator authoritative.
+8. **Provider Abstraction & Mock Baseline:**
+   - Implements `BaseAIProvider` and `MockAIProvider` with deterministic scenario outputs and configurable fault injection (`fail_generation`, `timeout`, `malformed_json`, `grounding_failure`). Live external LLM provider integrations remain deferred.
+
+## Consequences
+
+- **Safety:** AI is strictly advisory; cases in terminal `RESOLVED` status reject generation; references are ground-checked against real entities.
+- **Reliability:** Zero database locks held during model calls; CAS generation tokens prevent stale overwrites; partial unique index prevents duplicate in-progress executions.
+- **Auditability:** Every generation outcome (completion, timeout, recovery, validation failure) is captured in `ai_summaries` and recorded in `audit_events`.
+- **Limitation:** Only `MockAIProvider` is active in the current release; live LLM credentials and vector search/RAG remain deferred.
+
+---
+
 # 4. Decision Dependency Map
 
 ```text
@@ -2171,8 +2243,8 @@ The following decisions remain intentionally open until implementation provides 
 1. Exact JWT revocation/logout strategy.
 2. Exact password policy.
 3. Exact model artifact storage location — Implementation-informed recommendation (Phase 7): Default to filesystem directory `{model_artifacts_dir}/{model_id}/model.joblib` with companion `metadata.json`. (Status: OPEN, recommendation pending owner approval).
-4. Exact LLM provider.
-5. Exact AI model.
+4. Exact LLM provider — Implementation-informed resolution (Phase 10): Abstracted via `BaseAIProvider` and implemented via `MockAIProvider` with deterministic scenario generation, fault injection, and latency simulation. Production external LLM providers (Anthropic, OpenAI) remain deferred until justified. (Status: RESOLVED FOR BACKEND+ML V1.0).
+5. Exact AI model — Implementation-informed resolution (Phase 10): Configured via application setting `Settings.ai_model` (default `"mock-v1"`) and recorded per-generation in `ai_summaries.model`. (Status: RESOLVED).
 6. Exact risk-score thresholds — Implementation-informed resolution (Phase 8): Defaults to linear cutoffs [0.00, 25.00) LOW, [25.00, 50.00) MEDIUM, [50.00, 75.00) HIGH, [75.00, 100.00] CRITICAL, with configurable escalation floors. (Status: RESOLVED).
 7. Exact feature normalization strategy — Implementation-informed resolution (Phase 8): Resolved via piecewise_linear_anchored_v1, anchoring validation score bounds [score_min, tau*, score_max] -> [0.0, 50.0, 100.0]. (Status: RESOLVED).
 8. Exact model artifact serialization format — Implementation-informed recommendation (Phase 7): Use `joblib.dump()` with two-phase atomic temporary file rename and pre-deserialization SHA-256 integrity check. (Status: OPEN, recommendation pending owner approval).
@@ -2222,6 +2294,16 @@ The following decisions remain intentionally open until implementation provides 
      - Cold-start status is strictly decoupled from account age. Clamped negative account age (from historical data backfilling prior to account DB persistence) does not trigger cold start.
   5. *30-Day Category Spend Share Bounding:*
      - Evaluated over preceding 30 days $[t - 30\text{d}, t)$ using historical DEBIT transactions in matching currency. Returns `0.0` if category is missing or denominator is zero; result is bounded in $[0.0, 1.0]$.
+
+### Resolved Decision Note: AI Assistant Architecture, Evidence Hashing & Grounding (Phase 10 Resolution Checkpoint)
+
+- **Status:** RESOLVED in Phase 10 via Proposed ADR-072.
+- **Resolution Rationale & Architecture:**
+  1. *Two-Transaction Synchronous Lifecycle:* Transaction 1 executes under `REPEATABLE READ` isolation to lock case state, verify authorization, lazily recover expired pending attempts, and capture an immutable snapshot. Model execution runs outside active database transactions. Transaction 2 commits terminal status and audit events using CAS token fencing.
+  2. *Dual Fingerprinting:* `evidence_hash` covers the entire case graph including primary transaction, risk analysis, risk factors, related transactions, evidence items, and account `status` and `account_type`. `context_hash` captures the bounded prompt context.
+  3. *Dynamic Staleness:* `GET /api/v1/investigations/{id}/ai-summary` dynamically recomputes the authoritative hash against current database state and flags `is_stale: true` if underlying case or account facts have changed.
+  4. *Two-Stage Validation:* Pydantic schema validation followed by strict grounding citation validation ensures that every cited entity UUID exists in the supplied snapshot.
+  5. *Mock Baseline:* Operates via `MockAIProvider` with fault injection; live external LLM provider integrations remain deferred.
 
 Open decisions must not block decisions that are already sufficiently established.
 

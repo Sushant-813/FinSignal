@@ -527,6 +527,13 @@ A request should not accidentally reuse a session across unrelated requests.
 
 Transactions should be explicit around multi-record operations.
 
+### 22.1 Two-Transaction Lifecycle for Long-Running Provider I/O
+When orchestrating external I/O (such as AI provider generation or third-party API calls) that carries latency:
+- **Never hold database connections or row locks open** during external network/model calls. Doing so risks pool exhaustion and locks concurrent workers.
+- **Transaction 1 (Reservation):** Enter a brief transaction (e.g. under `REPEATABLE READ`), lock necessary rows, snapshot state, persist an initial `PENDING` state with a cryptographically unique `generation_token` (UUID), and commit.
+- **Provider Execution:** Execute the external network or model call strictly outside active database transactions.
+- **Transaction 2 (Terminal Update):** Open a fresh database transaction to persist the terminal outcome using compare-and-swap (CAS) matching on `(id, status='PENDING', generation_token=token)`. If the token was rotated by recovery, discard the stale result.
+
 ---
 
 # 23. ORM Standards
@@ -538,6 +545,18 @@ If SQLAlchemy is used:
 - avoid hidden lazy-loading surprises in high-volume endpoints
 - use explicit loading strategies when required
 - avoid exposing ORM objects directly as API contracts
+
+### 23.1 Nullable JSONB and Check Constraints
+When declaring nullable PostgreSQL JSONB columns that participate in SQL check constraints evaluating `IS NULL`:
+- Always specify `JSONB(none_as_null=True)` in both the SQLAlchemy model and Alembic migration.
+- Without `none_as_null=True`, SQLAlchemy default serializes Python `None` as the JSON text `'null'`, which in PostgreSQL is NOT NULL, causing check constraint violations on `column IS NULL`.
+
+### 23.2 Canonical Serialization for Cryptographic Digests
+When generating SHA-256 fingerprints over domain entities for idempotency or staleness detection:
+- Use a deterministic canonical JSON serializer (`to_canonical_json`) with recursively sorted dictionary keys.
+- Datetimes must be projected to UTC ISO 8601 strings with explicit microsecond precision and `Z` suffix.
+- Monetary `Decimal` values must be formatted as exact string representations (`"100.50"`).
+- UUIDs must be formatted as lowercase canonical hyphenated strings.
 
 Database model naming should align with `DATABASE_DESIGN.md`.
 

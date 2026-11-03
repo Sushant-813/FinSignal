@@ -1408,6 +1408,43 @@ Phase 9 implements 35 dedicated tests covering schemas, service domain logic, AP
 
 ---
 
+# 40.1 Phase 10 AI Investigation Assistant Automated Test Suite
+
+Phase 10 introduces 44 automated tests verifying AI summary generation, snapshot isolation, concurrency fencing, expired pending recovery, fingerprint determinism, and API contracts:
+
+1. **Unit Tests (28 tests across 6 modules):**
+   - `tests/unit/test_ai_schemas.py` (6 tests): Validates Pydantic serialization, field constraints, extra field rejection (`extra="forbid"`), and JSON encoding.
+   - `tests/unit/test_ai_prompts.py` (2 tests): Verifies versioned prompt rendering (`pv_1.0`), dynamic cryptographic nonce tags (`<case_context nonce="...">`), and closing tag escaping (`</` -> `<\u002F`).
+   - `tests/unit/test_ai_context.py` (4 tests): Tests canonical JSON key ordering, Decimal stringification, microsecond UTC datetime formatting, dual fingerprint isolation (`evidence_hash` vs. `context_hash`), budget truncation determinism, and verifies that mutating account `status` (e.g. `ACTIVE` -> `FROZEN`) or `account_type` changes the authoritative `evidence_hash`.
+   - `tests/unit/test_ai_mock_provider.py` (4 tests): Verifies deterministic output generation, latency simulation, and fault injection triggers (`fail_generation`, `timeout`, `malformed_json`, `grounding_failure`).
+   - `tests/unit/test_ai_service.py` (6 tests): Tests service orchestration, cached summary reuse, two-stage grounding validation (rejection of fabricated UUIDs), and error translation.
+   - `tests/unit/test_config.py` (6 tests): Verifies AI configuration validation (provider, model, timeouts, budget bounds).
+
+2. **Database Persistence & Constraint Integration Tests (`tests/integration/test_ai_persistence.py` — 4 tests):**
+   - Tests Alembic migration `0007_ai_models` upgrade and downgrade on PostgreSQL.
+   - Tests check constraint `chk_ai_summaries_lifecycle_state` enforcing exact nullability invariants across `PENDING`, `COMPLETED`, and `FAILED` states.
+   - Tests `JSONB(none_as_null=True)` mapping, ensuring Python `None` persists as SQL `NULL`.
+   - Tests foreign key integrity and `ON DELETE RESTRICT` (preventing investigation deletion when AI summaries exist, using ORM `passive_deletes="all"`).
+
+3. **Concurrency & Fencing Integration Tests (`tests/integration/test_ai_concurrency.py` — 1 test):**
+   - Verifies partial unique index `uq_ai_summaries_one_pending_per_investigation`: concurrent reservation attempts trigger PostgreSQL unique violation `23505`, safely translated to 409 Conflict (`AI_SUMMARY_IN_PROGRESS`).
+
+4. **Expired PENDING Recovery Integration Tests (`tests/integration/test_ai_recovery.py` — 4 tests):**
+   - Tests automatic lazy transition of expired pending records to `FAILED` with generation token lease rotation.
+   - Verifies atomic persistence of an `AI_SUMMARY_FAILED` audit event in the same transaction only when the recovery update succeeds (`rowcount == 1`).
+   - Tests that a worker losing a recovery race encounters `rowcount == 0` and writes zero duplicate audit events.
+   - Tests all-or-nothing rollback atomicity: if the reservation transaction rolls back, both the summary recovery and the audit event roll back together.
+
+5. **REST API Contract & Authorization Tests (`tests/api/test_ai_api.py` — 11 tests):**
+   - Verifies role authorization matrix: `ADMIN` and assigned `INVESTIGATOR` can generate (`POST`); `ANALYST` is rejected with 403 `FORBIDDEN`.
+   - Verifies investigator case isolation: unassigned or peer-assigned investigations reject generation and viewing with 403 `FORBIDDEN`.
+   - Verifies `GET /api/v1/investigations/{id}/ai-summary` latest retrieval with dynamic `is_stale` check, and `GET .../history` deterministic pagination.
+   - Verifies standard error envelopes and status code mapping for 400, 403, 404, 409, 502, and 504.
+
+*Empirical Verification Baseline:* Full project test suite executes **529 passing tests** (0 failures, 0 errors, 128 warnings, clean ruff lint, clean formatting, clean mypy across 113 source files). Note: This count represents the empirical verification baseline upon Phase 10 completion and is not a hardcoded permanent ceiling.
+
+---
+
 # 41. End-to-End Testing
 
 E2E tests should cover only the highest-value workflows.
@@ -1904,9 +1941,9 @@ The testing strategy is considered implementation-ready when:
 - [ ] Scenario-level evaluation is required.
 - [ ] Account-level evaluation is required.
 - [ ] Investigation state transitions are tested.
-- [ ] Evidence grounding is tested.
-- [ ] AI provider failures are tested with mocks.
-- [ ] Prompt-injection behavior is tested.
+- [x] Evidence grounding is tested.
+- [x] AI provider failures are tested with mocks.
+- [x] Prompt-injection behavior is tested.
 - [ ] API contract tests are defined.
 - [ ] Security regression tests are defined.
 - [ ] Migration tests are defined.

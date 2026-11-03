@@ -820,53 +820,71 @@ Evidence guarantees:
 
 ## 19. AI Investigation Assistant
 
-The AI layer should transform structured evidence into a readable investigation summary.
+The AI Investigation Assistant generates structured, evidence-grounded briefing summaries for human investigators based on the assembled investigation context.
 
-Example conceptual output:
+The AI layer outputs structured JSON conforming strictly to the `AISummaryOutput` schema:
 
-```text
-The transaction is unusual for the account because the amount is
-significantly above its historical median and the transaction was
-performed from a previously unseen device.
-
-The transaction also occurred outside the account's normal activity
-window. Two additional transactions occurred within the following
-five minutes.
-
-These signals collectively indicate a significant behavioral deviation.
-However, the available evidence does not independently establish fraud.
+```json
+{
+  "executive_summary": "High-level summary of the investigation context, anomaly indicators, and transacting entities.",
+  "observed_facts": [
+    {
+      "claim": "Primary transaction amount of $5,000.00 USD is significantly above the account's historical debit median of $120.00 USD.",
+      "evidence_ids": ["7c9e6679-7425-40de-944b-e07fc1f90ae7"]
+    }
+  ],
+  "derived_signals": [
+    {
+      "claim": "Rule risk factor high_velocity triggered due to 3 subsequent transfers within 5 minutes.",
+      "evidence_ids": ["123e4567-e89b-12d3-a456-426614174000"]
+    }
+  ],
+  "potential_interpretations": [
+    "Possible account takeover (ATO) followed by rapid fund extraction.",
+    "Potential legitimate emergency transfer pending cardholder verification."
+  ],
+  "uncertainties_and_limitations": [
+    "No historical device footprint available prior to 24 hours ago.",
+    "Counterparty account belongs to an external banking network without internal observation history."
+  ]
+}
 ```
 
-The AI assistant should distinguish between:
+The AI assistant enforces a strict separation between:
+- **Observed Facts:** Concrete empirical facts directly corroborated by supplied transaction and evidence records, accompanied by explicit evidence UUID citations.
+- **Derived Signals:** Inferred risk indicators, rule factor triggers, and model anomaly scores with citations.
+- **Potential Interpretations:** Fraud typologies or behavioral hypotheses presented as possibilities, never definitive conclusions.
+- **Uncertainties and Limitations:** Explicit documentation of evidentiary gaps, missing records, or ambiguous signals.
 
-- Observed facts
-- Derived signals
-- Model outputs
-- Interpretations
+### Context Grounding and Dual Fingerprints
+- **Authoritative Evidence Hash (`evidence_hash`):** SHA-256 digest over canonical JSON containing all case facts, primary transaction attributes, risk analysis, risk factors, related transactions, evidence items, and account `status` and `account_type`. Mutating account standing (e.g., freezing the account) changes the evidence hash.
+- **Context Hash (`context_hash`):** Separate SHA-256 digest over the bounded prompt context payload after applying item limits (`ai_max_evidence_items`) and byte budgets (`ai_max_context_bytes`).
+- **Dynamic Staleness Detection:** When retrieving an AI summary via `GET`, the backend recomputes the authoritative evidence hash against the current database state. If underlying case facts, evidence, or account attributes have changed, `is_stale: true` is returned, alerting investigators that the summary was generated against an older snapshot.
 
 ---
 
 ## 20. AI Safety Boundaries
 
-The AI assistant must follow strict boundaries.
+The AI assistant operates under strict advisory and containment boundaries:
 
 **It MUST:**
-
-- Use only supplied evidence.
+- Use only supplied investigation evidence.
 - Clearly distinguish facts from interpretations.
-- Avoid unsupported claims.
-- Preserve transaction values accurately.
-- Identify uncertainty where appropriate.
+- Avoid unsupported claims and cite specific evidence UUIDs.
+- Preserve transaction amounts and currency values accurately.
+- Highlight gaps, missing data, and uncertainties openly.
 
 **It MUST NOT:**
+- Make final fraud determinations or classify investigations as `CONFIRMED_FRAUD` or `LEGITIMATE`.
+- Alter investigation status, reassign cases, or modify evidence.
+- Overwrite existing summaries silently (all historical generations are preserved in `ai_summaries`).
+- Execute generation on terminal investigations (`RESOLVED` or `CLOSED` cases reject generation with HTTP 409 Conflict).
+- Invent transactions, counterparties, or risk factors.
 
-- Invent transactions.
-- Invent customer behavior.
-- Invent evidence.
-- Change risk scores.
-- Fabricate external information.
-- Declare fraud solely from an anomaly score.
-- Override investigator decisions.
+### Delimiter Defense-in-Depth & Grounding Limitations
+- **Prompt Injection Defense-in-Depth:** Context is wrapped in cryptographic nonce tags (`<case_context nonce="{uuid}">`) with embedded closing tags escaped (`</` -> `<\u002F`). Instructions explicitly direct the model to treat all transaction descriptions, notes, and merchant names as untrusted data. *Note: Delimiter escaping is a defensive containment measure, not an absolute mathematical security boundary.*
+- **Reference Existence vs. Semantic Truth:** Automated grounding validation checks that every cited UUID exists in the supplied case context. However, validating citation existence confirms entity reference integrity, not semantic truth; human review remains mandatory.
+- **Provider Limitation:** The current release operates on `MockAIProvider` with simulated latency and fault injection; live external LLM provider integrations remain deferred.
 
 ---
 
@@ -1198,10 +1216,17 @@ The MVP should include:
 - Strict 3-state lifecycle (`OPEN` -> `UNDER_REVIEW` -> `RESOLVED`)
 - Human resolution (4 outcomes, mandatory notes, terminal immutability)
 
-**AI (Phase 10 Deferred)**
+**AI (Phase 10 Implemented)**
 
-- Evidence-grounded investigation summary
-- Provider abstraction for LLM integration
+- Dedicated `src/finsignal/ai/` domain package
+- Structured evidence-grounded investigation summary (`AISummaryOutput` schema)
+- Two-transaction lifecycle with `REPEATABLE READ` snapshot isolation and CAS token fencing
+- Expired pending generation lazy recovery with atomic audit logging
+- Provider abstraction (`BaseAIProvider`) with deterministic `MockAIProvider`
+- Dual cryptographic fingerprinting (`evidence_hash`, `context_hash`) including account `status` and `account_type`
+- Dynamic staleness detection on `GET` and force refresh on `POST`
+- Protected REST API endpoints (`POST`, `GET` latest, `GET` history)
+- Strict advisory-only boundary and citation grounding validation
 
 ---
 
@@ -1210,7 +1235,6 @@ The MVP should include:
 The following features are intentionally deferred:
 
 - Automatic risk-triggered investigation creation (manual-first creation implemented in Phase 9)
-- AI Investigation Assistant summaries (Phase 10)
 - Multi-hop / recursive transaction graph traversal
 - Real-time transaction streaming
 - Kafka

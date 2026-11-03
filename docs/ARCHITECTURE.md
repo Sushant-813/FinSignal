@@ -730,18 +730,88 @@ Evidence should be generated from trusted system data.
 
 ---
 
-# 28. AI Module
+# 28. AI Module (`src/finsignal/ai` — Phase 10 Implemented)
 
-Responsibilities:
+The AI Investigation Assistant subsystem (`src/finsignal/ai/`) delivers evidence-grounded investigation summaries to assist human investigators without compromising database performance, transaction integrity, or advisory boundaries.
 
-- AI provider abstraction
-- Investigation context construction
-- Prompt/input construction
-- AI invocation
-- Output validation
-- Summary persistence
+### 28.1 Internal Package Structure
+- `src/finsignal/ai/__init__.py`: Package root and public exports.
+- `src/finsignal/ai/models.py`: Declarative SQLAlchemy 2.0 ORM model `AISummary` with check constraints and `JSONB(none_as_null=True)`.
+- `src/finsignal/ai/schemas.py`: Pydantic v2 domain schemas (`AISummaryOutput`, `AISummaryResponse`, `AISummaryListResponse`, `AISummaryGenerateRequest`, `ProviderRequest`, `ProviderResponse`).
+- `src/finsignal/ai/exceptions.py`: AI-specific exception hierarchy mapped to API error codes (`AI_SUMMARY_NOT_FOUND`, `AI_SUMMARY_IN_PROGRESS`, `INVESTIGATION_ALREADY_RESOLVED`, `AI_PROVIDER_ERROR`, `AI_TIMEOUT_ERROR`, `AI_SCHEMA_VALIDATION_ERROR`, `AI_GROUNDING_FAILED`).
+- `src/finsignal/ai/prompts.py`: Prompt management (`PromptManager`), version tracking (`pv_1.0`), advisory system instructions, and cryptographic nonce escaping (`<case_context nonce="...">`).
+- `src/finsignal/ai/context.py`: Canonical JSON serialization (`to_canonical_json`), dual fingerprinting (`evidence_hash`, `context_hash`), and budget-bounded context assembly (`EvidenceContextBuilder`).
+- `src/finsignal/ai/repository.py`: Async persistence repository (`AISummaryRepository`) handling pending reservation, partial unique index conflict translation, CAS state updates, and lazy expired pending recovery with atomic audit logging.
+- `src/finsignal/ai/service.py`: Domain orchestration service (`AISummaryService`) managing the two-transaction lifecycle, isolation boundaries, provider invocation outside database transactions, output validation, grounding verification, and staleness detection.
+- `src/finsignal/ai/providers/base.py`: Abstract provider interface (`BaseAIProvider`).
+- `src/finsignal/ai/providers/mock.py`: Deterministic mock provider (`MockAIProvider`) with simulated latency and fault injection capabilities.
+- `src/finsignal/ai/providers/factory.py`: Provider factory resolving provider implementations by configuration name.
 
-The AI module must not independently query arbitrary database records.
+### 28.2 Domain Responsibilities and Separation
+- **Strict Advisory Boundary:** AI output is informational. The AI service cannot alter investigation status, assign investigators, modify evidence, or make final fraud decisions.
+- **Independence from Investigation Domain:** `src/finsignal/ai/` depends on the read model of `src/finsignal/investigations/`, but `investigations` does not import or depend on the AI layer.
+- **Terminal Case Protection:** Inquiries for resolved or closed investigations reject generation with HTTP 409 Conflict (`INVESTIGATION_ALREADY_RESOLVED`).
+
+### 28.3 Two-Transaction Lifecycle & Isolation Architecture
+To prevent holding database locks and exhausting connection pools during external LLM inference, generation follows an isolated two-transaction workflow:
+
+```text
+HTTP POST /investigations/{id}/ai-summary
+  │
+  ▼
+[ Transaction 1: REPEATABLE READ Snapshot & Reservation ]
+  ├─ conn.execution_options(isolation_level="REPEATABLE READ")
+  ├─ SELECT ... FOR UPDATE (Lock Investigation row)
+  ├─ Validate case state (Reject if RESOLVED/CLOSED -> 409)
+  ├─ Verify investigator assignment permissions (Forbidden -> 403)
+  ├─ Recover expired PENDING attempts (Rotates token -> FAILED + AuditEvent)
+  ├─ Check active PENDING attempt (Conflict -> 409)
+  ├─ Eagerly load complete case graph
+  ├─ Compute authoritative evidence_hash & context_hash
+  ├─ Check cache: if valid COMPLETED exists & force_refresh=False -> Return 200
+  ├─ INSERT PENDING AISummary row (with fresh generation_token UUID)
+  └─ COMMIT Transaction 1
+  │
+  ▼
+[ External Provider Execution — OUTSIDE Active DB Transaction ]
+  ├─ Render versioned prompt with cryptographic nonce delimiters
+  ├─ Call BaseAIProvider.generate() under asyncio.wait_for()
+  ├─ Structural Pydantic JSON validation (AISummaryOutput)
+  └─ Grounding citation existence validation (check cited UUIDs)
+  │
+  ▼
+[ Transaction 2: Terminal CAS Persistence & Audit Logging ]
+  ├─ Begin fresh database transaction
+  ├─ UPDATE ai_summaries SET status = :status, summary = :payload ...
+  │    WHERE id = :id AND status = 'PENDING' AND generation_token = :token
+  ├─ If rowcount == 0: Lease revoked by recovery; discard delayed result
+  ├─ Persist AuditEvent(AI_SUMMARY_GENERATED or AI_SUMMARY_FAILED)
+  └─ COMMIT Transaction 2
+  │
+  ▼
+Return 200 OK (AISummaryResponse)
+```
+
+### 28.4 Concurrency, Recovery & CAS Lease Fencing
+- **Partial Unique Index:** PostgreSQL index `uq_ai_summaries_one_pending_per_investigation` on `(investigation_id) WHERE status = 'PENDING'` ensures that concurrent requests hitting Transaction 1 simultaneously are serialized or rejected with 409 Conflict.
+- **PostgreSQL 40001 Handling:** Transaction 1 catches `psycopg.errors.SerializationFailure` and retries with exponential backoff (`0.025s * 2^attempt`) up to 3 times before raising `SNAPSHOT_CONCURRENCY_ERROR`.
+- **Generation Token Fencing:** If an LLM call exceeds the lease timeout, a subsequent reservation lazily recovers the record by rotating `generation_token` to a new UUID and setting status to `FAILED`. When the late LLM response finally returns, Transaction 2's CAS update matches 0 rows and discards the stale output.
+
+### 28.5 Evidence Context Assembly & Dual Fingerprinting
+- **Authoritative Evidence Hash (`evidence_hash`):** SHA-256 digest computed over canonical recursively-sorted JSON of:
+  - Case metadata (`id`, `status`, `priority`, `assigned_to`, `created_at`)
+  - Primary transaction facts (`id`, `external_transaction_id`, `amount`, `currency`, `direction`, `transaction_type`, `category`, `payment_method`, `source_namespace`, `occurred_at`)
+  - Account standing (`account_id`, `account_type`, `account_status`, `counterparty_account_id`)
+  - Latest risk analysis and sorted risk factors
+  - Sorted related transactions (with account attributes)
+  - Untruncated evidence records, titles, descriptions, and JSON payloads
+- **Context Hash (`context_hash`):** Computed over the bounded prompt payload after prioritizing core facts and applying byte budgets (`ai_max_context_bytes`) and item limits (`ai_max_evidence_items`).
+- **Dynamic Staleness Detection:** `GET /api/v1/investigations/{id}/ai-summary` recomputes `evidence_hash` on the fly. If an investigator attaches new evidence, links transactions, or if the account's operational status changes (e.g., from `ACTIVE` to `FROZEN`), the endpoint returns `is_stale: true`.
+
+### 28.6 Output Grounding & Defense-in-Depth Security
+- **Untrusted Context Neutralization:** Case context is serialized as canonical JSON, embedded closing tags are sanitized (`</` -> `<\u002F`), and the block is wrapped in per-request cryptographic nonces (`<case_context nonce="{uuid}">`). System instructions explicitly designate all transaction descriptions and user notes as untrusted data.
+- **Reference Grounding Validation:** The service checks every UUID in `cited_evidence_ids` and `cited_transaction_ids` against the entities present in the snapshot. Any fabricated reference triggers immediate rejection with `AISummaryGroundingError` (502 Bad Gateway).
+- **Human Verification Requirement:** Automated citation validation verifies reference existence, not semantic claim truth. Human review remains authoritative.
 
 ---
 

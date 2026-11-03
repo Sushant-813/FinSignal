@@ -1023,33 +1023,79 @@ FOR EACH ROW EXECUTE FUNCTION trg_enforce_evidence_immutability();
 
 ---
 
-# 12. AI Investigation Model
+# 12. AI Investigation Model (Phase 10 Implemented)
 
 ## 12.1 `ai_summaries`
 
-Stores AI-generated investigation summaries.
+Stores versioned, evidence-grounded AI briefings and operational summary attempts for investigations (Alembic migration `0007_ai_models.py`).
 
 ### Columns
 
-| Column | Type | Null | Description |
-|---|---|---:|---|
-| `id` | UUID | No | Primary key |
-| `investigation_id` | UUID | No | Investigation |
-| `provider` | VARCHAR(64) | No | LLM provider |
-| `model` | VARCHAR(128) | No | Model identifier |
-| `prompt_version` | VARCHAR(64) | Yes | Prompt/template version |
-| `evidence_hash` | VARCHAR(128) | Yes | Evidence-context fingerprint |
-| `status` | VARCHAR(32) | No | PENDING, COMPLETED, FAILED |
-| `summary` | TEXT | Yes | Generated summary |
-| `error_message` | TEXT | Yes | Failure information |
-| `generated_at` | TIMESTAMPTZ | No | Generation timestamp |
+| Column | Type | Nullable | Default | Description |
+|---|---|:---:|---|---|
+| `id` | UUID | No | `uuid4()` | Primary key |
+| `investigation_id` | UUID | No | — | Foreign key to `investigations.id` (`ON DELETE RESTRICT`) |
+| `provider` | VARCHAR(64) | No | — | LLM provider name (`mock`, etc.) |
+| `model` | VARCHAR(128) | No | — | Model identifier string (`mock-v1`) |
+| `prompt_version` | VARCHAR(64) | No | — | Prompt template version identifier (`pv_1.0`) |
+| `evidence_hash` | VARCHAR(64) | No | — | Authoritative SHA-256 fingerprint over complete case context & account standing |
+| `context_hash` | VARCHAR(64) | No | — | SHA-256 fingerprint over budget-bounded prompt context |
+| `generation_token` | UUID | No | — | Leased generation token for compare-and-swap (CAS) fencing |
+| `status` | VARCHAR(32) | No | `'PENDING'` | State: `PENDING`, `COMPLETED`, or `FAILED` |
+| `summary` | JSONB | Yes | `NULL` | Structured `AISummaryOutput` payload (`JSONB(none_as_null=True)`) |
+| `error_message` | TEXT | Yes | `NULL` | Failure diagnostic details if generation failed |
+| `generated_at` | TIMESTAMPTZ | No | — | Initial generation request timestamp |
+| `completed_at` | TIMESTAMPTZ | Yes | `NULL` | Terminal completion or failure timestamp |
+| `created_at` | TIMESTAMPTZ | No | `now()` | Record creation timestamp |
+
+### Check Constraints
+
+1. **Lifecycle Invariant Constraint (`chk_ai_summaries_lifecycle_state`):**
+   ```sql
+   CHECK (
+       (status = 'PENDING' AND completed_at IS NULL AND summary IS NULL AND error_message IS NULL) OR
+       (status = 'COMPLETED' AND completed_at IS NOT NULL AND summary IS NOT NULL AND error_message IS NULL) OR
+       (status = 'FAILED' AND completed_at IS NOT NULL AND summary IS NULL AND error_message IS NOT NULL)
+   )
+   ```
+   Enforces that:
+   - A `PENDING` record has no completion timestamp, no summary payload, and no error message.
+   - A `COMPLETED` record has an exact completion timestamp and valid summary payload, but no error message.
+   - A `FAILED` record has an exact completion timestamp and error message, but no summary payload.
+   - *Note on JSONB nullability:* In SQLAlchemy ORM mapping and Alembic column definition, `summary` uses `JSONB(none_as_null=True)` to prevent Python `None` from being converted to the JSON string `'null'`, ensuring PostgreSQL evaluates `summary IS NULL` correctly.
+
+2. **Status Enum Constraint (`chk_ai_summaries_status`):**
+   ```sql
+   CHECK (status IN ('PENDING', 'COMPLETED', 'FAILED'))
+   ```
+
+### Indexes
+
+1. **Partial Unique Index (`uq_ai_summaries_one_pending_per_investigation`):**
+   ```sql
+   CREATE UNIQUE INDEX uq_ai_summaries_one_pending_per_investigation
+   ON ai_summaries (investigation_id)
+   WHERE status = 'PENDING';
+   ```
+   Enforces at the database engine level that an investigation can have **at most one active PENDING summary generation** attempt at any given time.
+2. **Retrieval Index (`ix_ai_summaries_investigation_created`):**
+   ```sql
+   CREATE INDEX ix_ai_summaries_investigation_created
+   ON ai_summaries (investigation_id, created_at DESC, id);
+   ```
+   Optimizes chronological history pagination and retrieval of the latest summary for an investigation.
+
+### Foreign Key & Retention Semantics
+
+- **Referential Constraint:** `fk_ai_summaries_investigation_id` references `investigations.id` with `ON DELETE RESTRICT`.
+- **Retention Guarantee:** An investigation cannot be deleted while associated AI summary records exist.
+- **ORM Configuration:** In SQLAlchemy, `Investigation.ai_summaries` is declared with `passive_deletes="all"` and `cascade="save-update, merge"`. This prevents the ORM from issuing unnecessary child nullifying updates when deleting parent rows, allowing PostgreSQL's `RESTRICT` constraint to enforce referential integrity unconditionally.
 
 ### Safety Boundary
 
-AI output is informational.
+AI output is strictly informational and advisory.
 
 It must not overwrite:
-
 - transaction facts
 - risk analysis results
 - investigation evidence

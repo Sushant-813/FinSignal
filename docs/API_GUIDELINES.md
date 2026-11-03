@@ -1567,64 +1567,156 @@ Direct SQL `UPDATE` and `DELETE` queries are aborted by PostgreSQL trigger `trg_
 
 ---
 
-# 29. AI Investigation Assistant (Phase 10 Deferred Specification)
+# 29. AI Investigation Assistant (Phase 10 Implemented)
 
-## 35.1 Generate Summary
+The AI Investigation Assistant provides three protected endpoints under `/api/v1/investigations/{id}/ai-summary*` for generating, inspecting, and listing versioned investigation briefing summaries.
 
-```http
-POST /api/v1/investigations/{investigation_id}/ai-summary
-```
+## 29.1 Role Authorization Matrix
 
-Possible response:
-
-```json
-{
-  "id": "uuid",
-  "status": "PENDING"
-}
-```
-
-If generation is synchronous for the MVP, the API may return the completed summary directly.
-
-If asynchronous:
-
-```text
-202 Accepted
-```
-
-should be used.
+| Endpoint | Method | Permitted Roles | Notes |
+|---|---|---|---|
+| `/api/v1/investigations/{id}/ai-summary` | `POST` | `ADMIN`, `INVESTIGATOR` | Investigators can only generate summaries for investigations assigned to them. Unassigned or peer cases return 403 `FORBIDDEN`. Analysts return 403. |
+| `/api/v1/investigations/{id}/ai-summary` | `GET` | `ADMIN`, `ANALYST`, `INVESTIGATOR` | Investigators can only view summaries for investigations assigned to them. Analysts have read-only access. |
+| `/api/v1/investigations/{id}/ai-summary/history` | `GET` | `ADMIN`, `ANALYST`, `INVESTIGATOR` | Investigators can only view history for investigations assigned to them. Analysts have read-only access. |
 
 ---
 
-## 35.2 Get Summary
+## 29.2 Generate AI Summary
 
 ```http
-GET /api/v1/investigations/{investigation_id}/ai-summary
+POST /api/v1/investigations/{id}/ai-summary
+Content-Type: application/json
+Authorization: Bearer <jwt-token>
 ```
 
-Example:
-
+### Request Body (Optional)
 ```json
 {
-  "id": "uuid",
-  "provider": "provider-name",
-  "model": "model-name",
+  "force_refresh": false
+}
+```
+- `force_refresh` (bool, default `false`): If `false`, returns the latest cached `COMPLETED` summary if its `evidence_hash` and `prompt_version` match the current case state. If `true` or if evidence/account attributes have changed, initiates a fresh two-transaction generation cycle.
+
+### Response (200 OK — `AISummaryResponse`)
+```json
+{
+  "id": "7b8f9e20-3b42-4f18-8742-9a3b2e7c1001",
+  "investigation_id": "9d1b7a2c-4e5f-6a7b-8c9d-0e1f2a3b4c5d",
+  "provider": "mock",
+  "model": "mock-v1",
+  "prompt_version": "pv_1.0",
+  "evidence_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "context_hash": "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb",
   "status": "COMPLETED",
-  "summary": "The transaction shows several deviations..."
+  "summary": {
+    "executive_summary": "Investigation reveals anomalous rapid outbound transfers following an initial high-value debit.",
+    "observed_facts": [
+      {
+        "claim": "Primary transaction amount of $5,000.00 USD is significantly above the account's historical debit median of $120.00 USD.",
+        "evidence_ids": ["7c9e6679-7425-40de-944b-e07fc1f90ae7"]
+      }
+    ],
+    "derived_signals": [
+      {
+        "claim": "Rule risk factor high_velocity triggered due to 3 subsequent transfers within 5 minutes.",
+        "evidence_ids": ["123e4567-e89b-12d3-a456-426614174000"]
+      }
+    ],
+    "potential_interpretations": [
+      "Possible account takeover (ATO) followed by rapid fund extraction.",
+      "Potential legitimate emergency transfer pending cardholder verification."
+    ],
+    "uncertainties_and_limitations": [
+      "No historical device footprint available prior to 24 hours ago."
+    ]
+  },
+  "error_message": null,
+  "is_stale": false,
+  "generated_at": "2026-11-04T02:00:00.000000Z",
+  "completed_at": "2026-11-04T02:00:01.250000Z",
+  "created_at": "2026-11-04T02:00:00.000000Z"
 }
 ```
 
-The response should clearly distinguish:
+---
 
-```text
-AI-generated content
+## 29.3 Get Latest AI Summary
+
+```http
+GET /api/v1/investigations/{id}/ai-summary
+Authorization: Bearer <jwt-token>
 ```
 
-from:
+### Behavior
+- Retrieves the most recently created `AISummary` for the investigation.
+- **Dynamic Staleness Check:** Recomputes the authoritative `evidence_hash` across current case facts, linked transactions, risk analysis, risk factors, evidence records, and account `status` and `account_type`. If current hash differs from stored `evidence_hash`, returns `is_stale: true`.
+- If no summary has been generated for the investigation, returns HTTP 404 with error code `AI_SUMMARY_NOT_FOUND`.
 
-```text
-verified evidence
+---
+
+## 29.4 List Summary History
+
+```http
+GET /api/v1/investigations/{id}/ai-summary/history?page=1&page_size=20
+Authorization: Bearer <jwt-token>
 ```
+
+### Query Parameters
+- `page` (integer, default 1, $\ge 1$): 1-indexed page number.
+- `page_size` (integer, default 20, $\ge 1, \le 100$): Number of items per page.
+
+### Response (200 OK — `AISummaryListResponse`)
+```json
+{
+  "items": [
+    {
+      "id": "7b8f9e20-3b42-4f18-8742-9a3b2e7c1001",
+      "investigation_id": "9d1b7a2c-4e5f-6a7b-8c9d-0e1f2a3b4c5d",
+      "provider": "mock",
+      "model": "mock-v1",
+      "prompt_version": "pv_1.0",
+      "evidence_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "context_hash": "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb",
+      "status": "COMPLETED",
+      "summary": { "...": "..." },
+      "error_message": null,
+      "is_stale": false,
+      "generated_at": "2026-11-04T02:00:00.000000Z",
+      "completed_at": "2026-11-04T02:00:01.250000Z",
+      "created_at": "2026-11-04T02:00:00.000000Z"
+    }
+  ],
+  "page": 1,
+  "page_size": 20,
+  "total": 1,
+  "total_pages": 1
+}
+```
+
+---
+
+## 29.5 Error Envelopes & HTTP Status Codes
+
+All AI endpoints conform to FinSignal's standard error envelope:
+```json
+{
+  "error": {
+    "code": "ERROR_CODE_STRING",
+    "message": "Human-readable description of error.",
+    "status_code": 409,
+    "details": { "...": "..." }
+  }
+}
+```
+
+| HTTP Status | Error Code | Trigger Condition |
+|:---:|---|---|
+| **400 Bad Request** | `VALIDATION_ERROR` | Malformed request body, pagination parameters out of bounds (`page < 1` or `page_size > 100`). |
+| **403 Forbidden** | `FORBIDDEN` | Caller has `ANALYST` role attempting `POST`, or `INVESTIGATOR` attempting to generate/view summaries on unassigned or peer-assigned cases. |
+| **404 Not Found** | `INVESTIGATION_NOT_FOUND`<br>`AI_SUMMARY_NOT_FOUND` | Investigation does not exist, or `GET /ai-summary` called on an investigation with zero historical summary attempts. |
+| **409 Conflict** | `INVESTIGATION_ALREADY_RESOLVED`<br>`AI_SUMMARY_IN_PROGRESS` | Generation requested on a case in `RESOLVED` or `CLOSED` state, or an active summary generation is currently executing for the case. |
+| **502 Bad Gateway** | `AI_PROVIDER_ERROR`<br>`AI_SCHEMA_VALIDATION_ERROR`<br>`AI_GROUNDING_FAILED` | Upstream provider failure, provider returned non-JSON / invalid schema, or citation validation failed (phantom evidence UUID cited). |
+| **504 Gateway Timeout** | `AI_TIMEOUT_ERROR` | Provider execution exceeded configured timeout window (`Settings.ai_timeout_seconds`). |
 
 ---
 
@@ -2508,11 +2600,12 @@ GET    /api/v1/investigations/{id}/evidence
 POST   /api/v1/investigations/{id}/evidence
 ```
 
-### AI Investigation Assistant (Phase 10 Deferred)
+### AI Investigation Assistant (Phase 10 Implemented)
 
 ```text
 POST   /api/v1/investigations/{id}/ai-summary
 GET    /api/v1/investigations/{id}/ai-summary
+GET    /api/v1/investigations/{id}/ai-summary/history
 ```
 
 ### System
@@ -2581,7 +2674,7 @@ The API design is considered complete when:
 - [ ] Risk-analysis endpoints are defined.
 - [ ] Investigation lifecycle endpoints are defined.
 - [ ] Evidence endpoints are defined.
-- [ ] AI-summary endpoints are defined.
+- [x] AI-summary endpoints are defined and implemented.
 - [ ] Request IDs are supported.
 - [ ] Important operations have idempotency considerations.
 - [ ] Concurrency conflicts are explicitly handled.
@@ -2607,7 +2700,7 @@ The following decisions should be finalized during implementation:
 8. Optimistic concurrency mechanism.
 9. Async job infrastructure.
 10. Exact analytics endpoint response shapes.
-11. Exact AI-summary response structure.
+11. Exact AI-summary response structure — Resolved via `AISummaryResponse` and `AISummaryOutput` schema in Phase 10 (ADR-072).
 12. API rate limits.
 13. Production OpenAPI exposure.
 14. API request/response naming conventions for nested resources.

@@ -90,15 +90,48 @@ class InvestigationRepository:
         result = await session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def load_complete_investigation_graph(
+        self,
+        session: AsyncSession,
+        investigation_id: uuid.UUID,
+    ) -> Investigation | None:
+        """Load the complete investigation case graph for AI context construction.
+
+        Eagerly loads:
+        - assigned_user
+        - primary_association -> transaction -> account
+        - transaction_associations -> transaction -> account
+        - evidence
+        """
+        stmt = (
+            select(Investigation)
+            .where(Investigation.id == investigation_id)
+            .options(
+                joinedload(Investigation.assigned_user),
+                joinedload(Investigation.primary_association)
+                .joinedload(InvestigationTransaction.transaction)
+                .joinedload(Transaction.account),
+                selectinload(Investigation.transaction_associations)
+                .joinedload(InvestigationTransaction.transaction)
+                .joinedload(Transaction.account),
+                selectinload(Investigation.evidence),
+            )
+        )
+        result = await session.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def get_latest_risk_for_transaction(
         self,
         session: AsyncSession,
         transaction_id: uuid.UUID,
     ) -> RiskAnalysis | None:
-        """Retrieve the latest risk analysis record for a transaction with its model version."""
+        """Retrieve the latest risk analysis record for a transaction with its model version and factors."""
         stmt = (
             select(RiskAnalysis)
-            .options(joinedload(RiskAnalysis.model_version))
+            .options(
+                joinedload(RiskAnalysis.model_version),
+                selectinload(RiskAnalysis.factors),
+            )
             .where(RiskAnalysis.transaction_id == transaction_id)
             .order_by(RiskAnalysis.created_at.desc(), RiskAnalysis.id.desc())
             .limit(1)

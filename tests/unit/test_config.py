@@ -274,3 +274,71 @@ def test_settings_jwt_secret_alias_support() -> None:
         }
     )
     assert s.jwt_secret_key.get_secret_value() == "custom_secret_key_for_testing_12345"
+
+
+def test_ai_settings_defaults() -> None:
+    """Verify default values for Phase 10 AI settings."""
+    settings = Settings(database_password=SecretStr("pw"), _env_file=None)
+    assert settings.ai_provider == "mock"
+    assert settings.ai_model == "mock-summarizer-v1"
+    assert settings.ai_timeout_seconds == 30.0
+    assert settings.ai_max_evidence_items == 50
+    assert settings.ai_max_context_bytes == 65536
+    assert settings.ai_pending_timeout_seconds == 60
+
+
+def test_ai_settings_validation_bounds() -> None:
+    """Verify validation bounds on AI settings."""
+    # Invalid provider
+    with pytest.raises(ValidationError):
+        Settings(
+            database_password=SecretStr("pw"),
+            ai_provider="openai",  # type: ignore[arg-type]
+            _env_file=None,
+        )
+
+    # ai_timeout_seconds bounds (1.0 to 120.0)
+    with pytest.raises(ValidationError):
+        Settings(
+            database_password=SecretStr("pw"), ai_timeout_seconds=0.5, _env_file=None
+        )
+    with pytest.raises(ValidationError):
+        Settings(
+            database_password=SecretStr("pw"), ai_timeout_seconds=121.0, _env_file=None
+        )
+
+    # ai_max_evidence_items bounds (5 to 200)
+    with pytest.raises(ValidationError):
+        Settings(
+            database_password=SecretStr("pw"), ai_max_evidence_items=4, _env_file=None
+        )
+    with pytest.raises(ValidationError):
+        Settings(
+            database_password=SecretStr("pw"), ai_max_evidence_items=201, _env_file=None
+        )
+
+    # ai_max_context_bytes bounds (4096 to 262144)
+    with pytest.raises(ValidationError):
+        Settings(
+            database_password=SecretStr("pw"), ai_max_context_bytes=4095, _env_file=None
+        )
+    with pytest.raises(ValidationError):
+        Settings(
+            database_password=SecretStr("pw"),
+            ai_max_context_bytes=262145,
+            _env_file=None,
+        )
+
+    # ai_pending_timeout_seconds bounds (10 to 300)
+    with pytest.raises(ValidationError):
+        Settings(
+            database_password=SecretStr("pw"),
+            ai_pending_timeout_seconds=9,
+            _env_file=None,
+        )
+    with pytest.raises(ValidationError):
+        Settings(
+            database_password=SecretStr("pw"),
+            ai_pending_timeout_seconds=301,
+            _env_file=None,
+        )

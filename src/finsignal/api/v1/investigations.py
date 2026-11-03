@@ -3,10 +3,17 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Path, Query, status
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, Depends, Path, Query, Request, status
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from finsignal.ai.schemas import (
+    AISummaryGenerateRequest,
+    AISummaryListResponse,
+    AISummaryResponse,
+)
+from finsignal.ai.service import AISummaryService
 from finsignal.auth.dependencies import require_roles
+from finsignal.core.config import Settings, get_settings
 from finsignal.core.database import get_db_session
 from finsignal.investigations.schemas import (
     InvestigationCreateRequest,
@@ -32,6 +39,18 @@ router = APIRouter(prefix="/investigations", tags=["Investigations"])
 def get_investigation_service() -> InvestigationService:
     """Dependency provider returning an InvestigationService instance."""
     return InvestigationService()
+
+
+def get_ai_service(request: Request) -> AISummaryService:
+    """Dependency provider returning an AISummaryService instance."""
+    engine: AsyncEngine = request.app.state.db_engine
+    session_maker: async_sessionmaker[AsyncSession] = request.app.state.session_maker
+    settings: Settings = getattr(request.app.state, "settings", None) or get_settings()
+    return AISummaryService(
+        engine=engine,
+        session_maker=session_maker,
+        settings=settings,
+    )
 
 
 @router.get(
@@ -283,3 +302,73 @@ async def attach_evidence(
     )
     await session.commit()
     return result
+
+
+@router.post(
+    "/{id}/ai-summary",
+    response_model=AISummaryResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Generate or retrieve an AI investigation briefing summary",
+)
+async def generate_ai_summary(
+    id: Annotated[uuid.UUID, Path(description="Investigation UUID identifier")],
+    current_user: Annotated[
+        User,
+        Depends(require_roles("ADMIN", "INVESTIGATOR")),
+    ],
+    service: Annotated[AISummaryService, Depends(get_ai_service)],
+    payload: AISummaryGenerateRequest | None = None,
+) -> AISummaryResponse:
+    """Execute synchronous AI summary generation with two-phase DB persistence and grounding validation."""
+    actual_payload = payload or AISummaryGenerateRequest()
+    return await service.generate_summary(
+        investigation_id=id,
+        request=actual_payload,
+        current_user=current_user,
+    )
+
+
+@router.get(
+    "/{id}/ai-summary",
+    response_model=AISummaryResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Retrieve the latest AI summary for an investigation with staleness check",
+)
+async def get_latest_ai_summary(
+    id: Annotated[uuid.UUID, Path(description="Investigation UUID identifier")],
+    current_user: Annotated[
+        User,
+        Depends(require_roles("ADMIN", "ANALYST", "INVESTIGATOR")),
+    ],
+    service: Annotated[AISummaryService, Depends(get_ai_service)],
+) -> AISummaryResponse:
+    """Retrieve latest AI summary, recomputing authoritative fingerprint to detect staleness."""
+    return await service.get_latest_summary(
+        investigation_id=id,
+        current_user=current_user,
+    )
+
+
+@router.get(
+    "/{id}/ai-summary/history",
+    response_model=AISummaryListResponse,
+    status_code=status.HTTP_200_OK,
+    summary="List paginated AI summary generation history for an investigation",
+)
+async def list_ai_summary_history(
+    id: Annotated[uuid.UUID, Path(description="Investigation UUID identifier")],
+    current_user: Annotated[
+        User,
+        Depends(require_roles("ADMIN", "ANALYST", "INVESTIGATOR")),
+    ],
+    service: Annotated[AISummaryService, Depends(get_ai_service)],
+    page: Annotated[int, Query(ge=1, description="1-indexed page number")] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100, description="Items per page")] = 20,
+) -> AISummaryListResponse:
+    """Retrieve historical AI summary attempts in deterministic order."""
+    return await service.list_summary_history(
+        investigation_id=id,
+        page=page,
+        page_size=page_size,
+        current_user=current_user,
+    )

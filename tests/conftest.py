@@ -6,6 +6,8 @@ import os
 os.environ.setdefault("DATABASE_PASSWORD", "test_password")
 os.environ.setdefault("POSTGRES_PASSWORD", "test_password")
 os.environ.setdefault("ENVIRONMENT", "testing")
+if os.environ.get("DEBUG") not in ("true", "false", "1", "0", "True", "False"):
+    os.environ["DEBUG"] = "false"
 
 from collections.abc import AsyncGenerator  # noqa: E402
 

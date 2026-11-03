@@ -16,7 +16,7 @@ FinSignal is built as a clean modular monolith adhering to strict domain separat
 - **Language & Runtime:** Python 3.12+ managed with `uv`
 - **API Framework:** FastAPI with strict Pydantic v2 schemas (`extra="forbid"`)
 - **Database:** PostgreSQL with asynchronous SQLAlchemy 2.0 and `asyncpg`
-- **Database Migrations:** Alembic (current head: `0006_investigation_models`)
+- **Database Migrations:** Alembic (current head: `0007_ai_models`)
 - **Authentication & Security:** Argon2id password hashing, Bearer JWT tokens, and centralized role-based access control (`ADMIN`, `ANALYST`, `INVESTIGATOR`)
 - **Mathematical Precision:** Python `Decimal` and PostgreSQL `NUMERIC(18,2)` with strict two-decimal `ROUND_HALF_UP` string serialization (`MoneyStr`)
 
@@ -24,7 +24,7 @@ FinSignal is built as a clean modular monolith adhering to strict domain separat
 
 ## Implementation Status
 
-### Completed Phases (Backend Milestone 1–8)
+### Completed Phases (Backend Milestones 1–10)
 
 | Phase | Module | Key Capabilities | Status |
 |:---:|---|---|:---:|
@@ -37,11 +37,13 @@ FinSignal is built as a clean modular monolith adhering to strict domain separat
 | **Phase 7** | ML / Anomaly Detection | Isolation Forest baseline, canonical 34-feature vector contract (`v1.0`), chronological train/validation/test split, validation-only threshold tuning under 5% alert-rate budget, SHA-256 artifact integrity verification, PostgreSQL model versioning registry | **Completed with Documented Pre-Release Operational Limitation** |
 | **Phase 8** | Risk Analysis & Explainability | Deterministic hybrid risk engine ($w_{\text{ml}}=0.60, w_{\text{rule}}=0.40$), validation-anchored piecewise linear score normalization, 9 heuristic rules, 4-tier risk classification, structured factor explainability, idempotent atomic persistence, REST API endpoints | **Completed** |
 | **Phase 9** | Investigation & Evidence | Shared triage queue, role-based assignment, atomic PRIMARY transaction binding, 1-hop related transactions, append-only immutable evidence snapshots (DB trigger), 4-outcome resolution, pessimistic concurrency locks, 9 REST API endpoints | **Completed** |
+| **Phase 10** | AI Investigation Assistant | Dedicated AI domain (`src/finsignal/ai/`), two-transaction lifecycle, REPEATABLE READ snapshot isolation, CAS token fencing, expired pending recovery with atomic audit logging, dual fingerprinting (`evidence_hash`, `context_hash`), dynamic staleness detection, nonce delimiter defense-in-depth, grounding citation validation, MockAIProvider | **Completed** |
 
 ### Deferred Phases
 
-- **Phase 10 — AI Investigation Assistant:** Grounded, provider-abstracted LLM investigation summaries strictly bounded by structured evidence.
-- **Phase 11 — Frontend Dashboard:** React, TypeScript, and Vite user interface.
+- **Phase 11 — Testing, Security & Hardening:** System-wide security review, integration testing, and pre-release hardening.
+- **Phase 12 — Docker, Deployment & Release:** Containerization, production deployment configuration, and Backend + ML v1.0 release.
+- **Deferred Future — Frontend Dashboard:** React, TypeScript, Vite, and Tailwind CSS client interface.
 
 ---
 
@@ -121,6 +123,29 @@ Phase 9 implements an end-to-end case management and evidence collection workflo
   - Terminal case immutability: resolved investigations cannot be modified or amended by any role, including `ADMIN`.
 - **Protected REST API (9 Endpoints under `/api/v1/investigations`):** Provides endpoints for queue listing, atomic case creation, workspace envelope retrieval, PATCH updates, explicit resolution, transaction linking, and evidence attachment.
 - **Transactional Audit Integration:** All state mutations emit structured `AuditEvent` records committed in the same database transaction with authenticated actor attribution.
+
+---
+
+## AI Investigation Assistant Subsystem (Phase 10)
+
+Phase 10 delivers structured, evidence-grounded investigation briefing summaries while enforcing strict advisory boundaries and non-blocking concurrency (`src/finsignal/ai/`):
+
+- **Dedicated Architecture & Model (`AISummary`):** Persists summaries in `ai_summaries` via Alembic migration `0007_ai_models.py`, linked to `investigations.id` (`ON DELETE RESTRICT`) with check constraints enforcing exact lifecycle invariants (`chk_ai_summaries_lifecycle_state`) and `JSONB(none_as_null=True)` mapping.
+- **Two-Transaction Lifecycle under `REPEATABLE READ` Isolation:**
+  - *Transaction 1:* Connects with `isolation_level="REPEATABLE READ"`, locks case row (`FOR UPDATE`), evaluates assignment and non-terminal state, recovers expired pending attempts, verifies no active pending attempt, loads complete case graph eagerly, computes dual fingerprints, and inserts a `PENDING` summary row with a cryptographically unique `generation_token` UUID.
+  - *Provider Execution:* Runs strictly outside active database transactions to prevent database lock starvation and connection pool exhaustion during upstream LLM latency.
+  - *Transaction 2:* Persists terminal result (`COMPLETED` or `FAILED`) using compare-and-swap (CAS) token fencing (`WHERE id = :id AND status = 'PENDING' AND generation_token = :token`), accompanied by atomic `AuditEvent` logging (`AI_SUMMARY_GENERATED` or `AI_SUMMARY_FAILED`). Late-arriving responses on rotated tokens are safely discarded.
+- **Partial Unique Index & Concurrency Guard:** PostgreSQL partial unique index `uq_ai_summaries_one_pending_per_investigation` on `(investigation_id) WHERE status = 'PENDING'` ensures that concurrent generation requests are safely rejected with 409 Conflict (`AI_SUMMARY_IN_PROGRESS`).
+- **Lazy Expired PENDING Recovery:** Automatically transitions orphaned `PENDING` attempts older than `ai_pending_timeout_seconds` to `FAILED` with generation token rotation, writing an `AI_SUMMARY_FAILED` audit event atomically in the same transaction only when the conditional update succeeds (`rowcount == 1`).
+- **Authoritative Evidence Hashing & Dynamic Staleness:** SHA-256 digest `evidence_hash` covers case metadata, primary transaction, risk analysis, risk factors, related transactions, evidence items, and account `status` and `account_type`. Mutating account standing (e.g. `ACTIVE` -> `FROZEN`) alters the hash, enabling dynamic staleness detection (`is_stale: true`) on `GET`.
+- **Prompt Delimiter Defense-in-Depth:** Context is wrapped in dynamic cryptographic nonce tags (`<case_context nonce="{uuid}">`) with closing tags escaped (`</` -> `<\u002F`). System instructions explicitly declare all transaction descriptions and user notes to be untrusted data.
+- **Two-Stage Output & Grounding Validation:** Enforces strict Pydantic v2 schema `AISummaryOutput` (`executive_summary`, `observed_facts`, `derived_signals`, `potential_interpretations`, `uncertainties_and_limitations`) and validates that every cited UUID exists in the supplied case context.
+- **Provider Abstraction & Mock Provider:** Implemented via `MockAIProvider` with simulated latency, deterministic scenario generation, and fault injection. Production external LLMs remain deferred.
+- **Protected REST API (3 Endpoints under `/api/v1/investigations/{id}/ai-summary*`):**
+  - `POST /api/v1/investigations/{id}/ai-summary`: Synchronous generation or cached return with optional `{ "force_refresh": bool }`. Restricted to `ADMIN` and assigned `INVESTIGATOR`.
+  - `GET /api/v1/investigations/{id}/ai-summary`: Retrieves latest summary with real-time `is_stale` evaluation. Restricted to `ADMIN`, `ANALYST`, and assigned `INVESTIGATOR`.
+  - `GET /api/v1/investigations/{id}/ai-summary/history`: Deterministic paginated history listing (`created_at DESC, id DESC`).
+
 ---
 
 ## Verification and Quality Gates
@@ -128,13 +153,13 @@ Phase 9 implements an end-to-end case management and evidence collection workflo
 The implementation is verified by an exhaustive automated test suite and strict type-checking:
 
 ```bash
-# Run complete test suite (485 tests)
+# Run complete test suite (529 tests)
 uv run pytest
 
 # Static analysis and linting
-uv run ruff check .
-uv run ruff format --check .
-uv run mypy src tests
+uv run ruff check src tests
+uv run ruff format --check src tests
+uv run mypy src
 
 # Verify database migrations
 uv run alembic current

@@ -59,6 +59,40 @@ class Settings(BaseSettings):
         description="Whether rule-severity escalation floors are applied to composite risk score",
     )
 
+    # AI Investigation Assistant (Phase 10)
+    ai_provider: Literal["mock"] = Field(
+        default="mock",
+        description="Active AI summarization provider identifier",
+    )
+    ai_model: str = Field(
+        default="mock-summarizer-v1",
+        description="Default AI summarization model identifier",
+    )
+    ai_timeout_seconds: float = Field(
+        default=30.0,
+        ge=1.0,
+        le=120.0,
+        description="Timeout in seconds for AI summary generation attempts",
+    )
+    ai_max_evidence_items: int = Field(
+        default=50,
+        ge=5,
+        le=200,
+        description="Maximum number of evidence records included in AI context",
+    )
+    ai_max_context_bytes: int = Field(
+        default=65536,
+        ge=4096,
+        le=262144,
+        description="Maximum serialized byte budget for AI context payload",
+    )
+    ai_pending_timeout_seconds: int = Field(
+        default=60,
+        ge=10,
+        le=300,
+        description="Duration in seconds before an abandoned PENDING AI summary is considered expired",
+    )
+
     @field_validator("log_level")
     @classmethod
     def validate_log_level(cls, v: str) -> str:

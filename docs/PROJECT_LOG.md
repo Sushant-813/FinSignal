@@ -1405,7 +1405,77 @@ Phase 8 introduces a deterministic, explainable risk-prioritization layer that s
 
 ---
 
-# 28. Log Maintenance Rules
+# 28. 2026-11-04 — Phase 10 (AI Investigation Assistant) Completion
+
+### Objective
+Implement the Phase 10 AI Investigation Assistant subsystem to generate structured, evidence-grounded briefing summaries for human investigators while maintaining strict advisory boundaries, non-terminal enforcement, concurrency safety, and comprehensive auditability.
+
+### Work Completed
+
+1. **Dedicated AI Package Architecture (`src/finsignal/ai/`):**
+   - Implemented a clean, modular package structure separate from the investigation case management layer:
+     - `models.py`: SQLAlchemy 2.0 ORM model `AISummary`.
+     - `schemas.py`: Pydantic v2 schemas (`AISummaryOutput`, `AISummaryResponse`, `AISummaryListResponse`, `AISummaryGenerateRequest`).
+     - `exceptions.py`: AI domain exceptions mapped to standard error envelopes (`AI_SUMMARY_NOT_FOUND`, `AI_SUMMARY_IN_PROGRESS`, `INVESTIGATION_ALREADY_RESOLVED`, `AI_PROVIDER_ERROR`, `AI_TIMEOUT_ERROR`, `AI_SCHEMA_VALIDATION_ERROR`, `AI_GROUNDING_FAILED`).
+     - `prompts.py`: Template versioning (`pv_1.0`), advisory instructions, and cryptographic nonce escaping.
+     - `context.py`: Canonical JSON serialization, dual fingerprinting (`evidence_hash`, `context_hash`), and bounded context assembly.
+     - `repository.py`: Async persistence, compare-and-swap (CAS) updates, and expired pending recovery with atomic audit logging.
+     - `service.py`: Two-phase generation workflow orchestration, grounding validation, and staleness detection.
+     - `providers/`: Extensible provider interface (`BaseAIProvider`), `MockAIProvider` with fault injection, and `ProviderFactory`.
+
+2. **Database Schema & Constraints (Migration `0007_ai_models.py`):**
+   - Created `ai_summaries` table linked to `investigations.id` via `ON DELETE RESTRICT` (preventing accidental cascade deletion of investigation audit history).
+   - Configured `JSONB(none_as_null=True)` on `summary` column to ensure Python `None` maps to SQL `NULL`.
+   - Enforced `chk_ai_summaries_status` (`PENDING`, `COMPLETED`, `FAILED`).
+   - Enforced `chk_ai_summaries_lifecycle_state` constraint:
+     - `PENDING`: `completed_at IS NULL AND summary IS NULL AND error_message IS NULL`
+     - `COMPLETED`: `completed_at IS NOT NULL AND summary IS NOT NULL AND error_message IS NULL`
+     - `FAILED`: `completed_at IS NOT NULL AND summary IS NULL AND error_message IS NOT NULL`
+   - Created PostgreSQL partial unique index `uq_ai_summaries_one_pending_per_investigation` on `(investigation_id) WHERE status = 'PENDING'` preventing concurrent active attempts.
+   - Created retrieval index `ix_ai_summaries_investigation_created` on `(investigation_id, created_at DESC, id)`.
+
+3. **Two-Transaction Lifecycle under REPEATABLE READ Snapshot Isolation:**
+   - **Transaction 1 (Reservation):** Configures `isolation_level="REPEATABLE READ"` before beginning transaction. Locks investigation row (`FOR UPDATE`), verifies authorization and non-terminal status, lazily recovers expired pending generations, checks for active pending generations, loads complete graph eagerly, computes dual fingerprints, and inserts a `PENDING` row with a cryptographically unique `generation_token`. Implements bounded exponential backoff retry for PostgreSQL serialization failure `40001`.
+   - **Provider Execution:** Executes model generation outside active database transactions to prevent holding database locks during LLM network or inference latency.
+   - **Transaction 2 (Terminal Update):** Uses conditional compare-and-swap (CAS) on `(id, status='PENDING', generation_token)` to write final status (`COMPLETED` or `FAILED`), structured output, and atomic `AuditEvent` (`AI_SUMMARY_GENERATED` or `AI_SUMMARY_FAILED`).
+
+4. **Expired PENDING Recovery & Atomic Audit Logging:**
+   - Detects orphaned pending records older than `ai_pending_timeout_seconds` (default 60s).
+   - Atomically rotates `generation_token` to fence out delayed responses and sets status to `FAILED`.
+   - Persists an `AI_SUMMARY_FAILED` audit event within the exact same database transaction if and only if the conditional update affected a row (`rowcount == 1`).
+
+5. **Authoritative Evidence Hashing & Account Standing Parity:**
+   - `compute_authoritative_evidence_hash`: Computes SHA-256 over canonical sorted JSON of case metadata, primary transaction, risk analysis, risk factors, related transactions, evidence items, and account `status` and `account_type`.
+   - Changes to account standing (e.g. `ACTIVE` -> `FROZEN`) or account classification (`CHECKING` -> `SAVINGS`) materially alter the evidence hash and dynamically flag existing summaries as stale on `GET`.
+   - `build_bounded_context`: Assembles prioritized context under explicit byte and item limits, computing a separate `context_hash`.
+
+6. **Prompt Delimiter Isolation & Grounding Validation:**
+   - Untrusted context is wrapped in `<case_context nonce="{uuid}">` tags with embedded closing tags escaped (`</` -> `<\u002F`). System instructions explicitly treat all transaction descriptions, merchant names, and notes as untrusted data.
+   - Output grounding validation verifies that every cited UUID in `cited_evidence_ids` and `cited_transaction_ids` exists in the snapshot. Fabricated or phantom references raise `AISummaryGroundingError` (502).
+
+7. **Protected REST API Endpoints:**
+   - `POST /api/v1/investigations/{id}/ai-summary`: Synchronous generation with optional `force_refresh`. Restricted to `ADMIN` and assigned `INVESTIGATOR`.
+   - `GET /api/v1/investigations/{id}/ai-summary`: Latest summary with dynamic `is_stale` check. Restricted to `ADMIN`, `ANALYST`, and assigned `INVESTIGATOR`.
+   - `GET /api/v1/investigations/{id}/ai-summary/history`: Deterministic paginated history (`created_at DESC, id DESC`).
+
+8. **Empirical Verification & Test Results:**
+   - Full test suite: **529 passing tests** (+44 Phase 10 tests across unit, integration, persistence, recovery, concurrency, and API contracts).
+   - Static analysis: `ruff check` clean, `ruff format --check` clean (196 files formatted), `mypy` clean (0 errors across 113 source files).
+
+### Architecture & Engineering Invariants Established
+1. **Advisory-Only Safety Boundary:** AI cannot resolve investigations, alter risk scores, or modify evidence. Cases in terminal `RESOLVED` or `CLOSED` status reject AI generation with 409 Conflict.
+2. **Transaction Separation:** Long-running LLM provider I/O never holds database connections or locks.
+3. **Lease Fencing & CAS:** Generation tokens guarantee that late-arriving provider responses cannot overwrite recovered or superseded summaries.
+4. **Mock Provider Baseline:** System operates on deterministic `MockAIProvider`; external live LLM credentials remain intentionally deferred.
+5. **Reference Existence vs. Semantic Truth:** Grounding validation guarantees entity reference existence, while semantic claim verification remains human-investigator authoritative.
+
+### Result & Status
+- Phase 10 implementation and verification: **100% Completed** (529 passing tests).
+- Next development phase: **Phase 11 (Testing, Security & Hardening)**.
+
+---
+
+# 29. Log Maintenance Rules
 
 The project log should be updated when:
 

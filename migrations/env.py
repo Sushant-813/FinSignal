@@ -7,6 +7,7 @@ from sqlalchemy import engine_from_config, pool
 
 # Import all domain models to ensure Base.metadata is fully populated
 import finsignal.accounts.models  # noqa: F401
+import finsignal.ai.models  # noqa: F401
 import finsignal.audit.models  # noqa: F401
 import finsignal.dataset.models  # noqa: F401
 import finsignal.devices.models  # noqa: F401
