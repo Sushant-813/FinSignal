@@ -41,7 +41,11 @@ def upgrade() -> None:
             server_default="PENDING",
             nullable=False,
         ),
-        sa.Column("summary", postgresql.JSONB(astext_type=sa.Text(), none_as_null=True), nullable=True),
+        sa.Column(
+            "summary",
+            postgresql.JSONB(astext_type=sa.Text(), none_as_null=True),
+            nullable=True,
+        ),
         sa.Column("error_message", sa.Text(), nullable=True),
         sa.Column(
             "generated_at",

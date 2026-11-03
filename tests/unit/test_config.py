@@ -293,7 +293,7 @@ def test_ai_settings_validation_bounds() -> None:
     with pytest.raises(ValidationError):
         Settings(
             database_password=SecretStr("pw"),
-            ai_provider="openai",  # type: ignore[arg-type]
+            ai_provider="openai",
             _env_file=None,
         )
 

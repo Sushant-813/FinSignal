@@ -226,7 +226,7 @@ async def test_ai_summaries_orm_retention_passive_deletes(
         inv = await session.get(Investigation, inv_id)
         assert inv is not None
         # Eagerly load relationship
-        await session.run_sync(lambda s: inv.ai_summaries)  # type: ignore[misc]
+        await session.run_sync(lambda s: inv.ai_summaries)
         await session.delete(inv)
         with pytest.raises(IntegrityError):
             await session.commit()
