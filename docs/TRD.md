@@ -5,8 +5,8 @@
 **Full Name:** Financial Transaction Intelligence & Investigation Platform  
 **Document:** Technical Requirements Document  
 **Version:** 1.0.0  
-**Status:** Draft  
-**Last Updated:** 2026-10-04
+**Status:** Approved / Current  
+**Last Updated:** 2026-11-04
 
 ---
 
@@ -1487,7 +1487,7 @@ Environment-specific configuration should not be hard-coded into application log
 
 # 52. Docker Requirements
 
-The project should provide Docker configuration suitable for local development.
+The project will provide Docker configuration suitable for local development and production deployment, scheduled for Phase 13 per accepted ADR-061 and ADR-073.
 
 Initial services:
 
@@ -2198,7 +2198,7 @@ The application can process the target development and full dataset sizes.
 
 ### TR-015
 
-The project can run through Docker-based local development.
+The project can run through Docker-based local development. *(Deferred to Phase 13 per accepted ADR-061 and ADR-073 to allow native verification and code-only v1.0.0 release).* 
 
 ---
 
@@ -2257,7 +2257,8 @@ The following documents will provide deeper technical detail:
 # 87. Document Status
 
 **Version:** 1.0.0  
-**Status:** Draft  
+**Status:** Approved / Current  
+**Last Updated:** 2026-11-04  
 **Previous Document:** `DATASET_SPECIFICATION.md`  
 **Next Document:** `ARCHITECTURE.md`
 

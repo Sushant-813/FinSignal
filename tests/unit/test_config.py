@@ -457,3 +457,53 @@ def test_settings_cors_origins_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
         "http://localhost:3000",
         "https://api.finsignal.com",
     ]
+
+
+def test_settings_cors_origins_wildcard_rejected() -> None:
+    """Verify SEC-01: Wildcard '*' in cors_origins is rejected when credentials are enabled."""
+    # Direct wildcard string
+    with pytest.raises(
+        ValidationError, match="Wildcard '\\*' CORS origin is forbidden"
+    ):
+        Settings(
+            database_password=SecretStr("pw"),
+            cors_origins="*",
+            _env_file=None,
+        )
+
+    # Wildcard in list
+    with pytest.raises(
+        ValidationError, match="Wildcard '\\*' CORS origin is forbidden"
+    ):
+        Settings(
+            database_password=SecretStr("pw"),
+            cors_origins=["http://localhost:3000", "*"],
+            _env_file=None,
+        )
+
+    # Wildcard in JSON list string
+    with pytest.raises(
+        ValidationError, match="Wildcard '\\*' CORS origin is forbidden"
+    ):
+        Settings(
+            database_password=SecretStr("pw"),
+            cors_origins='["*"]',
+            _env_file=None,
+        )
+
+
+def test_settings_cors_origins_empty_allowed() -> None:
+    """Verify empty string or empty list in cors_origins results in empty origins."""
+    s1 = Settings(
+        database_password=SecretStr("pw"),
+        cors_origins="",
+        _env_file=None,
+    )
+    assert s1.cors_origins == []
+
+    s2 = Settings(
+        database_password=SecretStr("pw"),
+        cors_origins=[],
+        _env_file=None,
+    )
+    assert s2.cors_origins == []

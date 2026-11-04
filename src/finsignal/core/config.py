@@ -168,21 +168,49 @@ class Settings(BaseSettings):
     @field_validator("cors_origins", mode="before")
     @classmethod
     def validate_cors_origins(cls, v: object) -> object:
-        """Allow CORS origins as comma-separated string, JSON list, or Python list."""
+        """Allow CORS origins as comma-separated string, JSON list, or Python list.
+
+        Wildcard '*' is strictly forbidden when credentialed CORS is enabled,
+        preventing dangerous browser credential leakage.
+        """
+        parsed: list[str] = []
         if isinstance(v, str):
             stripped = v.strip()
             if not stripped:
-                empty_origins: list[str] = []
-                return empty_origins
+                return []
             if stripped.startswith("[") and stripped.endswith("]"):
                 import json
 
                 try:
-                    return json.loads(stripped)
+                    loaded = json.loads(stripped)
+                    if isinstance(loaded, list):
+                        parsed = [
+                            str(item).strip() for item in loaded if str(item).strip()
+                        ]
                 except Exception:
-                    pass
-            return [origin.strip() for origin in stripped.split(",") if origin.strip()]
-        return v
+                    parsed = [
+                        origin.strip()
+                        for origin in stripped.split(",")
+                        if origin.strip()
+                    ]
+            else:
+                parsed = [
+                    origin.strip() for origin in stripped.split(",") if origin.strip()
+                ]
+        elif isinstance(v, (list, tuple, set)):
+            parsed = [str(item).strip() for item in v if str(item).strip()]
+        elif v is None:
+            return []
+        else:
+            return v
+
+        for origin in parsed:
+            if origin == "*":
+                raise ValueError(
+                    "Wildcard '*' CORS origin is forbidden when allow_credentials=True. "
+                    "Explicit domain origins must be specified."
+                )
+        return parsed
 
     @field_validator("log_level")
     @classmethod

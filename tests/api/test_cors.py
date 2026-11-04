@@ -82,3 +82,28 @@ async def test_cors_actual_request_headers() -> None:
         )
         assert response.headers.get("access-control-allow-credentials") == "true"
         assert response.headers.get("X-Request-ID") is not None
+        assert "X-Request-ID" in (
+            response.headers.get("access-control-expose-headers") or ""
+        )
+
+
+@pytest.mark.asyncio
+async def test_cors_disabled_when_empty_origins() -> None:
+    """Verify that when cors_origins is empty, CORS headers are not emitted."""
+    settings = Settings(
+        database_password=SecretStr("supersecret"),
+        cors_origins=[],
+        _env_file=None,
+    )
+    test_app = create_app(settings=settings)
+    transport = ASGITransport(app=test_app)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.options(
+            "/health",
+            headers={
+                "Origin": "http://localhost:3000",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+        assert response.headers.get("access-control-allow-origin") is None

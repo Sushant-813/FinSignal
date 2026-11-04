@@ -506,7 +506,7 @@ Authentication endpoints implement active brute-force and credential-stuffing de
 
 - **Tracking Granularity:** Rate limits are keyed by client IP and normalized login email (`ip:email`).
 - **Sliding-Window Policy:** Allows a maximum of 5 failed authentication attempts within a rolling 60-second window. Successful logins clear the failed-attempt history for that key.
-- **In-Flight Admission Control:** Restricts concurrent active requests to a maximum of 2 in-flight attempts per key, mitigating parallelized connection burst attacks.
+- **In-Flight Admission Control:** Atomically reserves in-flight authentication attempts upon admission. Cumulative in-flight and rolling failed attempts within the sliding window are bounded by max_attempts (default 5), preventing check-then-record race conditions and parallel connection burst attacks.
 - **LRU Capacity & Eviction Safety:** The limiter tracks up to `max_tracked_keys = 10_000` keys. Keys with active reservations (`in_flight > 0`) are strictly protected from eviction. If the limiter reaches capacity and all tracked keys are actively processing requests, incoming requests for new keys are rejected (`allowed=False, retry_after=1`) rather than evicting an active reservation.
 - **Standard HTTP 429 Response:** Breached limits immediately raise `RateLimitExceededError`, serialized as HTTP 429 (`RATE_LIMIT_EXCEEDED`) with an RFC-compliant `Retry-After` header indicating remaining penalty seconds.
 - **Operational Boundaries:**
@@ -595,9 +595,9 @@ UUIDs make enumeration harder but do not replace authorization.
 FinSignal integrates FastAPI `CORSMiddleware` in `src/finsignal/main.py` with strict origin and credential rules:
 
 - **Explicit Origin Allowlist:** Governed by `cors_origins` configuration (defaults to `["http://localhost:3000", "http://localhost:5173"]` in development). Production deployments must override this with explicit domain origins.
-- **Strict Credential Isolation:** `allow_credentials=True` is enabled dynamically only when the origin list contains explicit domains and does not contain wildcard `*`. Combining wildcard origins with credentials is systematically prevented.
+- **Strict Credential Isolation:** Enforced via Pydantic validator (`validate_cors_origins` in `src/finsignal/core/config.py`). Specifying wildcard origin `*` while credentials are enabled (`allow_credentials=True`) raises a validation error on application startup, systematically preventing browser credential leakage.
 - **Allowed Methods & Headers:** Explicitly permits standard REST methods (`GET`, `POST`, `PATCH`, `PUT`, `DELETE`, `OPTIONS`) and standard headers (`Authorization`, `Content-Type`, `X-Request-ID`).
-- **Exposed Headers:** Exposes correlation tracing header `X-Request-ID` to client browsers.
+- **Exposed Headers:** Exposes correlation tracing header `X-Request-ID` to client browsers via `expose_headers=["X-Request-ID"]`.
 - **Browser-Origin Boundary Scope:** CORS is enforced by modern web browsers adhering to the Same-Origin Policy. It governs web client access and prevents unauthorized scripts on foreign origins from reading API responses. It does not restrict non-browser HTTP clients (such as cURL, Postman, or malicious automation bots), which are governed by JWT authentication and rate limiting.
 
 ---

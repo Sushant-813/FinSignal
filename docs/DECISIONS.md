@@ -1688,7 +1688,7 @@ Adopt canonical transaction identity scoped by source namespace, canonical accou
 
 # ADR-065 — Synthetic Dataset Identity and Import Observation Policies
 
-**Status:** PROPOSED — implemented in Phase 4 (P4.0–P4.6), awaiting formal project-owner acceptance
+**Status:** ACCEPTED (Ratified in Phase 12)
 **Date:** 2026-10-20
 **Related decisions:** ADR-008, ADR-013, ADR-014, ADR-029, ADR-063, ADR-064
 
@@ -1895,9 +1895,9 @@ Key architectural challenges include:
 
 ---
 
-# Proposed ADR-067 — Canonical 34-Feature Vector Contract and Extraction Ordering
+# ADR-067 — Canonical 34-Feature Vector Contract and Extraction Ordering
 
-**Status:** PROPOSED (Pending Project-Owner Approval)
+**Status:** ACCEPTED (Ratified in Phase 12)
 
 **Date:** 2026-10-26
 
@@ -1949,9 +1949,9 @@ Phase 6 established point-in-time temporal and entity features embodied in Pydan
 
 ---
 
-# Proposed ADR-068 — Validation-Only Alert-Rate Constrained Threshold Selection
+# ADR-068 — Validation-Only Alert-Rate Constrained Threshold Selection
 
-**Status:** PROPOSED (Pending Project-Owner Approval)
+**Status:** ACCEPTED (Ratified in Phase 12)
 
 **Date:** 2026-10-26
 
@@ -1973,9 +1973,9 @@ Scikit-learn's Isolation Forest produces continuous anomaly scores $S(X) = - \te
 
 ---
 
-# Proposed ADR-069 — Active Model Dynamic Resolution and Promotion Concurrency
+# ADR-069 — Active Model Dynamic Resolution and Promotion Concurrency
 
-**Status:** PROPOSED (Pending Project-Owner Approval)
+**Status:** ACCEPTED (Ratified in Phase 12)
 
 **Date:** 2026-10-26
 
@@ -1997,7 +1997,7 @@ Financial transactions must be scored against the currently approved active mach
 
 # Proposed Operational Design — Administrative Model Artifact Pruning and Reconciliation Tool
 
-**Status:** PROPOSED PRE-RELEASE TASK (Pending Project-Owner Approval, Unimplemented)
+**Status:** DEFERRED TO PHASE 13 (Operational Tooling)
 
 **Date:** 2026-10-26
 
@@ -2018,9 +2018,9 @@ Implement a standalone administrative CLI tool (`finsignal-admin prune-unreferen
 
 ---
 
-# Proposed ADR-070 — Hybrid Risk Scoring, Validation-Anchored Normalization, and Canonical Analysis Identity
+# ADR-070 — Hybrid Risk Scoring, Validation-Anchored Normalization, and Canonical Analysis Identity
 
-**Status:** PROPOSED (Phase 8 Implemented, Pending Project-Owner Formal Acceptance)
+**Status:** ACCEPTED (Ratified in Phase 12)
 
 **Date:** 2026-10-30
 
@@ -2050,9 +2050,9 @@ Financial transaction intelligence requires combining multivariate unsupervised 
 
 ---
 
-# Proposed ADR-071 — Manual-First Investigation Queue, At-Most-One Primary Transaction Index Invariant, and Append-Only Evidence Immutability
+# ADR-071 — Manual-First Investigation Queue, At-Most-One Primary Transaction Index Invariant, and Append-Only Evidence Immutability
 
-**Status:** PROPOSED (Phase 9 Implemented, Pending Project-Owner Formal Acceptance)
+**Status:** ACCEPTED (Ratified in Phase 12)
 
 **Date:** 2026-11-01
 
@@ -2099,9 +2099,9 @@ Key architectural trade-offs:
 
 ---
 
-# Proposed ADR-072 — Two-Phase Synchronous AI Summary Generation, REPEATABLE READ Snapshot Isolation, Dual-Fingerprint Staleness Detection, and CAS Token Fencing
+# ADR-072 — Two-Phase Synchronous AI Summary Generation, REPEATABLE READ Snapshot Isolation, Dual-Fingerprint Staleness Detection, and CAS Token Fencing
 
-**Status:** PROPOSED (Phase 10 Implemented, Pending Project-Owner Formal Acceptance)
+**Status:** ACCEPTED (Ratified in Phase 12)
 
 **Date:** 2026-11-04
 
@@ -2170,6 +2170,34 @@ Human investigators reviewing complex financial transaction cases require rapid,
 - **Limitation:** Only `MockAIProvider` is active in the current release; live LLM credentials and vector search/RAG remain deferred.
 
 ---
+
+# ADR-073 — Phase 12 Scope Revision: Backend/ML v1.0.0 Release and Deferral of Docker Containerization to Phase 13
+
+**Status:** ACCEPTED
+
+**Date:** 2026-11-04
+
+**Related decisions:** ADR-001, ADR-003, ADR-004, ADR-061
+
+## Context
+
+Technical requirement TR-015 and early project planning documents specified Docker-based local development and containerization. ADR-061 previously deferred local containerization to Phase 12 to maintain focus on core financial domain modeling, temporal feature extraction, and ML explainability.
+
+During the Phase 11 review and Phase 12 release preparation, all core backend, database, ML, risk scoring, investigation workflow, and AI assistant capabilities were fully verified natively against Python 3.12 and PostgreSQL (559/559 passing automated tests, strict Ruff and Mypy compliance). Concurrently coupling the v1.0.0 milestone with production Docker packaging, Docker Compose multi-container orchestration, and deployment automation introduces operational risks unrelated to backend domain correctness.
+
+## Decision
+
+1. **Redefine Phase 12 Scope:** Restructure Phase 12 from "Docker, Deployment & Backend/ML Release" to "Backend/ML Release & Finalization".
+2. **Versioned Source Code Release:** Deliver FinSignal v1.0.0 as a tested, versioned software library and application release covering the complete Backend + ML platform.
+3. **Establish Phase 13 for Containerization & Deployment:** Formally defer production Dockerfile authoring, Docker Compose configuration, production deployment procedures, and cloud infrastructure orchestration to Phase 13 ("Production Deployment & Containerization").
+4. **Clarify Release Boundary:** Explicitly document that v1.0.0 represents an architecturally verified backend application and ML model runtime targeting native Python 3.12 and PostgreSQL, not a production-deployed cloud service.
+5. **Amend TR-015:** Annotate TR-015 to indicate that Docker containerization is scheduled for Phase 13.
+
+## Consequences
+
+- **Scope Control:** Allows formal verification and versioned tagging of the complete backend and ML codebase without conflating container orchestration defects.
+- **Traceability:** Preserves historical context from ADR-061 while transparently scheduling deployment work into a dedicated, subsequent phase.
+- **Operational Requirement:** Multi-container packaging and deployment scripts must be completed in Phase 13 prior to production deployment.
 
 # 4. Decision Dependency Map
 

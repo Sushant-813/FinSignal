@@ -1483,7 +1483,7 @@ Implement the Phase 10 AI Investigation Assistant subsystem to generate structur
 
 **Date:** 2026-11-04  
 **Scope:** Backend & Security Hardening (Modular Monolith)  
-**Status:** In Progress (Hardening & Verification Complete; Stage A Documentation Reconciliation in Progress)
+**Status:** Completed (Formally Accepted on 2026-11-04 per docs/PHASE_11_FORMAL_ACCEPTANCE.md)
 
 ### Summary of Completed Work
 
@@ -1517,12 +1517,71 @@ Implement the Phase 10 AI Investigation Assistant subsystem to generate structur
 
 ### Result & Status
 - Phase 11 implementation, hardening corrections, and targeted verification: **Completed** (559 passing tests).
-- Stage A Documentation Reconciliation: **In Progress**.
-- Next milestone: **ADR Review & Formal Phase 11 Acceptance**.
+- Stage A Documentation Reconciliation: **Completed**.
+- Formal Phase 11 Acceptance: **Accepted** (documented in `docs/PHASE_11_FORMAL_ACCEPTANCE.md`).
 
 ---
 
-# 31. Log Maintenance Rules
+# 31. 2026-11-04 — Phase 12 (Backend/ML Release & Finalization) Execution & v1.0.0 Release Preparation
+
+**Date:** 2026-11-04  
+**Scope:** Backend & ML Release Preparation (Modular Monolith)  
+**Status:** Completed  
+**Release Tag Prepared:** `v1.0.0`
+
+### Work Completed
+
+1. **Phase 11 Formal Closure (Workstream A):**
+   - Conducted rigorous formal engineering inspection of all Phase 11 deliverables (`docs/PHASE_11_FORMAL_ACCEPTANCE.md`).
+   - Fixed CORS credentialed wildcard origin security defect: Added validation in `validate_cors_origins` (`src/finsignal/core/config.py`) that strictly raises `ValueError` if wildcard `*` is supplied when credentials are enabled. Added `expose_headers=["X-Request-ID"]` in `CORSMiddleware`.
+   - Reconciled login rate limiter concurrency claims with actual code: Atomic in-flight admission bounds concurrent requests to `max_attempts` (5), with guaranteed non-eviction of active reservations.
+   - Verified linear migration chain 0001–0008. Verified local dev DB status (`finsignal_dev` retained safely at 0003 without unauthorized modification; ephemeral test DBs verified to head 0008).
+
+2. **ADR Governance Reconciliation (Workstream B):**
+   - Formally ratified and transitioned 7 proposed architectural decisions to `ACCEPTED`:
+     - **ADR-065:** Synthetic Dataset Identity & Import Observation Policies.
+     - **ADR-067:** Canonical 34-Feature Vector Contract & Extraction Ordering.
+     - **ADR-068:** Validation-Only Alert-Rate Constrained Threshold Selection.
+     - **ADR-069:** Active Model Dynamic Resolution & Promotion Concurrency.
+     - **ADR-070:** Hybrid Risk Scoring, Anchored Normalization & Canonical Analysis.
+     - **ADR-071:** Manual Investigation Queue, Primary Transaction Invariant & Evidence Immutability.
+     - **ADR-072:** Two-Phase Synchronous AI Summary Generation, REPEATABLE READ & CAS Fencing.
+   - Authored and accepted **ADR-073**: Formally redefined Phase 12 as "Backend/ML Release & Finalization", delivering v1.0.0 as a tested source library/application release, and deferring Dockerfile, Docker Compose, and cloud deployment to Phase 13.
+   - Transitioned Administrative Model Artifact Pruning CLI operational proposal to `DEFERRED TO PHASE 13`.
+
+3. **Operational Limitations & Release Boundaries Documented (Workstream C):**
+   - Documented model artifact pruning procedure: Unreferenced directories do not affect inference (only registered models load); safe manual recovery query established.
+   - Clarified benchmark scope: Formally distinguished 250k synthetic generation (verified in Phase 4) and 5k benchmarks from deferred 250k database ingestion.
+   - Documented rate limiter single-process boundary (Redis required for horizontal multi-instance scaling).
+   - Clarified audit trigger immutability boundary (defense-in-depth against application UPDATE/DELETE; not WORM/TRUNCATE).
+
+4. **Documentation Reconciliation (Workstream D):**
+   - Reconciled `README.md`, `TRD.md`, `SECURITY.md`, `TESTING_STRATEGY.md`, `PROJECT_ROADMAP.md`, `PROJECT_LOG.md`, and `DECISIONS.md`.
+   - Updated package versions to `1.0.0` in `pyproject.toml`, `src/finsignal/__init__.py`, and `src/finsignal/main.py`.
+
+5. **Backend + ML v1.0 Release Gate (Workstream E):**
+   - Evaluated all 34 requirements across Backend, ML, AI, and Quality dimensions in `PROJECT_ROADMAP.md` Section 18. All items verified with evidence.
+
+6. **Final Verification Suite (Workstream F):**
+   - Expanded test suite to **562 passed tests** (0 failed, 0 errors, 0 skipped, 82.1s).
+   - Static analysis: Ruff clean (0 errors), Ruff format clean (210 files), Mypy clean (0 errors across 199 source files).
+   - Migration integrity: Downgrade to base and upgrade to head roundtrip verified on disposable PostgreSQL databases.
+
+7. **Release Packaging & Local Tag (Workstream G):**
+   - Authored release deliverables:
+     - `docs/PHASE_11_FORMAL_ACCEPTANCE.md`
+     - `docs/PHASE_12_RELEASE_REPORT.md`
+     - `docs/RELEASE_NOTES_v1.0.0.md`
+   - Prepared clean working tree and local annotated tag `v1.0.0`. Stopped at remote publication boundary for owner approval.
+
+### Result & Status
+- Phase 12 execution: **Completed**.
+- Backend + ML v1.0.0 code release preparation: **100% Complete**.
+- Next milestone: **Owner Review & Publication Approval (Phase 13 Scheduled for Deployment)**.
+
+---
+
+# 32. Log Maintenance Rules
 
 The project log should be updated when:
 

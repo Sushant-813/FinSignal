@@ -47,7 +47,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(
         title=app_settings.app_name,
-        version="0.1.0",
+        version="1.0.0",
         lifespan=lifespan,
     )
 
@@ -65,6 +65,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             allow_credentials=True,
             allow_methods=["*"],
             allow_headers=["*"],
+            expose_headers=["X-Request-ID"],
         )
 
     # Attach pure ASGI Request-ID and unexpected exception middleware
