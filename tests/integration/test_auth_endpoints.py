@@ -659,3 +659,93 @@ async def test_auth_endpoints_preserve_request_id_correlation(
     assert auth_res.status_code == 401
     assert auth_res.headers.get("x-request-id") == custom_request_id
     assert auth_res.json()["error"]["request_id"] == custom_request_id
+
+
+@pytest.mark.asyncio
+async def test_login_rate_limiting(
+    client: AsyncClient,
+) -> None:
+    """Verify SEC-06: 5 failed login attempts triggers HTTP 429 Too Many Requests with Retry-After header."""
+    from finsignal.auth.limiter import default_login_rate_limiter
+
+    default_login_rate_limiter.reset()
+
+    email = "ratelimit.victim@finsignal.io"
+    # Register user first
+    await client.post(
+        "/api/v1/auth/register",
+        json={"email": email, "password": "valid-password-123"},
+    )
+
+    # 5 consecutive failed logins with wrong password
+    for i in range(5):
+        resp = await client.post(
+            "/api/v1/auth/login",
+            json={"email": email, "password": "wrong-password-999"},
+        )
+        assert resp.status_code == 401, f"Attempt {i + 1} should return 401"
+        assert resp.json()["error"]["code"] == "UNAUTHORIZED"
+
+    # 6th attempt must be rate-limited (429)
+    blocked_resp = await client.post(
+        "/api/v1/auth/login",
+        json={"email": email, "password": "valid-password-123"},
+    )
+    assert blocked_resp.status_code == 429
+    assert blocked_resp.headers.get("retry-after") is not None
+    assert int(blocked_resp.headers["retry-after"]) > 0
+    err_body = blocked_resp.json()
+    assert err_body["error"]["code"] == "RATE_LIMIT_EXCEEDED"
+    assert "retry_after_seconds" in err_body["error"]["details"]
+
+    default_login_rate_limiter.reset()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_login_rate_limiting(
+    client: AsyncClient,
+) -> None:
+    """Verify SEC-06: Burst of 10 concurrent login requests admits at most 5 and rejects the rest with HTTP 429."""
+    import asyncio
+
+    from finsignal.auth.limiter import default_login_rate_limiter
+
+    default_login_rate_limiter.reset()
+
+    email = "burst.victim@finsignal.io"
+    # Register user
+    await client.post(
+        "/api/v1/auth/register",
+        json={"email": email, "password": "valid-password-123"},
+    )
+
+    # Fire 10 concurrent login requests with wrong password
+    tasks = [
+        client.post(
+            "/api/v1/auth/login",
+            json={"email": email, "password": "wrong-password-999"},
+        )
+        for _ in range(10)
+    ]
+    responses = await asyncio.gather(*tasks)
+
+    status_codes = [r.status_code for r in responses]
+    unauthorized_count = status_codes.count(401)
+    rate_limited_count = status_codes.count(429)
+
+    # At most 5 requests may be admitted to Argon2id verification
+    assert unauthorized_count <= 5, (
+        f"Expected at most 5 admitted attempts, got {unauthorized_count}"
+    )
+    assert rate_limited_count >= 5, (
+        f"Expected at least 5 rate limited responses, got {rate_limited_count}"
+    )
+    assert unauthorized_count + rate_limited_count == 10
+
+    # Ensure 429 responses have Retry-After header
+    for r in responses:
+        if r.status_code == 429:
+            assert r.headers.get("retry-after") is not None
+            assert int(r.headers["retry-after"]) > 0
+
+    default_login_rate_limiter.reset()

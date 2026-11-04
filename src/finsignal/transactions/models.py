@@ -39,6 +39,12 @@ class Transaction(Base, UUIDPrimaryKeyMixin, CreatedAtMixin):
             name="fk_transactions_account_namespace",
             ondelete="RESTRICT",
         ),
+        ForeignKeyConstraint(
+            ["counterparty_account_id", "source_namespace"],
+            ["accounts.id", "accounts.source_namespace"],
+            name="fk_transactions_counterparty_namespace",
+            ondelete="RESTRICT",
+        ),
         CheckConstraint(
             "amount > 0",
             name="chk_transactions_amount_positive",

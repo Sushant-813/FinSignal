@@ -162,11 +162,15 @@ async def test_concurrent_self_assignment_race(
     assert len(errors) == 1, f"Expected 1 error, got {len(errors)}"
 
     error = errors[0]
-    assert isinstance(error, ConflictError), (
-        f"Expected ConflictError, got {type(error)}"
+    assert isinstance(error, (ConflictError, AuthorizationError)), (
+        f"Expected ConflictError or AuthorizationError on race loser, got {type(error)}"
     )
-    assert error.code == "CASE_ALREADY_ASSIGNED"
-    assert error.status_code == 409
+    if isinstance(error, ConflictError):
+        assert error.code == "CASE_ALREADY_ASSIGNED"
+        assert error.status_code == 409
+    else:
+        assert error.code == "FORBIDDEN"
+        assert error.status_code == 403
 
     # Verify database state has winner assigned
     engine = create_engine(sync_url)

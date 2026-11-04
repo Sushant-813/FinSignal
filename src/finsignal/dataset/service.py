@@ -1,5 +1,6 @@
 """Dataset import orchestration service with advisory locking and deduplication (P4.5)."""
 
+import csv
 import hashlib
 import io
 import logging
@@ -35,11 +36,14 @@ class DatasetImportService:
     async def import_dataset(
         self,
         session: AsyncSession,
-        file_bytes: bytes,
-        filename: str | None,
-        source_namespace: str,
+        file_bytes: bytes | None = None,
+        filename: str | None = None,
+        source_namespace: str = "SYNTHETIC",
         source_type: str = "SYNTHETIC",
         user_id: uuid.UUID | None = None,
+        *,
+        file_source: io.TextIOBase | None = None,
+        file_hash: str | None = None,
     ) -> tuple[DatasetImportResponse, bool]:
         """Process an uploaded dataset CSV with transaction-scoped locking and deduplication.
 
@@ -54,8 +58,13 @@ class DatasetImportService:
                 details={"source_namespace": norm_ns},
             )
 
-        # 2. Compute SHA-256 over uploaded bytes
-        file_hash = hashlib.sha256(file_bytes).hexdigest()
+        # 2. Compute SHA-256 over uploaded bytes if not already provided by streaming hash
+        if file_hash is None:
+            if file_bytes is None:
+                raise ValueError(
+                    "Either file_source with file_hash or file_bytes must be provided."
+                )
+            file_hash = hashlib.sha256(file_bytes).hexdigest()
 
         # 3. Acquire transaction-scoped advisory lock (pg_advisory_xact_lock)
         await acquire_import_advisory_lock(session, norm_ns, file_hash)
@@ -105,7 +114,13 @@ class DatasetImportService:
                     file_hash,
                     norm_ns,
                 )
-                return await self.recover_import(session, imp, file_bytes)
+                return await self.recover_import(
+                    session,
+                    imp,
+                    file_bytes=file_bytes,
+                    file_source=file_source,
+                    file_hash=file_hash,
+                )
 
         # 5. Create new DatasetImport attempt
         import_record = DatasetImport(
@@ -119,22 +134,51 @@ class DatasetImportService:
         session.add(import_record)
         await session.flush()
 
-        # 6. Decode bytes and run ingestion
+        # 6. Stream CSV rows into ingestion engine (SEC-02: Bounded Memory)
+        if file_source is not None:
+            csv_source = file_source
+        elif file_bytes is not None:
+            try:
+                csv_text = file_bytes.decode("utf-8-sig")
+                csv_source = io.StringIO(csv_text)
+            except UnicodeDecodeError as dec_err:
+                import_record.status = "FAILED"
+                await session.commit()
+                raise ValidationError(
+                    message=f"Uploaded file must be valid UTF-8 text: {dec_err}",
+                    details={"filename": filename},
+                ) from dec_err
+        else:
+            raise ValueError("Either file_source or file_bytes must be provided.")
+
         try:
-            csv_text = file_bytes.decode("utf-8")
+            await self.engine.ingest(
+                session=session,
+                dataset_import=import_record,
+                csv_source=csv_source,
+            )
         except UnicodeDecodeError as dec_err:
-            import_record.status = "FAILED"
-            await session.flush()
+            import_record_id = import_record.id
+            await session.rollback()
+            rec = await session.get(DatasetImport, import_record_id)
+            if rec is not None:
+                rec.status = "FAILED"
+                await session.commit()
             raise ValidationError(
                 message=f"Uploaded file must be valid UTF-8 text: {dec_err}",
                 details={"filename": filename},
             ) from dec_err
-
-        await self.engine.ingest(
-            session=session,
-            dataset_import=import_record,
-            csv_source=io.StringIO(csv_text),
-        )
+        except (csv.Error, ValueError) as csv_err:
+            import_record_id = import_record.id
+            await session.rollback()
+            rec = await session.get(DatasetImport, import_record_id)
+            if rec is not None:
+                rec.status = "FAILED"
+                await session.commit()
+            raise ValidationError(
+                message=f"CSV parsing error: {csv_err}",
+                details={"filename": filename, "error": str(csv_err)},
+            ) from csv_err
 
         await session.commit()
 
@@ -173,22 +217,57 @@ class DatasetImportService:
         self,
         session: AsyncSession,
         dataset_import: DatasetImport,
-        file_bytes: bytes,
+        file_bytes: bytes | None = None,
+        *,
+        file_source: io.TextIOBase | None = None,
+        file_hash: str | None = None,
     ) -> tuple[DatasetImportResponse, bool]:
-        """Recover an interrupted or failed dataset import attempt."""
+        """Recover an interrupted or failed dataset import attempt (SEC-02)."""
+        if file_source is not None:
+            csv_source = file_source
+        elif file_bytes is not None:
+            try:
+                csv_text = file_bytes.decode("utf-8-sig")
+                csv_source = io.StringIO(csv_text)
+            except UnicodeDecodeError as dec_err:
+                dataset_import.status = "FAILED"
+                await session.commit()
+                raise ValidationError(
+                    message=f"Uploaded file must be valid UTF-8 text: {dec_err}",
+                    details={"filename": dataset_import.filename},
+                ) from dec_err
+        else:
+            raise ValueError("Either file_source or file_bytes must be provided.")
+
         try:
-            csv_text = file_bytes.decode("utf-8")
+            await self.engine.recover(
+                session=session,
+                dataset_import=dataset_import,
+                csv_source=csv_source,
+            )
         except UnicodeDecodeError as dec_err:
+            import_id = dataset_import.id
+            await session.rollback()
+            rec = await session.get(DatasetImport, import_id)
+            if rec is not None:
+                rec.status = "FAILED"
+                await session.commit()
             raise ValidationError(
                 message=f"Uploaded file must be valid UTF-8 text: {dec_err}",
                 details={"filename": dataset_import.filename},
             ) from dec_err
+        except (csv.Error, ValueError) as csv_err:
+            import_id = dataset_import.id
+            await session.rollback()
+            rec = await session.get(DatasetImport, import_id)
+            if rec is not None:
+                rec.status = "FAILED"
+                await session.commit()
+            raise ValidationError(
+                message=f"CSV parsing error: {csv_err}",
+                details={"filename": dataset_import.filename, "error": str(csv_err)},
+            ) from csv_err
 
-        await self.engine.recover(
-            session=session,
-            dataset_import=dataset_import,
-            csv_source=io.StringIO(csv_text),
-        )
         await session.commit()
 
         resp = DatasetImportResponse.model_validate(dataset_import)
@@ -199,9 +278,12 @@ class DatasetImportService:
         self,
         session: AsyncSession,
         import_id: uuid.UUID,
-        file_bytes: bytes,
+        file_bytes: bytes | None = None,
+        *,
+        file_source: io.TextIOBase | None = None,
+        file_hash: str | None = None,
     ) -> DatasetImportResponse:
-        """Explicitly recover an import by its UUID with uploaded file bytes."""
+        """Explicitly recover an import by its UUID with uploaded file bytes or stream (SEC-02)."""
         stmt = select(DatasetImport).where(DatasetImport.id == import_id)
         import_record = (await session.execute(stmt)).scalar_one_or_none()
         if import_record is None:
@@ -210,7 +292,13 @@ class DatasetImportService:
                 details={"import_id": str(import_id)},
             )
 
-        file_hash = hashlib.sha256(file_bytes).hexdigest()
+        if file_hash is None:
+            if file_bytes is None:
+                raise ValueError(
+                    "Either file_source with file_hash or file_bytes must be provided."
+                )
+            file_hash = hashlib.sha256(file_bytes).hexdigest()
+
         if import_record.file_hash and import_record.file_hash != file_hash:
             raise ValidationError(
                 message="Uploaded file content does not match the original import file hash.",
@@ -224,5 +312,11 @@ class DatasetImportService:
             session, import_record.source_namespace, file_hash
         )
         await session.refresh(import_record)
-        resp, _ = await self.recover_import(session, import_record, file_bytes)
+        resp, _ = await self.recover_import(
+            session,
+            import_record,
+            file_bytes=file_bytes,
+            file_source=file_source,
+            file_hash=file_hash,
+        )
         return resp

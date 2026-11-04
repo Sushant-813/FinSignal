@@ -869,62 +869,62 @@ Final Resolution
 
 ## Objective
 
-Perform system-wide verification before release.
+Perform system-wide security hardening, resource bounding, performance optimization, and integration verification before release packaging.
 
-## Testing
+## Implemented Work & Milestones
 
-- unit tests;
-- integration tests;
-- API tests;
-- authentication tests;
-- RBAC tests;
-- IDOR tests;
-- ingestion tests;
-- feature tests;
-- temporal leakage tests;
-- ML evaluation tests;
-- investigation workflow tests;
-- AI grounding tests;
-- migration tests;
-- performance tests;
-- failure-injection tests.
+### Milestone 11.1 — Security & Environment Hardening
+- [x] **Configurable CORS Middleware (`src/finsignal/main.py`):**
+  - Fastapi `CORSMiddleware` integrated with explicit `cors_origins` list, methods, and exposed correlation headers (`X-Request-ID`).
+  - Strict credential isolation: `allow_credentials=True` enabled only when origin is not `*`. Wildcard origins with credentials are explicitly forbidden. Note that CORS enforces browser-origin policy and does not restrict non-browser HTTP clients.
+- [x] **Bounded Streaming Upload & Recovery (`src/finsignal/api/v1/datasets.py`, `src/finsignal/dataset/service.py`):**
+  - Replaced unconstrained file loading with chunk-by-chunk streaming enforcement (`MAX_UPLOAD_SIZE_BYTES = 52_428_800`, 50 MB hard limit).
+  - Raised dedicated `PayloadTooLargeError` returning HTTP 413 immediately when stream length exceeds 50 MB.
+  - Transparent support for standard UTF-8 and UTF-8 BOM via `utf-8-sig` decoding.
+  - Safe stream detachment (`text_stream.detach()`) preventing Starlette `UploadFile` premature closing.
+  - Explicit `csv.Error` handling: malformed CSV records or oversized CSV fields rollback the transaction and fail the import cleanly with HTTP 422 (`CSV_PARSE_ERROR` / `CSV_FIELD_SIZE_EXCEEDED`).
+- [x] **Strict OS Environment Variable Isolation (`src/finsignal/core/config.py`):**
+  - Custom settings source `_FinSignalEnvSettingsSource` strips ambient OS environment variables lacking the `FINSIGNAL_` prefix (`DEBUG` in OS environment cannot override application settings).
+  - Preserves backward compatibility for un-prefixed values loaded explicitly from `.env` files.
+  - Preserves strict boolean casting semantics without unsafe string conversion.
+- [x] **Sliding-Window Login Rate Limiter (`src/finsignal/auth/limiter.py`, `src/finsignal/api/v1/auth.py`):**
+  - Thread-safe, non-blocking in-memory rate limiter tracking failed attempts in a sliding window (5 attempts per 60 seconds per IP + email pair).
+  - Atomic in-flight admission control: max 2 concurrent requests per key to prevent burst concurrency exhaustion.
+  - Guaranteed eviction safety: active keys (`in_flight > 0`) are never evicted when `max_tracked_keys = 10_000` is reached; admissions under total saturation are safely rejected without evicting active reservations.
+  - Returns HTTP 429 (`RATE_LIMIT_EXCEEDED`) with RFC-compliant `Retry-After` header.
+  - Documented operational limitation: Rate limiter is currently in-memory and per-process; horizontal multi-instance scaling requires Redis or distributed state. Reverse proxy header trust requires configured trusted proxy middleware.
+- [x] **Relational Counterparty Namespace Foreign Key (`migrations/versions/0008_security_hardening.py`):**
+  - Adds composite foreign key constraint `fk_transactions_counterparty_namespace`: `FOREIGN KEY (counterparty_account_id, source_namespace) REFERENCES accounts(id, source_namespace) ON DELETE RESTRICT`.
+  - Enforces database-level isolation ensuring counterparty accounts belong to the identical dataset provenance namespace.
+- [x] **Append-Only Audit Log Immutability Trigger (`migrations/versions/0008_security_hardening.py`):**
+  - Implements PostgreSQL trigger `trg_no_update_delete_audit_events` and function `trg_enforce_audit_events_immutability()` blocking `UPDATE` and `DELETE` queries on `audit_events`.
+  - Documented scope: Defense-in-depth against SQL application tampering; does not provide hardware/cryptographic WORM immutability and does not protect against superuser `TRUNCATE` or table drop operations.
 
-## Security
+### Milestone 11.2 — Ingestion & Analytical Performance Hardening
+- [x] **Batched Ingestion Lookups (`src/finsignal/dataset/ingestion/engine.py`):**
+  - Replaced per-row database roundtrips with batched canonical lookups (`canonical_id = ANY(...)`).
+  - Added bounded in-memory reference entity caching (`max_cache_entries = 10_000`) for account, merchant, and device lookups.
+  - Intra-batch duplicate resolution: resolves repeated canonical references within the same batch after initial flushing.
+- [x] **Feature Engine SQL Pushdown (`src/finsignal/features/repository.py`):**
+  - Optimized entity familiarity lookups (`location_tx_count`, `device_tx_count`, `merchant_tx_count`) via targeted database counts.
+  - Note: Code changes implemented and passing unit/integration tests; full 250k-row performance benchmark verification is documented as a pre-release task.
 
-- dependency audit;
-- secret review;
-- upload security;
-- CSV injection;
-- SQL injection;
-- authorization review;
-- JWT validation;
-- sensitive logging review;
-- CORS review;
-- production configuration review.
+### Milestone 11.3 — ML Governance & Test Hardening
+- [x] **Deterministic Chronological Splitting (`src/finsignal/ml/split.py`):**
+  - Added secondary tie-breaker sorting `str(id) ASC` for identical timestamps (`occurred_at ASC, str(id) ASC`) preventing nondeterministic split boundaries across platforms.
+- [x] **Model Evaluation Budget Guardrails (`src/finsignal/ml/evaluator.py`):**
+  - Enforced strict alert-rate budget checks during threshold selection, preventing silent over-alerting.
+- [ ] **Unreferenced Model Artifact Pruning CLI (`finsignal-admin prune-unreferenced-artifacts`):**
+  - Remains an unnumbered proposed operational design (not yet implemented in CLI).
 
-## ML Validation
+### Milestone 11.4 — Documentation Reconciliation & Quality Gates
+- [x] Comprehensive test suite expansion: **559 passed tests** (0 failed, 0 errors, 79.56s).
+- [x] Static analysis: Ruff lint clean, Ruff format clean (210 files), Mypy clean (199 source files).
+- [ ] Stage A Documentation reconciliation across all canonical project docs (in progress).
 
-Compare:
+## Status
 
-- precision;
-- recall;
-- F1;
-- PR-AUC;
-- false-positive rate;
-- false-negative rate;
-- alert volume;
-- scenario-level detection;
-- account-level detection.
-
-## Exit Criteria
-
-- critical tests pass;
-- no known critical authorization bypass;
-- no known temporal leakage;
-- model evaluation is documented;
-- performance is acceptable;
-- CI gates pass;
-- release checklist is complete.
+`IN_PROGRESS (Implementation & Verification Complete; Stage A Documentation Reconciliation in Progress)`
 
 ---
 

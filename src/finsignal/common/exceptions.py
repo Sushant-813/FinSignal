@@ -168,3 +168,46 @@ class InfrastructureError(FinSignalError):
             details=details,
             internal_context=internal_context,
         )
+
+
+class RateLimitError(FinSignalError):
+    """Rate limit exceeded (HTTP 429, SEC-06)."""
+
+    def __init__(
+        self,
+        message: str = "Too many failed login attempts. Please try again later.",
+        code: str = "RATE_LIMIT_EXCEEDED",
+        retry_after: int = 60,
+        details: dict[str, Any] | None = None,
+        internal_context: dict[str, Any] | None = None,
+    ) -> None:
+        self.retry_after = retry_after
+        err_details = dict(details) if details else {}
+        if "retry_after_seconds" not in err_details:
+            err_details["retry_after_seconds"] = retry_after
+        super().__init__(
+            message=message,
+            code=code,
+            status_code=429,
+            details=err_details,
+            internal_context=internal_context,
+        )
+
+
+class PayloadTooLargeError(FinSignalError):
+    """Uploaded payload exceeds maximum allowable size (HTTP 413, SEC-02)."""
+
+    def __init__(
+        self,
+        message: str = "Payload exceeds maximum allowable size.",
+        code: str = "PAYLOAD_TOO_LARGE",
+        details: dict[str, Any] | None = None,
+        internal_context: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(
+            message=message,
+            code=code,
+            status_code=413,
+            details=details,
+            internal_context=internal_context,
+        )

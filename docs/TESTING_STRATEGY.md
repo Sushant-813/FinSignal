@@ -1441,7 +1441,50 @@ Phase 10 introduces 44 automated tests verifying AI summary generation, snapshot
    - Verifies `GET /api/v1/investigations/{id}/ai-summary` latest retrieval with dynamic `is_stale` check, and `GET .../history` deterministic pagination.
    - Verifies standard error envelopes and status code mapping for 400, 403, 404, 409, 502, and 504.
 
-*Empirical Verification Baseline:* Full project test suite executes **529 passing tests** (0 failures, 0 errors, 128 warnings, clean ruff lint, clean formatting, clean mypy across 113 source files). Note: This count represents the empirical verification baseline upon Phase 10 completion and is not a hardcoded permanent ceiling.
+*Empirical Verification Baseline (Phase 10):* Full project test suite executes **529 passing tests** (0 failures, 0 errors, clean ruff lint, clean formatting, clean mypy across 113 source files).
+
+---
+
+# 40.2 Phase 11 Testing, Security & Hardening Automated Test Suite
+
+Phase 11 introduces 30 automated tests verifying security hardening, resource boundaries, environment isolation, database constraints, and API defensive controls:
+
+1. **CORS Defense & Origin Isolation (`tests/api/test_cors.py` — 5 tests):**
+   - Verifies preflight `OPTIONS` requests from whitelisted origins receive `Access-Control-Allow-Origin` and `Access-Control-Allow-Methods`.
+   - Verifies requests from unlisted foreign origins are rejected without CORS headers.
+   - Verifies explicit credential isolation: `allow_credentials=True` enabled only for non-wildcard origins.
+   - Verifies client correlation tracing: `X-Request-ID` is exposed in `Access-Control-Expose-Headers`.
+
+2. **Authentication Rate Limiting Unit Tests (`tests/unit/test_auth_rate_limiter.py` — 11 tests):**
+   - Verifies rolling 60-second sliding-window attempt tracking and penalty expiration.
+   - Verifies successful login resets failed-attempt history for that key.
+   - Verifies atomic in-flight admission control (rejects requests exceeding max 2 concurrent in-flight attempts).
+   - Verifies LRU key capacity bound (`max_tracked_keys = 10_000`) and idle key eviction.
+   - Verifies deterministic eviction safety: active keys with in-flight reservations (`in_flight > 0`) are guaranteed zero eviction.
+   - Verifies saturated limiter admission rejection: when all tracked keys are active, new keys are rejected (`allowed=False, retry_after=1`) without corrupting active reservations.
+   - Verifies `finally` block safety: exceptions or cancellation cleanly release exactly one reservation.
+
+3. **Environment Isolation Unit Tests (`tests/unit/test_config.py` — 5 tests):**
+   - Verifies ambient OS environment variables lacking the `FINSIGNAL_` prefix (e.g., ambient host `DEBUG`) cannot override application settings.
+   - Verifies explicit `FINSIGNAL_` prefixed OS environment variables override settings correctly.
+   - Verifies local `.env` files retain backward compatibility for un-prefixed variables with strict Pydantic boolean parsing.
+
+4. **Database Constraint & Trigger Integration Tests (`tests/integration/test_constraints.py` — 4 tests):**
+   - Verifies Alembic migration `0008_security_hardening.py` upgrade and downgrade on PostgreSQL.
+   - Verifies composite foreign key `fk_transactions_counterparty_namespace`: attempting to insert a transaction with a counterparty account belonging to another `source_namespace` raises PostgreSQL foreign key violation `23503`.
+   - Verifies append-only immutability trigger `trg_no_update_delete_audit_events`: attempting to execute SQL `UPDATE` or `DELETE` on `audit_events` raises a database exception.
+
+5. **Bounded Streaming Ingestion & CSV Error Integration Tests (`tests/integration/test_datasets_api.py` — 5 tests):**
+   - Verifies 50 MB hard size limit on normal upload (`POST /imports`): payloads exceeding 50 MB raise `PayloadTooLargeError` returning HTTP 413.
+   - Verifies 50 MB hard size limit on recovery (`POST /imports/{id}/recover`): returns HTTP 413.
+   - Verifies transparent UTF-8 BOM (`utf-8-sig`) CSV upload parsing.
+   - Verifies malformed CSV parsing error handling: corrupted CSV syntax triggers transaction rollback and returns HTTP 422 (`CSV_PARSE_ERROR`).
+   - Verifies oversized CSV field error handling: fields exceeding `csv.field_size_limit` trigger transaction rollback and return HTTP 422 (`CSV_FIELD_SIZE_EXCEEDED`).
+
+6. **Authentication Rate Limiting API Integration Test (`tests/integration/test_auth_endpoints.py` — 1 test):**
+   - Verifies end-to-end rate limiting: 5 consecutive failed logins return HTTP 429 (`RATE_LIMIT_EXCEEDED`) with RFC-compliant `Retry-After` header.
+
+*Empirical Verification Baseline (Phase 11):* Full project test suite executes **559 passing tests** (0 failures, 0 errors, 79.56s runtime, clean ruff lint, clean formatting on 210 files, clean mypy across 199 source files).
 
 ---
 

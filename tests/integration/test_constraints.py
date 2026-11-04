@@ -688,3 +688,103 @@ def test_transaction_account_namespace_layered_enforcement(
         )
     assert exc_info.value.code == "NAMESPACE_MISMATCH"
     assert exc_info.value.status_code == 422
+
+
+def test_transaction_counterparty_namespace_composite_fk(
+    db_session: Session,
+) -> None:
+    """Verify SEC-04: Composite FK fk_transactions_counterparty_namespace enforces matching namespace."""
+    now = datetime.now(UTC)
+    # 1. Accounts in same namespace: SYNTHETIC
+    acc_from = Account(
+        source_namespace="SYNTHETIC",
+        account_type="CHECKING",
+        status="ACTIVE",
+    )
+    acc_to_same_ns = Account(
+        source_namespace="SYNTHETIC",
+        account_type="SAVINGS",
+        status="ACTIVE",
+    )
+    # Account in different namespace: CORE_BANKING
+    acc_to_diff_ns = Account(
+        source_namespace="CORE_BANKING",
+        account_type="SAVINGS",
+        status="ACTIVE",
+    )
+    db_session.add_all([acc_from, acc_to_same_ns, acc_to_diff_ns])
+    db_session.commit()
+
+    # Case A: Same namespace transfer succeeds
+    tx_valid = Transaction(
+        source_namespace="SYNTHETIC",
+        account_id=acc_from.id,
+        counterparty_account_id=acc_to_same_ns.id,
+        external_transaction_id="TX_TRANSFER_VALID_1",
+        amount=Decimal("250.00"),
+        currency="USD",
+        transaction_type="TRANSFER",
+        direction="DEBIT",
+        occurred_at=now,
+    )
+    db_session.add(tx_valid)
+    db_session.commit()
+    assert tx_valid.id is not None
+
+    # Case B: Cross-namespace counterparty transfer -> REJECTED by fk_transactions_counterparty_namespace
+    tx_cross_ns = Transaction(
+        source_namespace="SYNTHETIC",
+        account_id=acc_from.id,
+        counterparty_account_id=acc_to_diff_ns.id,  # Mismatch! acc_to_diff_ns is CORE_BANKING
+        external_transaction_id="TX_TRANSFER_INVALID_1",
+        amount=Decimal("250.00"),
+        currency="USD",
+        transaction_type="TRANSFER",
+        direction="DEBIT",
+        occurred_at=now,
+    )
+    db_session.add(tx_cross_ns)
+    with pytest.raises(IntegrityError, match="fk_transactions_counterparty_namespace"):
+        db_session.commit()
+    db_session.rollback()
+
+
+def test_audit_events_immutability_trigger(
+    db_session: Session,
+) -> None:
+    """Verify SEC-05: PostgreSQL trigger blocks UPDATE and DELETE on audit_events."""
+    from sqlalchemy import text
+
+    from finsignal.audit.models import AuditEvent
+
+    # Insert is permitted
+    event = AuditEvent(
+        action="USER_LOGIN_SUCCESS",
+        entity_type="USER",
+        metadata_={"ip": "127.0.0.1"},
+    )
+    db_session.add(event)
+    db_session.commit()
+    event_id = event.id
+
+    # UPDATE is strictly forbidden by trigger
+    with pytest.raises(
+        DBAPIError, match="audit_events records are append-only and strictly immutable"
+    ):
+        db_session.execute(
+            text("UPDATE audit_events SET action = 'TAMPERED' WHERE id = :id"),
+            {"id": event_id},
+        )
+        db_session.commit()
+    db_session.rollback()
+
+    # DELETE is strictly forbidden by trigger
+    with pytest.raises(
+        DBAPIError, match="audit_events records are append-only and strictly immutable"
+    ):
+        db_session.execute(
+            text("DELETE FROM audit_events WHERE id = :id"),
+            {"id": event_id},
+        )
+        db_session.commit()
+    db_session.rollback()

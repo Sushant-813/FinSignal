@@ -152,3 +152,15 @@ def test_tune_threshold_unattainable_budget() -> None:
 def test_tune_threshold_empty_raises() -> None:
     with pytest.raises(MLDomainError, match="Validation partition is empty"):
         ModelEvaluator.tune_threshold([], [])
+
+
+def test_evaluator_mismatched_lengths_raises() -> None:
+    with pytest.raises(MLDomainError, match="does not match labels length"):
+        ModelEvaluator.evaluate(scores=[0.5, 0.6], y_true=[1], threshold=0.5)
+
+
+def test_tune_threshold_invalid_budget_raises() -> None:
+    with pytest.raises(MLDomainError, match="max_alert_rate must be in"):
+        ModelEvaluator.tune_threshold([0.5], [1], max_alert_rate=0.0)
+    with pytest.raises(MLDomainError, match="max_alert_rate must be in"):
+        ModelEvaluator.tune_threshold([0.5], [1], max_alert_rate=1.5)

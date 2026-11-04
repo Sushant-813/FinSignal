@@ -614,11 +614,13 @@ INCONCLUSIVE
 
 ### Status
 
-`NOT STARTED`
+`HISTORICAL OUTLINE (Superseded by Section 28 completion entry)`
 
 ---
 
-# 17. Phase 10 — AI Investigation Assistant
+# 17. Phase 10 — AI Investigation Assistant *(Historical Planning Outline)*
+
+*(Note: This historical planning entry has been superseded by Section 28, which records the complete implementation and verification of Phase 10.)*
 
 ### Objective
 
@@ -665,7 +667,9 @@ Human Investigator
 
 ---
 
-# 18. Phase 11 — Testing, Security & Hardening
+# 18. Phase 11 — Testing, Security & Hardening *(Historical Planning Outline)*
+
+*(Note: This historical planning entry has been superseded by Section 30, which records the Phase 11 implementation, hardening corrections, and targeted verification.)*
 
 ### Objective
 
@@ -1475,7 +1479,50 @@ Implement the Phase 10 AI Investigation Assistant subsystem to generate structur
 
 ---
 
-# 29. Log Maintenance Rules
+# 30. 2026-11-04 — Phase 11 (Testing, Security & Hardening) Implementation & Targeted Verification
+
+**Date:** 2026-11-04  
+**Scope:** Backend & Security Hardening (Modular Monolith)  
+**Status:** In Progress (Hardening & Verification Complete; Stage A Documentation Reconciliation in Progress)
+
+### Summary of Completed Work
+
+1. **Security Hardening (SEC-01 through SEC-06):**
+   - **CORS Defense (SEC-01):** Integrated `CORSMiddleware` in `src/finsignal/main.py` with explicit origin whitelisting (`cors_origins`), methods, headers, and exposed correlation IDs (`X-Request-ID`). Configured strict credential isolation (`allow_credentials=True` only when origins are explicit and non-wildcard).
+   - **Bounded Streaming Upload & Recovery (SEC-02):** Hardened `/api/v1/datasets/upload` and `/api/v1/datasets/{import_id}/recover` against memory exhaustion. Replaced whole-file buffering with bounded 64 KB chunk streaming enforcing a strict 50 MB hard limit (`MAX_UPLOAD_SIZE_BYTES = 52_428_800`). Oversized uploads are terminated immediately and return HTTP 413 (`PayloadTooLargeError`). Integrated `utf-8-sig` stream decoding for transparent UTF-8 BOM compatibility, safely detaching file handles (`text_stream.detach()`). Wrapped CSV parsing with explicit `csv.Error` handling, ensuring malformed files rollback transactions cleanly and transition imports to `FAILED` with HTTP 422.
+   - **Environment Variable Isolation (SEC-03):** Replaced default environment parsing with custom `_FinSignalEnvSettingsSource` in `src/finsignal/core/config.py`. Prevents ambient OS environment variables (such as ambient `DEBUG`) from overriding application settings unless explicitly prefixed with `FINSIGNAL_`. Retained backward-compatible `.env` parsing for local developer environments with strict Pydantic boolean conversion.
+   - **Sliding-Window Login Rate Limiter (SEC-06):** Implemented non-blocking, thread-safe `AuthRateLimiter` (`src/finsignal/auth/limiter.py`) and integrated into `/api/v1/auth/login`. Enforces 5 failed attempts per 60 seconds per IP + normalized email pair. Implements atomic in-flight admission control (max 2 concurrent requests per key). Active keys with active reservations (`in_flight > 0`) are guaranteed protection against eviction under capacity saturation (`max_tracked_keys = 10_000`). Breached limits return HTTP 429 (`RATE_LIMIT_EXCEEDED`) with RFC-compliant `Retry-After` header.
+   - **Relational Counterparty Namespace Foreign Key (SEC-04):** Created Alembic migration `0008_security_hardening.py` adding composite foreign key constraint `fk_transactions_counterparty_namespace` (`FOREIGN KEY (counterparty_account_id, source_namespace) REFERENCES accounts(id, source_namespace) ON DELETE RESTRICT`), enforcing dataset provenance boundary isolation between transactions and counterparty accounts at the database engine level.
+   - **Audit Log Immutability Trigger (SEC-05):** Added PostgreSQL trigger `trg_no_update_delete_audit_events` and function `trg_enforce_audit_events_immutability()` in migration `0008_security_hardening.py` blocking `UPDATE` and `DELETE` operations on `audit_events`.
+
+2. **Ingestion & Feature Optimization (PERF-01 through PERF-04):**
+   - **Batched Ingestion Lookups (PERF-01):** Replaced single-row lookups with batched queries (`canonical_id = ANY(...)`) in `src/finsignal/dataset/ingestion/engine.py`.
+   - **Bounded Ingestion Caching (PERF-02):** Implemented bounded in-memory LRU caching (`max_cache_entries = 10_000`) for account, merchant, and device lookups. Added intra-batch duplicate resolution.
+   - **SQL Pushdown for Entity Counts (PERF-03/04):** Optimized entity familiarity calculations in feature repository via targeted index-backed queries.
+
+3. **ML Governance Hardening:**
+   - Deterministic tie-breaker in chronological splitting (`occurred_at ASC, str(id) ASC`) in `src/finsignal/ml/split.py`.
+   - Alert-rate budget validation guardrails in `src/finsignal/ml/evaluator.py`.
+
+4. **Quality Gates & Empirical Verification:**
+   - **Automated Test Suite:** Expanded to **559 passed tests** (0 failed, 0 errors, 79.56s).
+   - **Static Analysis:** `ruff check .` clean (0 errors), `ruff format --check .` clean (210 files formatted), `mypy src tests` clean (0 errors across 199 source files).
+   - **Database Migrations:** Verified Alembic migration tree clean (`alembic current` at `0003_account_import_namespace`, `alembic heads` at `0008_security_hardening`). Fixed deprecation warning for `path_separator = os`.
+
+### Architecture & Operational Limitations Recorded
+1. **Rate Limiter Deployment Boundary:** The login rate limiter is an in-memory, per-process implementation. Clustered or multi-worker deployments require distributed rate limiting (e.g. Redis). Client IP extraction currently reads `request.client.host`; trusted reverse proxy forwarding requires proxy middleware configuration.
+2. **Audit Trigger Defense-in-Depth:** The database trigger prevents application-level `UPDATE` and `DELETE` queries, but does not provide hardware/cryptographic WORM storage or block superuser `TRUNCATE` / table drops.
+3. **Model Artifact Pruning:** Unreferenced artifact cleanup CLI (`finsignal-admin prune-unreferenced-artifacts`) remains an unnumbered operational proposal, not yet implemented.
+4. **Performance Verification:** Ingestion batching code is implemented and verified in integration tests; formal 250k-row benchmark run is deferred to release testing.
+
+### Result & Status
+- Phase 11 implementation, hardening corrections, and targeted verification: **Completed** (559 passing tests).
+- Stage A Documentation Reconciliation: **In Progress**.
+- Next milestone: **ADR Review & Formal Phase 11 Acceptance**.
+
+---
+
+# 31. Log Maintenance Rules
 
 The project log should be updated when:
 
@@ -1501,7 +1548,7 @@ What happens next?
 
 ---
 
-# 29. Final Principle
+# 32. Final Principle
 
 The project log is a record of **engineering evolution**, not a diary of every command executed.
 

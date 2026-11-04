@@ -387,7 +387,7 @@ A transaction represents an observed financial event associated with an account.
 | `external_transaction_id` | VARCHAR(128) | No | Source transaction identifier |
 | `first_seen_import_id` | UUID | Yes | Initial import observation (FK to dataset_imports; null for standalone transactions) |
 | `account_id` | UUID | No | Canonical account associated with transaction |
-| `counterparty_account_id` | UUID | Yes | Other account for account-to-account transfers |
+| `counterparty_account_id` | UUID | Yes | Other account for transfers (composite FK `fk_transactions_counterparty_namespace` with `source_namespace` referencing `accounts(id, source_namespace)`) |
 | `merchant_id` | UUID | Yes | Merchant reference |
 | `device_id` | UUID | Yes | Device used |
 | `location_id` | UUID | Yes | Transaction location |
@@ -474,7 +474,15 @@ CONSTRAINT chk_transactions_currency_format
 
 CONSTRAINT chk_transfers_counterparty_required
     CHECK (transaction_type != 'TRANSFER' OR counterparty_account_id IS NOT NULL)
+
+-- Relational Counterparty Namespace Foreign Key (Migration 0008)
+CONSTRAINT fk_transactions_counterparty_namespace
+    FOREIGN KEY (counterparty_account_id, source_namespace)
+    REFERENCES accounts (id, source_namespace)
+    ON DELETE RESTRICT
 ```
+
+The composite foreign key `fk_transactions_counterparty_namespace` (migration `0008_security_hardening.py`) enforces strict dataset provenance isolation at the database engine level. Transactions can only reference counterparty accounts originating from the identical `source_namespace`. Migration 0008 executes an explicit preflight query asserting zero existing mismatches before applying the constraint.
 
 Conditional business rules enforced across application and domain boundaries:
 
@@ -1135,9 +1143,12 @@ AI_SUMMARY_GENERATED
 INVESTIGATION_RESOLVED
 ```
 
-Audit records should be append-oriented.
+Audit records are strictly append-only.
 
-They should not be casually updated or deleted through normal application workflows.
+Implemented in Alembic migration `0008_security_hardening.py`, immutability is enforced at the database schema layer by PostgreSQL trigger `trg_no_update_delete_audit_events` and function `trg_enforce_audit_events_immutability()`. Any SQL `UPDATE` or `DELETE` attempt executed against `audit_events` raises an immediate SQL exception.
+
+*Immutability Scope & Defense Boundary:*
+This trigger provides defense-in-depth against accidental or malicious application-level tampering. It does **not** provide hardware-level or cryptographic WORM storage, and does not prevent PostgreSQL superusers from executing `ALTER TABLE ... DISABLE TRIGGER`, `TRUNCATE`, or `DROP TABLE`. Hardened long-term compliance storage requires off-instance log streaming or append-only cloud storage.
 
 ---
 
@@ -1161,8 +1172,8 @@ merchants.location_id
 transactions.account_id
     -> accounts.id
 
-transactions.counterparty_account_id
-    -> accounts.id
+transactions.(counterparty_account_id, source_namespace)
+    -> accounts.(id, source_namespace) [fk_transactions_counterparty_namespace]
 
 transactions.merchant_id
     -> merchants.id
@@ -1726,6 +1737,7 @@ Recommended structure:
 0005_intelligence_risk_models.py (Phase 8: risk analyses & risk factors)
 0006_investigation_models.py (Phase 9)
 0007_ai_models.py (Phase 10)
+0008_security_hardening.py (Phase 11: counterparty namespace composite FK & audit events immutability trigger)
 ```
 
 Migrations are executed via Alembic with the sync `psycopg` driver using dynamic application configuration (`Settings.sync_database_url`).

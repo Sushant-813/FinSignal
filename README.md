@@ -16,7 +16,7 @@ FinSignal is built as a clean modular monolith adhering to strict domain separat
 - **Language & Runtime:** Python 3.12+ managed with `uv`
 - **API Framework:** FastAPI with strict Pydantic v2 schemas (`extra="forbid"`)
 - **Database:** PostgreSQL with asynchronous SQLAlchemy 2.0 and `asyncpg`
-- **Database Migrations:** Alembic (current head: `0007_ai_models`)
+- **Database Migrations:** Alembic (current head: `0008_security_hardening`)
 - **Authentication & Security:** Argon2id password hashing, Bearer JWT tokens, and centralized role-based access control (`ADMIN`, `ANALYST`, `INVESTIGATOR`)
 - **Mathematical Precision:** Python `Decimal` and PostgreSQL `NUMERIC(18,2)` with strict two-decimal `ROUND_HALF_UP` string serialization (`MoneyStr`)
 
@@ -24,7 +24,7 @@ FinSignal is built as a clean modular monolith adhering to strict domain separat
 
 ## Implementation Status
 
-### Completed Phases (Backend Milestones 1–10)
+### Platform Implementation Status
 
 | Phase | Module | Key Capabilities | Status |
 |:---:|---|---|:---:|
@@ -38,10 +38,10 @@ FinSignal is built as a clean modular monolith adhering to strict domain separat
 | **Phase 8** | Risk Analysis & Explainability | Deterministic hybrid risk engine ($w_{\text{ml}}=0.60, w_{\text{rule}}=0.40$), validation-anchored piecewise linear score normalization, 9 heuristic rules, 4-tier risk classification, structured factor explainability, idempotent atomic persistence, REST API endpoints | **Completed** |
 | **Phase 9** | Investigation & Evidence | Shared triage queue, role-based assignment, atomic PRIMARY transaction binding, 1-hop related transactions, append-only immutable evidence snapshots (DB trigger), 4-outcome resolution, pessimistic concurrency locks, 9 REST API endpoints | **Completed** |
 | **Phase 10** | AI Investigation Assistant | Dedicated AI domain (`src/finsignal/ai/`), two-transaction lifecycle, REPEATABLE READ snapshot isolation, CAS token fencing, expired pending recovery with atomic audit logging, dual fingerprinting (`evidence_hash`, `context_hash`), dynamic staleness detection, nonce delimiter defense-in-depth, grounding citation validation, MockAIProvider | **Completed** |
+| **Phase 11** | Testing, Security & Hardening | Configurable CORS middleware, 50 MB bounded streaming upload/recovery (HTTP 413, utf-8-sig BOM support), strict OS environment variable isolation (`FINSIGNAL_DEBUG`), in-memory sliding-window login rate limiting with active reservation safety (HTTP 429), composite counterparty namespace FK, audit events SQL immutability trigger, batched ingestion lookups, deterministic split tie-breaker | **In Progress (Hardening & Verification Complete; Stage A Documentation Reconciliation)** |
 
-### Deferred Phases
+### Upcoming Phases
 
-- **Phase 11 — Testing, Security & Hardening:** System-wide security review, integration testing, and pre-release hardening.
 - **Phase 12 — Docker, Deployment & Release:** Containerization, production deployment configuration, and Backend + ML v1.0 release.
 - **Deferred Future — Frontend Dashboard:** React, TypeScript, Vite, and Tailwind CSS client interface.
 
@@ -148,18 +148,32 @@ Phase 10 delivers structured, evidence-grounded investigation briefing summaries
 
 ---
 
+## Security & System Hardening Subsystem (Phase 11)
+
+Phase 11 establishes production-grade application security controls, bounded resource consumption, and relational integrity guarantees:
+
+- **CORS Defense & Origin Isolation:** Fastapi `CORSMiddleware` configured with explicit origin whitelisting (`cors_origins`), explicit credentials support (`allow_credentials=True` when origin is not `*`), explicit allowed methods, and exposed correlation headers (`X-Request-ID`). Wildcards with credentials are strictly forbidden. Note that CORS is a browser security policy and does not restrict non-browser HTTP clients.
+- **Bounded Streaming Ingestion & Recovery:** Multipart dataset upload (`/api/v1/datasets/upload`) and recovery (`/api/v1/datasets/{import_id}/recover`) stream chunk-by-chunk with a strict 50 MB hard limit (`MAX_UPLOAD_SIZE_BYTES = 52_428_800`). Oversized payloads are aborted early with HTTP 413 (`PayloadTooLargeError`). Upload streams decode via `utf-8-sig` (handling standard UTF-8 and UTF-8 BOM transparently) and detach underlying file streams cleanly without premature closure. Malformed CSVs or oversized fields trigger transaction rollback and fail the import cleanly with HTTP 422.
+- **Environment Isolation:** Custom Pydantic settings source isolates operating system environment variables, strictly requiring the `FINSIGNAL_` prefix (`FINSIGNAL_DEBUG`, `FINSIGNAL_SECRET_KEY`, etc.) and stripping ambient un-prefixed variables (`DEBUG`) while retaining backward-compatible `.env` file parsing for local development.
+- **Sliding-Window Login Rate Limiter (`AuthRateLimiter`):** Protects `/api/v1/auth/login` against brute-force credential stuffing with an in-memory sliding window (5 failed attempts per 60 seconds per client IP + email pair). Features non-blocking concurrency with atomic in-flight admission control (max 2 concurrent requests per key). Active keys with in-flight reservations are strictly protected against LRU eviction when reaching capacity (`max_tracked_keys = 10_000`). Breached limits return HTTP 429 (`RATE_LIMIT_EXCEEDED`) with a RFC-compliant `Retry-After` header. Note: This implementation is in-memory and per-process; horizontal multi-replica deployments require Redis or centralized rate limiting. Behind reverse proxies, IP resolution requires trusted proxy header forwarding.
+- **Relational Counterparty Namespace Foreign Key:** Alembic migration `0008_security_hardening.py` introduces composite foreign key `fk_transactions_counterparty_namespace` (`FOREIGN KEY (counterparty_account_id, source_namespace) REFERENCES accounts(id, source_namespace) ON DELETE RESTRICT`), enforcing strict namespace isolation between transactions and counterparty accounts at the database engine level.
+- **Append-Only Audit Log Immutability:** Enforced via PostgreSQL trigger `trg_no_update_delete_audit_events` on `audit_events`, raising an SQL exception on any `UPDATE` or `DELETE` attempt. Note: This provides defense-in-depth against application-level modifications; it does not constitute hardware/cryptographic WORM storage and does not prevent superuser `TRUNCATE` or table drop operations.
+- **Ingestion & Feature Optimization:** Batched canonical ID lookups (`SELECT ... WHERE canonical_id = ANY(...)`), bounded reference entity caching (`max_cache_entries = 10_000`), and deterministic tie-breaking in chronological splitting (`occurred_at ASC, str(id) ASC`).
+
+---
+
 ## Verification and Quality Gates
 
 The implementation is verified by an exhaustive automated test suite and strict type-checking:
 
 ```bash
-# Run complete test suite (529 tests)
+# Run complete test suite (559 tests)
 uv run pytest
 
 # Static analysis and linting
-uv run ruff check src tests
-uv run ruff format --check src tests
-uv run mypy src
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy src tests
 
 # Verify database migrations
 uv run alembic current

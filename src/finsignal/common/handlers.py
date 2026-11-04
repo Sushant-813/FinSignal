@@ -75,8 +75,13 @@ async def finsignal_exception_handler(
         },
     )
 
+    headers: dict[str, str] = {}
+    if hasattr(exc, "retry_after") and exc.retry_after is not None:
+        headers["Retry-After"] = str(exc.retry_after)
+
     return JSONResponse(
         status_code=exc.status_code,
+        headers=headers if headers else None,
         content={
             "error": {
                 "code": exc.code,

@@ -9,10 +9,12 @@ import csv
 import io
 import logging
 import uuid
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from finsignal.accounts.models import Account
@@ -65,7 +67,7 @@ class TransactionIngestionEngine:
         self,
         session: AsyncSession,
         dataset_import: DatasetImport,
-        csv_source: str | io.StringIO,
+        csv_source: str | io.StringIO | io.TextIOBase,
         *,
         skip_header: bool = True,
         resume_row_ordinals: set[int] | None = None,
@@ -82,30 +84,13 @@ class TransactionIngestionEngine:
         else:
             await session.flush()
 
-        # 1. Preload reference entity lookup maps for this namespace
-        acc_stmt = select(Account).where(Account.source_namespace == namespace)
-        accounts_list = (await session.execute(acc_stmt)).scalars().all()
-        account_map: dict[str, Account] = {
-            acc.external_account_id: acc
-            for acc in accounts_list
-            if acc.external_account_id is not None
-        }
-
-        merch_stmt = select(Merchant)
-        merchants_list = (await session.execute(merch_stmt)).scalars().all()
-        merchant_map: dict[str, Merchant] = {
-            m.external_merchant_id: m
-            for m in merchants_list
-            if m.external_merchant_id is not None
-        }
-
-        dev_stmt = select(Device)
-        devices_list = (await session.execute(dev_stmt)).scalars().all()
-        device_map: dict[str, Device] = {
-            d.external_device_id: d
-            for d in devices_list
-            if d.external_device_id is not None
-        }
+        # 1. Bounded on-demand reference entity caches (PERF-02)
+        account_map: dict[str, Account] = {}
+        merchant_map: dict[str, Merchant] = {}
+        device_map: dict[str, Device] = {}
+        missing_account_ids: set[str] = set()
+        missing_merchant_ids: set[str] = set()
+        missing_device_ids: set[str] = set()
 
         # Counters
         total_rows = 0
@@ -140,6 +125,8 @@ class TransactionIngestionEngine:
                 import_seen_canonical[(ns_val, acc_uuid, ext_id)] = tx_uuid
 
         if isinstance(csv_source, str):
+            if csv_source.startswith("\ufeff"):
+                csv_source = csv_source[1:]
             reader = csv.DictReader(io.StringIO(csv_source))
         else:
             reader = csv.DictReader(csv_source)
@@ -186,294 +173,421 @@ class TransactionIngestionEngine:
         row_number = 0
         batch_records: list[TransactionImportRecord] = []
         batch_errors: list[DatasetImportError] = []
+        new_transactions: list[Transaction] = []
 
-        for raw_row in reader:
-            row_number += 1
-            total_rows += 1
+        def _chunked_reader(
+            r: csv.DictReader[str], size: int
+        ) -> Iterator[list[dict[str, str]]]:
+            chunk: list[dict[str, str]] = []
+            for row in r:
+                chunk.append(row)
+                if len(chunk) >= size:
+                    yield chunk
+                    chunk = []
+            if chunk:
+                yield chunk
 
-            # Skip rows already processed in a prior partial run if resuming
-            if resume_row_ordinals is not None and row_number in resume_row_ordinals:
-                continue
+        for raw_batch in _chunked_reader(reader, self.batch_size):
+            # A. Bulk resolve missing reference entities for this batch (PERF-02)
+            needed_acc_ids: set[str] = set()
+            needed_merch_ids: set[str] = set()
+            needed_dev_ids: set[str] = set()
+            for raw_row in raw_batch:
+                aid = (raw_row.get("account_id") or "").strip()
+                if aid:
+                    needed_acc_ids.add(aid)
+                cpid = (raw_row.get("counterparty_account_id") or "").strip()
+                if cpid:
+                    needed_acc_ids.add(cpid)
+                mid = (raw_row.get("merchant_id") or "").strip()
+                if mid:
+                    needed_merch_ids.add(mid)
+                did = (raw_row.get("device_id") or "").strip()
+                if did:
+                    needed_dev_ids.add(did)
 
-            try:
-                # 2. Parse & Validate Row
-                ext_tx_id = (raw_row.get("transaction_id") or "").strip()
-                row_ns = (raw_row.get("source_namespace") or "").strip()
-                ext_acc_id = (raw_row.get("account_id") or "").strip()
-                ext_cp_id = (
-                    raw_row.get("counterparty_account_id") or ""
-                ).strip() or None
-                ext_merch_id = (raw_row.get("merchant_id") or "").strip() or None
-                ext_dev_id = (raw_row.get("device_id") or "").strip() or None
+            fetch_acc = (needed_acc_ids - set(account_map.keys())) - missing_account_ids
+            if fetch_acc:
+                acc_stmt = select(Account).where(
+                    Account.source_namespace == namespace,
+                    Account.external_account_id.in_(fetch_acc),
+                )
+                for a in (await session.execute(acc_stmt)).scalars():
+                    if a.external_account_id:
+                        account_map[a.external_account_id] = a
+                for aid in fetch_acc:
+                    if aid not in account_map:
+                        missing_account_ids.add(aid)
 
-                amount_str = (raw_row.get("amount") or "").strip()
-                currency = (raw_row.get("currency") or "").strip()
-                tx_type = (raw_row.get("transaction_type") or "").strip()
-                direction = (raw_row.get("direction") or "").strip()
-                category = (raw_row.get("category") or "").strip() or None
-                payment_method = (raw_row.get("payment_method") or "").strip() or None
-                channel = (raw_row.get("channel") or "").strip() or None
-                occurred_str = (raw_row.get("occurred_at") or "").strip()
+            fetch_merch = (
+                needed_merch_ids - set(merchant_map.keys())
+            ) - missing_merchant_ids
+            if fetch_merch:
+                merch_stmt = select(Merchant).where(
+                    Merchant.external_merchant_id.in_(fetch_merch)
+                )
+                for m in (await session.execute(merch_stmt)).scalars():
+                    if m.external_merchant_id:
+                        merchant_map[m.external_merchant_id] = m
+                for mid in fetch_merch:
+                    if mid not in merchant_map:
+                        missing_merchant_ids.add(mid)
 
-                if not ext_tx_id or not row_ns or not ext_acc_id:
-                    raise ValueError(
-                        "Missing essential identifier (transaction_id, source_namespace, or account_id)."
-                    )
+            fetch_dev = (needed_dev_ids - set(device_map.keys())) - missing_device_ids
+            if fetch_dev:
+                dev_stmt = select(Device).where(
+                    Device.external_device_id.in_(fetch_dev)
+                )
+                for d in (await session.execute(dev_stmt)).scalars():
+                    if d.external_device_id:
+                        device_map[d.external_device_id] = d
+                for did in fetch_dev:
+                    if did not in device_map:
+                        missing_device_ids.add(did)
 
-                # Validate namespace consistency between row and import
-                if row_ns != namespace:
-                    raise ValueError(
-                        f"Row namespace '{row_ns}' does not match import namespace '{namespace}'."
-                    )
+            # Evict oldest keys if cache grows excessively
+            if len(account_map) > 20000:
+                for k in list(account_map.keys())[:10000]:
+                    del account_map[k]
 
-                # Resolve Account
-                account = account_map.get(ext_acc_id)
-                if account is None:
-                    raise ValueError(
-                        f"Referenced account '{ext_acc_id}' not found in namespace '{namespace}'."
-                    )
+            # B. Parse and validate rows in this batch
+            valid_candidates: list[
+                tuple[
+                    int,
+                    dict[str, Any],
+                    dict[str, Any],
+                    tuple[str, uuid.UUID, str],
+                    tuple[uuid.UUID, str],
+                ]
+            ] = []
+            intra_batch_duplicates: list[
+                tuple[int, str, tuple[str, uuid.UUID, str]]
+            ] = []
+            batch_first_seen: set[tuple[str, uuid.UUID, str]] = set()
 
-                # Enforce layered namespace validation
-                validate_transaction_account_namespace(account.source_namespace, row_ns)
+            for raw_row in raw_batch:
+                row_number += 1
+                total_rows += 1
 
-                # Resolve Counterparty Account if transfer
-                cp_account_id: uuid.UUID | None = None
-                if ext_cp_id:
-                    cp_account = account_map.get(ext_cp_id)
-                    if cp_account is None:
-                        raise ValueError(
-                            f"Counterparty account '{ext_cp_id}' not found in namespace '{namespace}'."
-                        )
-                    if cp_account.id == account.id:
-                        raise ValueError(
-                            f"Self-transfer forbidden: account matches counterparty '{ext_cp_id}'."
-                        )
-                    cp_account_id = cp_account.id
-                elif tx_type == "TRANSFER":
-                    raise ValueError(
-                        "Transfer transaction requires a valid counterparty_account_id."
-                    )
-
-                # Resolve Merchant
-                merchant_uuid: uuid.UUID | None = None
-                if ext_merch_id and ext_merch_id in merchant_map:
-                    merchant_uuid = merchant_map[ext_merch_id].id
-
-                # Resolve Device
-                device_uuid: uuid.UUID | None = None
-                if ext_dev_id and ext_dev_id in device_map:
-                    device_uuid = device_map[ext_dev_id].id
-
-                # Resolve Location (from merchant location or account home location)
-                location_uuid: uuid.UUID | None = None
-                if ext_merch_id and ext_merch_id in merchant_map:
-                    location_uuid = merchant_map[ext_merch_id].location_id
-                if location_uuid is None:
-                    location_uuid = account.home_location_id
-
-                # Parse Amount
-                try:
-                    amount = Decimal(amount_str).quantize(Decimal("0.01"))
-                    if amount <= Decimal("0.00"):
-                        raise ValueError("Amount must be positive.")
-                except Exception as err:
-                    raise ValueError(
-                        f"Invalid monetary amount '{amount_str}': {err}"
-                    ) from err
-
-                # Parse occurred_at
-                try:
-                    occurred_at = datetime.fromisoformat(occurred_str)
-                    if occurred_at.tzinfo is None:
-                        occurred_at = occurred_at.replace(tzinfo=UTC)
-                except Exception as err:
-                    raise ValueError(
-                        f"Invalid ISO 8601 occurred_at '{occurred_str}': {err}"
-                    ) from err
-
-                # Compute canonical row hash for provenance
-                canonical_dict = {
-                    "source_namespace": namespace,
-                    "external_transaction_id": ext_tx_id,
-                    "account_id": account.id,
-                    "counterparty_account_id": cp_account_id,
-                    "merchant_id": merchant_uuid,
-                    "device_id": device_uuid,
-                    "location_id": location_uuid,
-                    "occurred_at": occurred_at,
-                    "amount": amount,
-                    "currency": currency,
-                    "transaction_type": tx_type,
-                    "direction": direction,
-                    "category": category,
-                    "payment_method": payment_method,
-                    "channel": channel,
-                }
-                row_hash = compute_canonical_row_hash(canonical_dict)
-
-                # 3. Canonical Matching & Duplicate Check
-                canonical_key = (namespace, account.id, ext_tx_id)
-
-                # Case A: Duplicate within the same import attempt
-                if canonical_key in import_seen_canonical:
-                    duplicate_in_import_count += 1
-                    valid_rows += 1
-                    batch_records.append(
-                        TransactionImportRecord(
-                            dataset_import_id=import_id,
-                            source_row_number=row_number,
-                            transaction_id=import_seen_canonical[canonical_key],
-                            row_hash=row_hash,
-                            outcome="DUPLICATE_IN_IMPORT",
-                        )
-                    )
+                # Skip rows already processed in a prior partial run if resuming
+                if (
+                    resume_row_ordinals is not None
+                    and row_number in resume_row_ordinals
+                ):
                     continue
 
-                # Query existing canonical transaction from database
-                existing_tx_stmt = select(Transaction).where(
-                    Transaction.source_namespace == namespace,
-                    Transaction.account_id == account.id,
-                    Transaction.external_transaction_id == ext_tx_id,
-                )
-                existing_tx = (
-                    await session.execute(existing_tx_stmt)
-                ).scalar_one_or_none()
+                try:
+                    ext_tx_id = (raw_row.get("transaction_id") or "").strip()
+                    row_ns = (raw_row.get("source_namespace") or "").strip()
+                    ext_acc_id = (raw_row.get("account_id") or "").strip()
+                    ext_cp_id = (
+                        raw_row.get("counterparty_account_id") or ""
+                    ).strip() or None
+                    ext_merch_id = (raw_row.get("merchant_id") or "").strip() or None
+                    ext_dev_id = (raw_row.get("device_id") or "").strip() or None
 
-                if existing_tx is not None:
-                    # Canonical match found! Evaluate the 7 core material fields
-                    material_match = (
-                        existing_tx.account_id == account.id
-                        and existing_tx.amount == amount
-                        and existing_tx.currency == currency
-                        and existing_tx.occurred_at == occurred_at
-                        and existing_tx.transaction_type == tx_type
-                        and existing_tx.direction == direction
-                        and existing_tx.counterparty_account_id == cp_account_id
+                    amount_str = (raw_row.get("amount") or "").strip()
+                    currency = (raw_row.get("currency") or "").strip()
+                    tx_type = (raw_row.get("transaction_type") or "").strip()
+                    direction = (raw_row.get("direction") or "").strip()
+                    category = (raw_row.get("category") or "").strip() or None
+                    payment_method = (
+                        raw_row.get("payment_method") or ""
+                    ).strip() or None
+                    channel = (raw_row.get("channel") or "").strip() or None
+                    occurred_str = (raw_row.get("occurred_at") or "").strip()
+
+                    if not ext_tx_id or not row_ns or not ext_acc_id:
+                        raise ValueError(
+                            "Missing essential identifier (transaction_id, source_namespace, or account_id)."
+                        )
+
+                    if row_ns != namespace:
+                        raise ValueError(
+                            f"Row namespace '{row_ns}' does not match import namespace '{namespace}'."
+                        )
+
+                    account = account_map.get(ext_acc_id)
+                    if account is None:
+                        raise ValueError(
+                            f"Referenced account '{ext_acc_id}' not found in namespace '{namespace}'."
+                        )
+
+                    validate_transaction_account_namespace(
+                        account.source_namespace, row_ns
                     )
 
-                    if material_match:
-                        # Case B: Contextual Metadata Divergence -> MATCHED_EXISTING
-                        # Preserve immutable canonical transaction facts
-                        matched_existing_count += 1
+                    cp_account_id: uuid.UUID | None = None
+                    if ext_cp_id:
+                        cp_account = account_map.get(ext_cp_id)
+                        if cp_account is None:
+                            raise ValueError(
+                                f"Counterparty account '{ext_cp_id}' not found in namespace '{namespace}'."
+                            )
+                        if cp_account.id == account.id:
+                            raise ValueError(
+                                f"Self-transfer forbidden: account matches counterparty '{ext_cp_id}'."
+                            )
+                        cp_account_id = cp_account.id
+                    elif tx_type == "TRANSFER":
+                        raise ValueError(
+                            "Transfer transaction requires a valid counterparty_account_id."
+                        )
+
+                    merchant_uuid: uuid.UUID | None = None
+                    if ext_merch_id and ext_merch_id in merchant_map:
+                        merchant_uuid = merchant_map[ext_merch_id].id
+
+                    device_uuid: uuid.UUID | None = None
+                    if ext_dev_id and ext_dev_id in device_map:
+                        device_uuid = device_map[ext_dev_id].id
+
+                    location_uuid: uuid.UUID | None = None
+                    if ext_merch_id and ext_merch_id in merchant_map:
+                        location_uuid = merchant_map[ext_merch_id].location_id
+                    if location_uuid is None:
+                        location_uuid = account.home_location_id
+
+                    try:
+                        amount = Decimal(amount_str).quantize(Decimal("0.01"))
+                        if amount <= Decimal("0.00"):
+                            raise ValueError("Amount must be positive.")
+                    except Exception as err:
+                        raise ValueError(
+                            f"Invalid monetary amount '{amount_str}': {err}"
+                        ) from err
+
+                    try:
+                        occurred_at = datetime.fromisoformat(occurred_str)
+                        if occurred_at.tzinfo is None:
+                            occurred_at = occurred_at.replace(tzinfo=UTC)
+                    except Exception as err:
+                        raise ValueError(
+                            f"Invalid ISO 8601 occurred_at '{occurred_str}': {err}"
+                        ) from err
+
+                    canonical_dict = {
+                        "source_namespace": namespace,
+                        "external_transaction_id": ext_tx_id,
+                        "account_id": account.id,
+                        "counterparty_account_id": cp_account_id,
+                        "merchant_id": merchant_uuid,
+                        "device_id": device_uuid,
+                        "location_id": location_uuid,
+                        "occurred_at": occurred_at,
+                        "amount": amount,
+                        "currency": currency,
+                        "transaction_type": tx_type,
+                        "direction": direction,
+                        "category": category,
+                        "payment_method": payment_method,
+                        "channel": channel,
+                    }
+                    row_hash = compute_canonical_row_hash(canonical_dict)
+                    canonical_key = (namespace, account.id, ext_tx_id)
+
+                    if canonical_key in import_seen_canonical:
+                        duplicate_in_import_count += 1
                         valid_rows += 1
-                        import_seen_canonical[canonical_key] = existing_tx.id
                         batch_records.append(
                             TransactionImportRecord(
                                 dataset_import_id=import_id,
                                 source_row_number=row_number,
-                                transaction_id=existing_tx.id,
+                                transaction_id=import_seen_canonical[canonical_key],
                                 row_hash=row_hash,
-                                outcome="MATCHED_EXISTING",
+                                outcome="DUPLICATE_IN_IMPORT",
                             )
                         )
-                    else:
-                        # Case C: Core Material Conflict -> QUARANTINED
-                        quarantined_count += 1
-                        invalid_rows += 1
-                        error_count += 1
-                        import_seen_canonical[canonical_key] = None
-                        batch_records.append(
-                            TransactionImportRecord(
-                                dataset_import_id=import_id,
-                                source_row_number=row_number,
-                                transaction_id=None,
-                                row_hash=row_hash,
-                                outcome="QUARANTINED",
-                            )
+                        continue
+
+                    if canonical_key in batch_first_seen:
+                        intra_batch_duplicates.append(
+                            (row_number, row_hash, canonical_key)
                         )
-                        batch_errors.append(
-                            DatasetImportError(
-                                dataset_import_id=import_id,
-                                row_number=row_number,
-                                field_name="amount",
-                                error_code="MATERIAL_CONFLICT",
-                                message=(
-                                    f"Row collides with existing canonical transaction '{ext_tx_id}' "
-                                    "but core material fields differ. Quarantined."
-                                ),
-                            )
+                        continue
+
+                    batch_first_seen.add(canonical_key)
+
+                    parsed_dict = {
+                        "ext_tx_id": ext_tx_id,
+                        "account_id": account.id,
+                        "cp_account_id": cp_account_id,
+                        "merchant_uuid": merchant_uuid,
+                        "device_uuid": device_uuid,
+                        "location_uuid": location_uuid,
+                        "occurred_at": occurred_at,
+                        "amount": amount,
+                        "currency": currency,
+                        "tx_type": tx_type,
+                        "direction": direction,
+                        "category": category,
+                        "payment_method": payment_method,
+                        "channel": channel,
+                        "row_hash": row_hash,
+                    }
+                    valid_candidates.append(
+                        (
+                            row_number,
+                            parsed_dict,
+                            canonical_dict,
+                            canonical_key,
+                            (account.id, ext_tx_id),
                         )
-                else:
-                    # Case D: New Canonical Transaction -> INSERTED
-                    new_txn = Transaction(
-                        source_namespace=namespace,
-                        external_transaction_id=ext_tx_id,
-                        first_seen_import_id=import_id,
-                        account_id=account.id,
-                        counterparty_account_id=cp_account_id,
-                        merchant_id=merchant_uuid,
-                        device_id=device_uuid,
-                        location_id=location_uuid,
-                        occurred_at=occurred_at,
-                        amount=amount,
-                        currency=currency,
-                        transaction_type=tx_type,
-                        direction=direction,
-                        category=category,
-                        payment_method=payment_method,
-                        channel=channel,
                     )
-                    session.add(new_txn)
-                    await session.flush()
 
-                    inserted_count += 1
-                    valid_rows += 1
-                    import_seen_canonical[canonical_key] = new_txn.id
-
+                except Exception as row_err:
+                    rejected_count += 1
+                    invalid_rows += 1
+                    error_count += 1
                     batch_records.append(
                         TransactionImportRecord(
                             dataset_import_id=import_id,
                             source_row_number=row_number,
-                            transaction_id=new_txn.id,
-                            row_hash=row_hash,
-                            outcome="INSERTED",
+                            transaction_id=None,
+                            row_hash=None,
+                            outcome="REJECTED",
+                        )
+                    )
+                    batch_errors.append(
+                        DatasetImportError(
+                            dataset_import_id=import_id,
+                            row_number=row_number,
+                            field_name=None,
+                            error_code="VALIDATION_ERROR",
+                            message=str(row_err)[:250],
                         )
                     )
 
-            except Exception as row_err:
-                # Case E: Rejected / Malformed Source Row
-                rejected_count += 1
-                invalid_rows += 1
-                error_count += 1
+            # C. Batch query existing transactions for all valid candidates (PERF-01)
+            if valid_candidates:
+                needed_pairs = list({c[4] for c in valid_candidates})
+                existing_tx_map: dict[tuple[uuid.UUID, str], Transaction] = {}
+                for chunk_start in range(0, len(needed_pairs), 2000):
+                    chunk_keys = needed_pairs[chunk_start : chunk_start + 2000]
+                    tx_stmt = select(Transaction).where(
+                        Transaction.source_namespace == namespace,
+                        tuple_(
+                            Transaction.account_id, Transaction.external_transaction_id
+                        ).in_(chunk_keys),
+                    )
+                    for tx in (await session.execute(tx_stmt)).scalars():
+                        existing_tx_map[(tx.account_id, tx.external_transaction_id)] = (
+                            tx
+                        )
+
+                for row_num, p, _c_dict, c_key, pair in valid_candidates:
+                    existing_tx = existing_tx_map.get(pair)
+                    if existing_tx is not None:
+                        material_match = (
+                            existing_tx.account_id == p["account_id"]
+                            and existing_tx.amount == p["amount"]
+                            and existing_tx.currency == p["currency"]
+                            and existing_tx.occurred_at == p["occurred_at"]
+                            and existing_tx.transaction_type == p["tx_type"]
+                            and existing_tx.direction == p["direction"]
+                            and existing_tx.counterparty_account_id
+                            == p["cp_account_id"]
+                        )
+                        if material_match:
+                            matched_existing_count += 1
+                            valid_rows += 1
+                            import_seen_canonical[c_key] = existing_tx.id
+                            batch_records.append(
+                                TransactionImportRecord(
+                                    dataset_import_id=import_id,
+                                    source_row_number=row_num,
+                                    transaction_id=existing_tx.id,
+                                    row_hash=p["row_hash"],
+                                    outcome="MATCHED_EXISTING",
+                                )
+                            )
+                        else:
+                            quarantined_count += 1
+                            invalid_rows += 1
+                            error_count += 1
+                            import_seen_canonical[c_key] = None
+                            batch_records.append(
+                                TransactionImportRecord(
+                                    dataset_import_id=import_id,
+                                    source_row_number=row_num,
+                                    transaction_id=None,
+                                    row_hash=p["row_hash"],
+                                    outcome="QUARANTINED",
+                                )
+                            )
+                            batch_errors.append(
+                                DatasetImportError(
+                                    dataset_import_id=import_id,
+                                    row_number=row_num,
+                                    field_name="amount",
+                                    error_code="MATERIAL_CONFLICT",
+                                    message=(
+                                        f"Row collides with existing canonical transaction '{p['ext_tx_id']}' "
+                                        "but core material fields differ. Quarantined."
+                                    ),
+                                )
+                            )
+                    else:
+                        new_txn = Transaction(
+                            id=uuid.uuid4(),
+                            source_namespace=namespace,
+                            external_transaction_id=p["ext_tx_id"],
+                            first_seen_import_id=import_id,
+                            account_id=p["account_id"],
+                            counterparty_account_id=p["cp_account_id"],
+                            merchant_id=p["merchant_uuid"],
+                            device_id=p["device_uuid"],
+                            location_id=p["location_uuid"],
+                            occurred_at=p["occurred_at"],
+                            amount=p["amount"],
+                            currency=p["currency"],
+                            transaction_type=p["tx_type"],
+                            direction=p["direction"],
+                            category=p["category"],
+                            payment_method=p["payment_method"],
+                            channel=p["channel"],
+                        )
+                        new_transactions.append(new_txn)
+                        inserted_count += 1
+                        valid_rows += 1
+                        import_seen_canonical[c_key] = new_txn.id
+                        batch_records.append(
+                            TransactionImportRecord(
+                                dataset_import_id=import_id,
+                                source_row_number=row_num,
+                                transaction_id=new_txn.id,
+                                row_hash=p["row_hash"],
+                                outcome="INSERTED",
+                            )
+                        )
+
+            for dup_row_num, dup_row_hash, dup_c_key in intra_batch_duplicates:
+                duplicate_in_import_count += 1
+                valid_rows += 1
                 batch_records.append(
                     TransactionImportRecord(
                         dataset_import_id=import_id,
-                        source_row_number=row_number,
-                        transaction_id=None,
-                        row_hash=None,
-                        outcome="REJECTED",
-                    )
-                )
-                batch_errors.append(
-                    DatasetImportError(
-                        dataset_import_id=import_id,
-                        row_number=row_number,
-                        field_name=None,
-                        error_code="VALIDATION_ERROR",
-                        message=str(row_err)[:250],
+                        source_row_number=dup_row_num,
+                        transaction_id=import_seen_canonical.get(dup_c_key),
+                        row_hash=dup_row_hash,
+                        outcome="DUPLICATE_IN_IMPORT",
                     )
                 )
 
-            # Flush batch
-            if len(batch_records) >= self.batch_size:
+            # Flush batch to database
+            if new_transactions:
+                session.add_all(new_transactions)
+            if batch_records:
                 session.add_all(batch_records)
+            if batch_errors:
                 session.add_all(batch_errors)
-                if self.commit_per_batch:
-                    await session.commit()
-                else:
-                    await session.flush()
-                batch_records.clear()
-                batch_errors.clear()
-
-        # Flush any remaining items in final batch
-        if batch_records:
-            session.add_all(batch_records)
-        if batch_errors:
-            session.add_all(batch_errors)
-        if self.commit_per_batch:
-            await session.commit()
-        else:
-            await session.flush()
+            if self.commit_per_batch:
+                await session.commit()
+            else:
+                await session.flush()
+            new_transactions.clear()
+            batch_records.clear()
+            batch_errors.clear()
 
         # Update DatasetImport summary counters directly from durable provenance records
         outcome_stmt = (
@@ -543,7 +657,7 @@ class TransactionIngestionEngine:
         self,
         session: AsyncSession,
         dataset_import: DatasetImport,
-        csv_source: str | io.StringIO,
+        csv_source: str | io.StringIO | io.TextIOBase,
     ) -> IngestionSummary:
         """Durable row-level recovery for interrupted or failed imports."""
         if dataset_import.status == "COMPLETED":

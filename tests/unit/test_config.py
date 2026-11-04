@@ -1,5 +1,7 @@
 """Unit tests for configuration management."""
 
+from pathlib import Path
+
 import pytest
 from pydantic import SecretStr, ValidationError
 
@@ -342,3 +344,116 @@ def test_ai_settings_validation_bounds() -> None:
             ai_pending_timeout_seconds=301,
             _env_file=None,
         )
+
+
+def test_settings_debug_collision_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify SEC-03: host DEBUG=release and DEBUG=debug are ignored from OS env, FINSIGNAL_DEBUG controls debug."""
+    # 1. Host-level toolchain collision: DEBUG=release is ignored -> debug=False
+    monkeypatch.setenv("DEBUG", "release")
+    monkeypatch.delenv("FINSIGNAL_DEBUG", raising=False)
+    s1 = Settings(database_password=SecretStr("pw"), _env_file=None)
+    assert s1.debug is False
+
+    # 2. Host-level toolchain collision: DEBUG=debug is ignored -> debug=False
+    monkeypatch.setenv("DEBUG", "debug")
+    s2 = Settings(database_password=SecretStr("pw"), _env_file=None)
+    assert s2.debug is False
+
+    # 3. Explicit FINSIGNAL_DEBUG=true enables debug
+    monkeypatch.setenv("FINSIGNAL_DEBUG", "true")
+    s3 = Settings(database_password=SecretStr("pw"), _env_file=None)
+    assert s3.debug is True
+
+    # 4. Explicit FINSIGNAL_DEBUG=false disables debug
+    monkeypatch.setenv("FINSIGNAL_DEBUG", "false")
+    s4 = Settings(database_password=SecretStr("pw"), _env_file=None)
+    assert s4.debug is False
+
+    # 5. Invalid explicit FINSIGNAL_DEBUG fails validation
+    monkeypatch.setenv("FINSIGNAL_DEBUG", "invalid_banana")
+    with pytest.raises(ValidationError):
+        Settings(database_password=SecretStr("pw"), _env_file=None)
+
+
+def test_settings_dotenv_legacy_debug_and_precedence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Verify SEC-03: Legacy .env DEBUG works, and OS env / explicit kwargs follow expected precedence."""
+    # Create real .env file with legacy DEBUG=true
+    env_file = tmp_path / ".env.test"
+    env_file.write_text(
+        "DEBUG=true\nDATABASE_PASSWORD=from-dotenv-pw\n", encoding="utf-8"
+    )
+
+    # Clean OS environment
+    monkeypatch.delenv("DEBUG", raising=False)
+    monkeypatch.delenv("FINSIGNAL_DEBUG", raising=False)
+    monkeypatch.delenv("DATABASE_PASSWORD", raising=False)
+    monkeypatch.delenv("POSTGRES_PASSWORD", raising=False)
+    monkeypatch.delenv("FINSIGNAL_DATABASE_PASSWORD", raising=False)
+
+    # 1. Loads DEBUG=true from .env file
+    s1 = Settings(_env_file=env_file)
+    assert s1.debug is True
+    assert s1.database_password.get_secret_value() == "from-dotenv-pw"
+
+    # 2. OS FINSIGNAL_DEBUG=false overrides .env DEBUG=true
+    monkeypatch.setenv("FINSIGNAL_DEBUG", "false")
+    s2 = Settings(_env_file=env_file)
+    assert s2.debug is False
+
+    # 3. Host-level OS DEBUG=release does NOT override .env DEBUG=true (it is ignored from OS env)
+    monkeypatch.delenv("FINSIGNAL_DEBUG", raising=False)
+    monkeypatch.setenv("DEBUG", "release")
+    s3 = Settings(_env_file=env_file)
+    assert s3.debug is True
+
+    # 4. Explicit init argument overrides both OS env and .env
+    s4 = Settings(debug=False, _env_file=env_file)
+    assert s4.debug is False
+
+
+def test_settings_finsignal_prefix_and_unprefixed_compatibility(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify FINSIGNAL_* aliases work and unprefixed .env vars remain compatible."""
+    monkeypatch.setenv("FINSIGNAL_APP_NAME", "FinSignal Prefixed")
+    monkeypatch.setenv("FINSIGNAL_DATABASE_HOST", "prefixed-host")
+    monkeypatch.setenv("FINSIGNAL_DATABASE_PASSWORD", "prefixed-pw")
+    monkeypatch.setenv(
+        "FINSIGNAL_CORS_ORIGINS", "http://app.example.com,http://admin.example.com"
+    )
+
+    settings = Settings(_env_file=None)
+    assert settings.app_name == "FinSignal Prefixed"
+    assert settings.database_host == "prefixed-host"
+    assert settings.database_password.get_secret_value() == "prefixed-pw"
+    assert settings.cors_origins == [
+        "http://app.example.com",
+        "http://admin.example.com",
+    ]
+
+
+def test_settings_cors_origins_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify CORS origins parses list, comma-separated string, or JSON list."""
+    # Comma-separated
+    s1 = Settings(
+        database_password=SecretStr("pw"),
+        cors_origins="http://localhost:3000, https://dashboard.finsignal.com",
+        _env_file=None,
+    )
+    assert s1.cors_origins == [
+        "http://localhost:3000",
+        "https://dashboard.finsignal.com",
+    ]
+
+    # JSON list string
+    s2 = Settings(
+        database_password=SecretStr("pw"),
+        cors_origins='["http://localhost:3000", "https://api.finsignal.com"]',
+        _env_file=None,
+    )
+    assert s2.cors_origins == [
+        "http://localhost:3000",
+        "https://api.finsignal.com",
+    ]

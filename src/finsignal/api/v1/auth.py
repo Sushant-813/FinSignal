@@ -2,10 +2,15 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from finsignal.auth.dependencies import get_auth_service, get_current_user
+from finsignal.auth.limiter import (
+    LoginRateLimiter,
+    default_login_rate_limiter,
+    get_login_rate_limiter,
+)
 from finsignal.auth.schemas import (
     LoginRequest,
     LogoutResponse,
@@ -14,8 +19,10 @@ from finsignal.auth.schemas import (
     UserResponse,
 )
 from finsignal.auth.service import AuthService
+from finsignal.common.exceptions import AuthenticationError, RateLimitError
 from finsignal.core.database import get_db_session
 from finsignal.users.models import User
+from finsignal.users.repository import normalize_email
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -40,6 +47,9 @@ async def register(
     return await auth_service.register(session=session, request=request)
 
 
+_DUMMY_REQUEST = Request({"type": "http", "client": ("127.0.0.1", 12345)})
+
+
 @router.post(
     "/login",
     response_model=TokenResponse,
@@ -50,13 +60,49 @@ async def login(
     request: LoginRequest,
     session: Annotated[AsyncSession, Depends(get_db_session)],
     auth_service: Annotated[AuthService, Depends(get_auth_service)],
+    raw_request: Request = _DUMMY_REQUEST,
+    rate_limiter: Annotated[
+        LoginRateLimiter, Depends(get_login_rate_limiter)
+    ] = default_login_rate_limiter,
 ) -> TokenResponse:
     """Authenticate email and password credentials, returning a signed JWT access token.
 
     Uses Argon2id password verification and dummy hash verification for non-existent
     users to defend against timing attacks. Inactive accounts are rejected.
+    Enforces in-memory sliding-window rate limiting (SEC-06) to defend against brute force attacks.
     """
-    return await auth_service.login(session=session, request=request)
+    limiter = rate_limiter or default_login_rate_limiter
+    client_ip = (
+        raw_request.client.host if raw_request and raw_request.client else "unknown"
+    )
+    normalized_email = normalize_email(request.email)
+    rate_key = f"{client_ip}:{normalized_email}"
+
+    # 1. Acquire admission reservation (prevents check-then-record race across concurrent requests)
+    status_check = limiter.acquire(rate_key)
+    if not status_check.allowed:
+        raise RateLimitError(
+            retry_after=status_check.retry_after,
+            details={"retry_after_seconds": status_check.retry_after},
+        )
+
+    # 2. Attempt credential verification with guaranteed reservation lifecycle handling
+    auth_success = False
+    auth_failed = False
+    try:
+        token_resp = await auth_service.login(session=session, request=request)
+        auth_success = True
+        return token_resp
+    except AuthenticationError:
+        auth_failed = True
+        limiter.record_failure(rate_key)
+        raise
+    finally:
+        if auth_success:
+            limiter.record_success(rate_key)
+        elif not auth_failed:
+            # Unexpected exception (e.g. database error, cancellation)
+            limiter.release_reservation(rate_key)
 
 
 @router.get(

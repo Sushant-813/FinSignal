@@ -227,49 +227,71 @@ class FeatureRepository:
         )
         tot_count: int = (await session.execute(tot_stmt, params)).scalar_one()
 
-        # 3. Entity frequencies across lifetime history
+        # 3. Entity frequencies across lifetime history pushed down to SQL aggregates (PERF-03)
         ent_stmt = text(
             """
             SELECT
-                device_id,
-                merchant_id,
-                location_id,
-                category
-            FROM transactions
-            WHERE account_id = :account_id
-              AND (
-                  occurred_at < :eval_occurred_at
-                  OR (occurred_at = :eval_occurred_at AND id < :eval_id)
-              );
+                (
+                    SELECT COALESCE(jsonb_object_agg(device_id::text, cnt), '{}'::jsonb)
+                    FROM (
+                        SELECT device_id, COUNT(*) AS cnt
+                        FROM transactions
+                        WHERE account_id = :account_id
+                          AND (occurred_at < :eval_occurred_at OR (occurred_at = :eval_occurred_at AND id < :eval_id))
+                          AND device_id IS NOT NULL
+                        GROUP BY device_id
+                    ) sub_d
+                ) AS device_counts,
+                (
+                    SELECT COALESCE(jsonb_object_agg(merchant_id::text, cnt), '{}'::jsonb)
+                    FROM (
+                        SELECT merchant_id, COUNT(*) AS cnt
+                        FROM transactions
+                        WHERE account_id = :account_id
+                          AND (occurred_at < :eval_occurred_at OR (occurred_at = :eval_occurred_at AND id < :eval_id))
+                          AND merchant_id IS NOT NULL
+                        GROUP BY merchant_id
+                    ) sub_m
+                ) AS merchant_counts,
+                (
+                    SELECT COALESCE(jsonb_object_agg(location_id::text, cnt), '{}'::jsonb)
+                    FROM (
+                        SELECT location_id, COUNT(*) AS cnt
+                        FROM transactions
+                        WHERE account_id = :account_id
+                          AND (occurred_at < :eval_occurred_at OR (occurred_at = :eval_occurred_at AND id < :eval_id))
+                          AND location_id IS NOT NULL
+                        GROUP BY location_id
+                    ) sub_l
+                ) AS location_counts,
+                (
+                    SELECT COALESCE(jsonb_agg(DISTINCT category), '[]'::jsonb)
+                    FROM transactions
+                    WHERE account_id = :account_id
+                      AND (occurred_at < :eval_occurred_at OR (occurred_at = :eval_occurred_at AND id < :eval_id))
+                      AND category IS NOT NULL
+                ) AS categories;
             """
         )
-        ent_rows = (await session.execute(ent_stmt, params)).fetchall()
+        ent_res = (await session.execute(ent_stmt, params)).mappings().one()
 
-        seen_devices: set[uuid.UUID] = set()
-        seen_merchants: set[uuid.UUID] = set()
-        seen_locations: set[uuid.UUID] = set()
-        seen_categories: set[str] = set()
+        raw_device_counts = ent_res["device_counts"] or {}
+        device_tx_counts: dict[uuid.UUID, int] = {
+            uuid.UUID(k): int(v) for k, v in raw_device_counts.items()
+        }
 
-        device_tx_counts: dict[uuid.UUID, int] = {}
-        merchant_tx_counts: dict[uuid.UUID, int] = {}
-        location_tx_counts: dict[uuid.UUID, int] = {}
+        raw_merchant_counts = ent_res["merchant_counts"] or {}
+        merchant_tx_counts: dict[uuid.UUID, int] = {
+            uuid.UUID(k): int(v) for k, v in raw_merchant_counts.items()
+        }
 
-        for r in ent_rows:
-            if r.device_id is not None:
-                seen_devices.add(r.device_id)
-                device_tx_counts[r.device_id] = device_tx_counts.get(r.device_id, 0) + 1
-            if r.merchant_id is not None:
-                seen_merchants.add(r.merchant_id)
-                merchant_tx_counts[r.merchant_id] = (
-                    merchant_tx_counts.get(r.merchant_id, 0) + 1
-                )
-            if r.location_id is not None:
-                seen_locations.add(r.location_id)
-                location_tx_counts[r.location_id] = (
-                    location_tx_counts.get(r.location_id, 0) + 1
-                )
-            if r.category is not None:
-                seen_categories.add(r.category)
+        raw_location_counts = ent_res["location_counts"] or {}
+        location_tx_counts: dict[uuid.UUID, int] = {
+            uuid.UUID(k): int(v) for k, v in raw_location_counts.items()
+        }
+
+        raw_categories = ent_res["categories"] or []
+        seen_categories: set[str] = {str(c) for c in raw_categories}
 
         return LifetimeBaselineSummary(
             count=count,
@@ -277,9 +299,9 @@ class FeatureRepository:
             stddev=stddev,
             median=median,
             total_lifetime_count=int(tot_count),
-            seen_devices=frozenset(seen_devices),
-            seen_merchants=frozenset(seen_merchants),
-            seen_locations=frozenset(seen_locations),
+            seen_devices=frozenset(device_tx_counts.keys()),
+            seen_merchants=frozenset(merchant_tx_counts.keys()),
+            seen_locations=frozenset(location_tx_counts.keys()),
             seen_categories=frozenset(seen_categories),
             device_tx_counts=device_tx_counts,
             merchant_tx_counts=merchant_tx_counts,

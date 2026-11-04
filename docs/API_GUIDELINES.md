@@ -161,7 +161,8 @@ Recommended status codes:
 | `403 Forbidden` | Authenticated but insufficient permissions |
 | `404 Not Found` | Resource does not exist |
 | `409 Conflict` | State or uniqueness conflict |
-| `422 Unprocessable Entity` | Validation failure |
+| `413 Payload Too Large` | Upload payload exceeds hard size limit (50 MB) |
+| `422 Unprocessable Entity` | Validation failure or malformed payload |
 | `429 Too Many Requests` | Rate limit exceeded |
 | `500 Internal Server Error` | Unexpected server failure |
 | `503 Service Unavailable` | Dependency/system unavailable |
@@ -258,6 +259,20 @@ Response:
 ```
 
 Exact token lifetime is controlled through configuration.
+
+### Rate Limiting & Concurrency Defenses
+The login endpoint is protected by the `AuthRateLimiter`:
+- **Sliding-Window Limit:** Enforces a maximum of 5 failed authentication attempts within a rolling 60-second window per `(client_ip, email)` pair.
+- **In-Flight Admission Control:** Restricts active concurrent attempts to a maximum of 2 requests per key.
+- **Rate Limit Response (`429 Too Many Requests`):**
+  When breached, returns HTTP 429 with error code `RATE_LIMIT_EXCEEDED` and an RFC-compliant `Retry-After: <seconds>` header:
+  ```json
+  {
+    "code": "RATE_LIMIT_EXCEEDED",
+    "message": "Too many failed login attempts. Please retry after 45 seconds.",
+    "status": 429
+  }
+  ```
 
 ---
 
@@ -656,20 +671,24 @@ POST /api/v1/datasets/imports
 ```
 
 Accepts multipart form-data containing:
-- `file`: CSV file payload (max 50 MB, must be valid UTF-8).
+- `file`: CSV file payload (max 50 MB, standard UTF-8 or UTF-8 BOM).
 - `source_namespace`: Target namespace string (default: `"SYNTHETIC"`).
 - `source_type`: Origin type (default: `"SYNTHETIC"`).
 
 ### RBAC Requirement
 Requires role `ADMIN` or `ANALYST`.
 
-### Validation and Deduplication Guarantees
-- Validates file extension (`.csv`), file size ($\le 50$ MB), non-empty payload, and UTF-8 encoding.
-- Computes SHA-256 stream hash over uploaded bytes.
-- Acquires transaction-scoped PostgreSQL advisory lock on `(source_namespace, file_hash)`.
-- If an import for `(source_namespace, file_hash)` is currently `PENDING` or `PROCESSING`, returns `HTTP 409 Conflict` with code `"IMPORT_IN_PROGRESS"`.
-- If an import with identical bytes has already reached `COMPLETED` in the same namespace, returns `HTTP 200 OK` with the existing import summary and `is_duplicate = true` without reprocessing.
-- If the import is new, ingests rows in bounded batches, committing row-level provenance to `transaction_import_records` and returning `HTTP 201 Created` with `is_duplicate = false`.
+### Validation, Streaming and Deduplication Guarantees
+- **Bounded Stream Validation:** Ingests file in 64 KB chunks up to a strict 50 MB limit (`MAX_UPLOAD_SIZE_BYTES = 52_428_800`). Payloads exceeding 50 MB are aborted immediately, raising `PayloadTooLargeError` and returning `HTTP 413 Payload Too Large` (`PAYLOAD_TOO_LARGE`).
+- **Encoding & BOM Support:** Stream is decoded using `utf-8-sig`, transparently supporting standard UTF-8 files as well as UTF-8 Byte Order Mark (`\xef\xbb\xbf`) prefixes exported by spreadsheet tools.
+- **Malformed CSV Handling:** CSV parsing catches `csv.Error`. Corrupted rows or fields exceeding size limits rollback the transaction and fail the import cleanly with `HTTP 422 Unprocessable Entity` (`CSV_PARSE_ERROR` / `CSV_FIELD_SIZE_EXCEEDED`).
+- **Resource Hygiene:** Underlying Starlette file handles are detached cleanly (`text_stream.detach()`) preventing premature stream closure.
+- **Incremental Hashing:** Computes SHA-256 stream hash incrementally over uploaded bytes with minimal memory footprint.
+- **Advisory Locking:** Acquires transaction-scoped PostgreSQL advisory lock on `(source_namespace, file_hash)`.
+- **Deduplication:**
+  - If an import for `(source_namespace, file_hash)` is currently `PENDING` or `PROCESSING`, returns `HTTP 409 Conflict` with code `"IMPORT_IN_PROGRESS"`.
+  - If an import with identical bytes has already reached `COMPLETED` in the same namespace, returns `HTTP 200 OK` with the existing import summary and `is_duplicate = true` without reprocessing.
+  - If the import is new, ingests rows in bounded batches, committing row-level provenance to `transaction_import_records` and returning `HTTP 201 Created` with `is_duplicate = false`.
 
 ### Response Schema (`DatasetImportResponse`)
 
@@ -743,6 +762,8 @@ Accepts multipart form-data with the original `file` payload to resume a previou
 Requires role `ADMIN` or `ANALYST`.
 
 ### Recovery Guarantees
+- Enforces the same 50 MB stream limit (`MAX_UPLOAD_SIZE_BYTES = 52_428_800`), rejecting oversized payloads with `HTTP 413 Payload Too Large` (`PAYLOAD_TOO_LARGE`).
+- Streams file using `utf-8-sig` encoding, ensuring BOM compatibility and detaching stream handles safely (`text_stream.detach()`).
 - Verifies uploaded file SHA-256 matches `import.file_hash`.
 - Acquires transaction-scoped advisory lock on `(source_namespace, file_hash)`.
 - Reconciles previously committed row ordinals via `SELECT source_row_number FROM transaction_import_records WHERE dataset_import_id = :id`.

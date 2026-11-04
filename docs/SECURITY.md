@@ -500,18 +500,18 @@ The exact registration behavior may still need to communicate duplicate-account 
 
 ---
 
-# 20. Brute-Force Protection
+# 20. Brute-Force Protection & Rate Limiting
 
-Authentication endpoints should have protection against repeated attempts.
+Authentication endpoints implement active brute-force and credential-stuffing defenses via the `AuthRateLimiter` (`src/finsignal/auth/limiter.py`):
 
-Potential controls:
-
-- rate limiting
-- temporary account throttling
-- request logging
-- progressive delays
-
-At minimum, login should have a configurable rate limit.
+- **Tracking Granularity:** Rate limits are keyed by client IP and normalized login email (`ip:email`).
+- **Sliding-Window Policy:** Allows a maximum of 5 failed authentication attempts within a rolling 60-second window. Successful logins clear the failed-attempt history for that key.
+- **In-Flight Admission Control:** Restricts concurrent active requests to a maximum of 2 in-flight attempts per key, mitigating parallelized connection burst attacks.
+- **LRU Capacity & Eviction Safety:** The limiter tracks up to `max_tracked_keys = 10_000` keys. Keys with active reservations (`in_flight > 0`) are strictly protected from eviction. If the limiter reaches capacity and all tracked keys are actively processing requests, incoming requests for new keys are rejected (`allowed=False, retry_after=1`) rather than evicting an active reservation.
+- **Standard HTTP 429 Response:** Breached limits immediately raise `RateLimitExceededError`, serialized as HTTP 429 (`RATE_LIMIT_EXCEEDED`) with an RFC-compliant `Retry-After` header indicating remaining penalty seconds.
+- **Operational Boundaries:**
+  - *Per-Process Architecture:* The limiter is currently an in-memory, thread-safe implementation. Clustered or multi-worker deployments require distributed rate limiting (e.g. Redis).
+  - *Reverse Proxy IP Forwarding:* Client IP resolution currently inspects `request.client.host`. In production behind a reverse proxy or load balancer, trusted reverse-proxy middleware must be configured to extract the authoritative client IP from `X-Forwarded-For`.
 
 ---
 
@@ -590,25 +590,15 @@ UUIDs make enumeration harder but do not replace authorization.
 
 ---
 
-# 25. CORS
+# 25. CORS & Origin Isolation
 
-CORS must use an explicit allowlist.
+FinSignal integrates FastAPI `CORSMiddleware` in `src/finsignal/main.py` with strict origin and credential rules:
 
-Development may allow:
-
-```text
-http://localhost:<frontend-port>
-```
-
-Production should allow only the deployed frontend origin.
-
-Avoid:
-
-```text
-Access-Control-Allow-Origin: *
-```
-
-for authenticated production APIs.
+- **Explicit Origin Allowlist:** Governed by `cors_origins` configuration (defaults to `["http://localhost:3000", "http://localhost:5173"]` in development). Production deployments must override this with explicit domain origins.
+- **Strict Credential Isolation:** `allow_credentials=True` is enabled dynamically only when the origin list contains explicit domains and does not contain wildcard `*`. Combining wildcard origins with credentials is systematically prevented.
+- **Allowed Methods & Headers:** Explicitly permits standard REST methods (`GET`, `POST`, `PATCH`, `PUT`, `DELETE`, `OPTIONS`) and standard headers (`Authorization`, `Content-Type`, `X-Request-ID`).
+- **Exposed Headers:** Exposes correlation tracing header `X-Request-ID` to client browsers.
+- **Browser-Origin Boundary Scope:** CORS is enforced by modern web browsers adhering to the Same-Origin Policy. It governs web client access and prevents unauthorized scripts on foreign origins from reading API responses. It does not restrict non-browser HTTP clients (such as cURL, Postman, or malicious automation bots), which are governed by JWT authentication and rate limiting.
 
 ---
 
@@ -651,15 +641,14 @@ Local development may use HTTP where appropriate.
 
 ---
 
-# 29. Database Security
+# 29. Database Security & Integrity Guarantees
 
-Database access must be restricted.
+Database access, relational integrity, and audit immutability are enforced directly at the schema layer:
 
-The application should use a dedicated database user.
-
-The application database user should not have unnecessary administrative privileges.
-
-Development database credentials must not be reused in production.
+- **Dedicated Least-Privilege Application User:** Production deployments must use a dedicated PostgreSQL user without superuser or `CREATEDB` privileges.
+- **Relational Counterparty Namespace Foreign Key:** Alembic migration `0008_security_hardening.py` introduces composite foreign key `fk_transactions_counterparty_namespace` (`FOREIGN KEY (counterparty_account_id, source_namespace) REFERENCES accounts(id, source_namespace) ON DELETE RESTRICT`). This guarantees relational dataset isolation at the database engine level, preventing transactions in one dataset namespace from referencing counterparty accounts in a different namespace.
+- **Append-Only Audit Log Immutability:** Enforced via PostgreSQL trigger `trg_no_update_delete_audit_events` and procedure `trg_enforce_audit_events_immutability()` on `audit_events` (migration `0008_security_hardening.py`). Any SQL `UPDATE` or `DELETE` attempt executed against `audit_events` raises an immediate exception.
+  - *Immutability Scope & Boundary:* This trigger provides defense-in-depth against accidental or malicious application-level tampering. It does **not** provide hardware-level or cryptographic WORM storage, and does not prevent PostgreSQL superusers from executing `ALTER TABLE ... DISABLE TRIGGER`, `TRUNCATE`, or `DROP TABLE`. Hardened long-term compliance storage requires off-instance log streaming or append-only cloud storage.
 
 ---
 
@@ -686,70 +675,35 @@ source code
 
 ---
 
-# 31. Secrets Management
+# 31. Secrets Management & Environment Isolation
 
-Secrets include:
+Secrets and operational configuration are injected through strictly isolated environment variables:
 
-```text
-JWT signing secret
-database passwords
-LLM API keys
-third-party credentials
-encryption keys
-```
-
-Secrets must be injected through environment/configuration mechanisms.
-
-For production, a dedicated secrets manager may be introduced.
-
-The exact provider is deployment-specific.
+- **OS Environment Variable Isolation:** FinSignal employs a custom Pydantic settings source `_FinSignalEnvSettingsSource` (`src/finsignal/core/config.py`). To prevent unintentional environment pollution from the host OS, application settings loaded from the OS environment must be prefixed with `FINSIGNAL_` (e.g., `FINSIGNAL_DEBUG`, `FINSIGNAL_SECRET_KEY`, `FINSIGNAL_DATABASE_URL`).
+- **Stripping Ambient Variables:** Ambient OS environment variables lacking the `FINSIGNAL_` prefix (such as a generic `DEBUG` flag set by container orchestrators or developer shells) are stripped and cannot override application settings.
+- **Production Secrets:** Real secrets (`JWT_SECRET_KEY`, `DATABASE_PASSWORD`, LLM provider keys) must never be committed into source control, container images, or documentation.
 
 ---
 
-# 32. `.env` Files
+# 32. `.env` Files & Local Configuration
 
-Local development may use:
-
-```text
-.env
-```
-
-but:
-
-```text
-.env
-```
-
-must not be committed if it contains real secrets.
-
-Provide:
-
-```text
-.env.example
-```
-
-containing placeholders only.
+- **Local Development Compatibility:** For developer convenience, settings loaded from `.env` files retain backward compatibility and do not mandate the `FINSIGNAL_` prefix.
+- **Strict Boolean Evaluation:** Boolean configuration values (such as `debug`) use standard Pydantic boolean parsing (`"true"`, `"1"`, `"yes"` evaluate to `True`; `"false"`, `"0"`, `"no"` evaluate to `False`). Arbitrary strings are rejected.
+- **Repository Hygiene:** Real `.env` files containing secrets must remain excluded via `.gitignore`. The repository maintains `.env.example` containing documentation placeholders only.
 
 ---
 
 # 33. Dataset Upload Security
 
-CSV files are untrusted input.
+CSV files uploaded for transaction ingestion are treated as completely untrusted input:
 
-The upload pipeline must validate:
-
-```text
-file extension
-MIME type
-file size
-encoding
-header structure
-row count
-field types
-required columns
-```
-
-Do not trust the uploaded filename or MIME type alone.
+- **Bounded Streaming Validation:** Both initial dataset upload (`POST /api/v1/datasets/upload`) and recovery (`POST /api/v1/datasets/{id}/recover`) stream chunk-by-chunk without buffering entire payloads in memory.
+- **50 MB Hard Size Cap:** Validated during streaming (`MAX_UPLOAD_SIZE_BYTES = 52_428_800`). Payloads exceeding 50 MB raise `PayloadTooLargeError`, immediately terminating processing with HTTP 413 (`PAYLOAD_TOO_LARGE`).
+- **Incremental SHA-256 Hashing:** Digested across 64 KB chunks during stream ingestion, preserving constant low memory consumption regardless of file size.
+- **UTF-8 and BOM Handling:** Upload streams decode with `utf-8-sig`, transparently parsing standard UTF-8 files as well as Microsoft Excel-generated files containing a UTF-8 Byte Order Mark (`\xef\xbb\xbf`).
+- **Stream Detachment Safety:** Stream wrappers explicitly call `text_stream.detach()` before garbage collection, preventing `TextIOWrapper` from closing the underlying Starlette `UploadFile` spooled file descriptor prematurely.
+- **Controlled Error Handling:** CSV parsing explicitly catches `csv.Error`. Malformed CSV records, unclosed quotes, or fields exceeding `csv.field_size_limit` trigger transaction rollback, transitioning the import to `FAILED` with HTTP 422 (`CSV_PARSE_ERROR` or `CSV_FIELD_SIZE_EXCEEDED`) instead of an unhandled HTTP 500 error.
+- **Structural Integrity:** Mandatory headers and column schemas are validated before row processing begins.
 
 ---
 
@@ -785,26 +739,16 @@ Use generated temporary identifiers and controlled storage paths.
 
 ---
 
-# 36. Resource Exhaustion
+# 36. Resource Exhaustion & Memory Defense
 
-An attacker may upload:
+FinSignal applies multi-layered memory and CPU exhaustion defenses:
 
-```text
-very large files
-huge row counts
-malformed data
-highly repetitive data
-```
-
-The import pipeline must enforce:
-
-- maximum file size
-- maximum row count where appropriate
-- processing limits
-- timeouts
-- memory-conscious parsing
-
-The application must avoid loading arbitrarily large uploads into memory.
+- **Bounded Stream Ingestion:** Maximum upload size is strictly capped at 50 MB (`MAX_UPLOAD_SIZE_BYTES = 52_428_800`). Payloads exceeding this limit are aborted immediately during chunk reading with HTTP 413.
+- **Incremental Line-by-Line CSV Streaming:** Files are parsed row-by-row rather than loading entire datasets into memory buffers.
+- **Bounded Reference Caching:** The ingestion engine caps in-memory cache structures (`max_cache_entries = 10_000`) for accounts, devices, and merchants, preventing unbounded memory consumption during large imports.
+- **Rate-Limiter Eviction Bounding:** The login rate limiter caps tracked state at 10,000 keys with LRU pruning of inactive keys and strict zero-eviction guarantees for active in-flight requests.
+- **Bounded Evidence Payloads:** Case evidence snapshots are capped at 64 KB per item.
+- **Pessimistic Advisory & Row Locks:** Ingestion uses PostgreSQL advisory locks (`pg_try_advisory_xact_lock`) on the dataset import ID to prevent concurrent duplicate processing of the same import stream.
 
 ---
 

@@ -750,7 +750,7 @@ Under Review (Status: UNDER_REVIEW)
         +---> Attach Append-Only Evidence Snapshots
         |
         v
-AI Summary Generation (Phase 10 Deferred)
+AI Summary Generation (Phase 10 Implemented)
         |
         v
 Human Decision & Resolution (Admin / Assigned Investigator)

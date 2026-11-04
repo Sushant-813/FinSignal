@@ -1,5 +1,7 @@
 """Dataset imports API v1 router and endpoint handlers (P4.5)."""
 
+import hashlib
+import io
 import uuid
 from typing import Annotated
 
@@ -15,7 +17,7 @@ from fastapi import (
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from finsignal.auth.dependencies import require_roles
-from finsignal.common.exceptions import ValidationError
+from finsignal.common.exceptions import PayloadTooLargeError, ValidationError
 from finsignal.core.database import get_db_session
 from finsignal.dataset.schemas import (
     DatasetImportDetailResponse,
@@ -27,6 +29,38 @@ from finsignal.users.models import User
 router = APIRouter(prefix="/datasets", tags=["Datasets"])
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB limit
+UPLOAD_CHUNK_SIZE = 64 * 1024  # 64 KB streaming buffer (SEC-02)
+
+
+async def validate_and_hash_upload(file: UploadFile) -> str:
+    """Validate upload size and compute SHA-256 incrementally in bounded memory (SEC-02)."""
+    filename = file.filename or "unknown.csv"
+    if not filename.lower().endswith(".csv"):
+        raise ValidationError(
+            message="Only CSV files (.csv) are accepted for dataset import.",
+            details={"filename": filename},
+        )
+
+    hasher = hashlib.sha256()
+    total_bytes = 0
+
+    while chunk := await file.read(UPLOAD_CHUNK_SIZE):
+        total_bytes += len(chunk)
+        if total_bytes > MAX_UPLOAD_BYTES:
+            raise PayloadTooLargeError(
+                message=f"File exceeds maximum allowable size of {MAX_UPLOAD_BYTES // (1024 * 1024)}MB.",
+                details={"file_size_bytes": total_bytes},
+            )
+        hasher.update(chunk)
+
+    if total_bytes == 0:
+        raise ValidationError(
+            message="Uploaded CSV file is empty.",
+            details={"filename": filename},
+        )
+
+    await file.seek(0)
+    return hasher.hexdigest()
 
 
 def get_import_service() -> DatasetImportService:
@@ -63,33 +97,21 @@ async def upload_dataset_import(
     - Enforces strict canonical matching, seven core material fields, and row-level provenance.
     """
     filename = file.filename or "unknown.csv"
-    if not filename.lower().endswith(".csv"):
-        raise ValidationError(
-            message="Only CSV files (.csv) are accepted for dataset import.",
-            details={"filename": filename},
-        )
+    file_hash = await validate_and_hash_upload(file)
+    text_stream = io.TextIOWrapper(file.file, encoding="utf-8-sig")
 
-    file_bytes = await file.read()
-    if len(file_bytes) > MAX_UPLOAD_BYTES:
-        raise ValidationError(
-            message=f"File exceeds maximum allowable size of {MAX_UPLOAD_BYTES // (1024 * 1024)}MB.",
-            details={"file_size_bytes": len(file_bytes)},
+    try:
+        import_resp, is_duplicate = await import_service.import_dataset(
+            session=session,
+            filename=filename,
+            source_namespace=source_namespace,
+            source_type=source_type,
+            user_id=current_user.id,
+            file_source=text_stream,
+            file_hash=file_hash,
         )
-
-    if not file_bytes:
-        raise ValidationError(
-            message="Uploaded CSV file is empty.",
-            details={"filename": filename},
-        )
-
-    import_resp, is_duplicate = await import_service.import_dataset(
-        session=session,
-        file_bytes=file_bytes,
-        filename=filename,
-        source_namespace=source_namespace,
-        source_type=source_type,
-        user_id=current_user.id,
-    )
+    finally:
+        text_stream.detach()
 
     if is_duplicate:
         response.status_code = status.HTTP_200_OK
@@ -133,20 +155,15 @@ async def recover_dataset_import(
     import_service: Annotated[DatasetImportService, Depends(get_import_service)],
 ) -> DatasetImportResponse:
     """Recover a failed or interrupted dataset import without duplicating or skipping rows."""
-    filename = file.filename or "unknown.csv"
-    if not filename.lower().endswith(".csv"):
-        raise ValidationError(
-            message="Only CSV files (.csv) are accepted for dataset import recovery.",
-            details={"filename": filename},
+    file_hash = await validate_and_hash_upload(file)
+    text_stream = io.TextIOWrapper(file.file, encoding="utf-8-sig")
+
+    try:
+        return await import_service.recover_import_by_id(
+            session=session,
+            import_id=import_id,
+            file_source=text_stream,
+            file_hash=file_hash,
         )
-    file_bytes = await file.read()
-    if not file_bytes:
-        raise ValidationError(
-            message="Uploaded CSV file is empty.",
-            details={"filename": filename},
-        )
-    return await import_service.recover_import_by_id(
-        session=session,
-        import_id=import_id,
-        file_bytes=file_bytes,
-    )
+    finally:
+        text_stream.detach()

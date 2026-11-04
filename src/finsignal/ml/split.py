@@ -59,8 +59,15 @@ class ChronologicalSplitter:
                 f"Length mismatch: {n} timestamps vs {len(record_ids)} record IDs."
             )
 
-        # 1. Deterministic sort key: (occurred_at, str(record_id))
-        indexed_records = [(i, timestamps[i], str(record_ids[i])) for i in range(n)]
+        # 1. Deterministic sort key: (occurred_at, tie_breaker) supporting ints and UUIDs
+        def _tie_key(rid: Any) -> tuple[int, Any]:
+            if isinstance(rid, int):
+                return (0, rid)
+            return (1, str(rid))
+
+        indexed_records = [
+            (i, timestamps[i], _tie_key(record_ids[i])) for i in range(n)
+        ]
         indexed_records.sort(key=lambda x: (x[1], x[2]))
 
         # 2. Group sorted indices by timestamp

@@ -1,5 +1,6 @@
 """Integration tests for Dataset Import API endpoints (/api/v1/datasets/imports) (P4.5)."""
 
+import hashlib
 import io
 import uuid
 from collections.abc import AsyncGenerator
@@ -7,7 +8,7 @@ from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from finsignal.auth.security import create_access_token
@@ -20,6 +21,7 @@ from finsignal.dataset.generator import (
     ReferenceEntityPersistenceService,
     TransactionDatasetGenerator,
 )
+from finsignal.dataset.models import DatasetImport
 from finsignal.main import create_app
 from finsignal.users.models import User
 from finsignal.users.repository import UserRepository
@@ -254,3 +256,189 @@ async def test_recover_import_api_endpoint(
     assert rec_body["id"] == import_id
     assert rec_body["status"] == "COMPLETED"
     assert rec_body["total_rows"] == 10
+
+
+@pytest.mark.asyncio
+async def test_upload_and_recover_bounded_size_enforcement(
+    client: AsyncClient,
+    async_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify SEC-02: Enforcing file size limit on both upload and recovery endpoints."""
+    import finsignal.api.v1.datasets as datasets_mod
+
+    _, analyst_token, _ = await _create_test_user(
+        async_session, "size_tester@example.com", "ANALYST"
+    )
+    auth_headers = {"Authorization": f"Bearer {analyst_token}"}
+
+    # Restrict MAX_UPLOAD_BYTES to 100 bytes for test
+    monkeypatch.setattr(datasets_mod, "MAX_UPLOAD_BYTES", 100)
+
+    # 1. Oversized file to /imports -> 413 Payload Too Large
+    oversized_data = b"x" * 150
+    files = {"file": ("oversized.csv", io.BytesIO(oversized_data), "text/csv")}
+    res = await client.post(
+        "/api/v1/datasets/imports",
+        files=files,
+        data={"source_namespace": "TEST_SIZE_NS"},
+        headers=auth_headers,
+    )
+    assert res.status_code == 413
+    assert res.json()["error"]["code"] == "PAYLOAD_TOO_LARGE"
+    assert "exceeds maximum allowable size" in res.json()["error"]["message"]
+
+    # 2. Oversized file to /recover -> 413 Payload Too Large
+    fake_import_id = uuid.uuid4()
+    files_rec = {"file": ("oversized.csv", io.BytesIO(oversized_data), "text/csv")}
+    rec_res = await client.post(
+        f"/api/v1/datasets/imports/{fake_import_id}/recover",
+        files=files_rec,
+        headers=auth_headers,
+    )
+    assert rec_res.status_code == 413
+    assert rec_res.json()["error"]["code"] == "PAYLOAD_TOO_LARGE"
+    assert "exceeds maximum allowable size" in rec_res.json()["error"]["message"]
+
+    # 3. Empty file -> 422
+    empty_files = {"file": ("empty.csv", io.BytesIO(b""), "text/csv")}
+    emp_res = await client.post(
+        "/api/v1/datasets/imports",
+        files=empty_files,
+        data={"source_namespace": "TEST_SIZE_NS"},
+        headers=auth_headers,
+    )
+    assert emp_res.status_code == 422
+    assert "empty" in emp_res.json()["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_upload_dataset_utf8_bom_support(
+    client: AsyncClient,
+    async_session: AsyncSession,
+) -> None:
+    """Verify SEC-02: CSV files with UTF-8 BOM are decoded correctly without failing header validation."""
+    _, analyst_token, _ = await _create_test_user(
+        async_session, "bom_analyst@example.com", "ANALYST"
+    )
+    auth_headers = {"Authorization": f"Bearer {analyst_token}"}
+
+    namespace = "BOM_TEST_NS"
+    cfg = GeneratorConfig(
+        seed=101,
+        source_namespace=namespace,
+        account_count=2,
+        merchant_count=1,
+        device_count=1,
+        location_count=1,
+        transaction_count=2,
+    )
+    ref_ds = ReferenceEntityGenerator(cfg).generate()
+    await ReferenceEntityPersistenceService().persist(async_session, ref_ds)
+    await async_session.commit()
+
+    tx_dataset = TransactionDatasetGenerator(cfg, ref_ds).generate()
+    out_buf = io.StringIO()
+    CSVDatasetExporter.export_transactions(tx_dataset.transactions, out_buf)
+    raw_csv_bytes = out_buf.getvalue().encode("utf-8")
+
+    # Prepend UTF-8 BOM: \xef\xbb\xbf
+    bom_csv_bytes = b"\xef\xbb\xbf" + raw_csv_bytes
+    expected_bom_hash = hashlib.sha256(bom_csv_bytes).hexdigest()
+    files = {"file": ("bom_transactions.csv", io.BytesIO(bom_csv_bytes), "text/csv")}
+    data = {"source_namespace": namespace, "source_type": "SYNTHETIC"}
+
+    res = await client.post(
+        "/api/v1/datasets/imports", files=files, data=data, headers=auth_headers
+    )
+    assert res.status_code == 201
+    body = res.json()
+    assert body["status"] == "COMPLETED"
+    assert body["total_rows"] == 2
+    assert body["valid_rows"] == 2
+    assert body["file_hash"] == expected_bom_hash
+
+    # 2. Verify recovery with the same BOM-prefixed file verifies hash and completes
+    files_rec = {
+        "file": ("bom_transactions.csv", io.BytesIO(bom_csv_bytes), "text/csv")
+    }
+    rec_res = await client.post(
+        f"/api/v1/datasets/imports/{body['id']}/recover",
+        files=files_rec,
+        headers=auth_headers,
+    )
+    assert rec_res.status_code == 200
+    rec_body = rec_res.json()
+    assert rec_body["status"] == "COMPLETED"
+    assert rec_body["file_hash"] == expected_bom_hash
+
+
+@pytest.mark.asyncio
+async def test_upload_dataset_malformed_csv_and_oversized_field(
+    client: AsyncClient,
+    async_session: AsyncSession,
+) -> None:
+    """Verify SEC-02: Malformed CSV and oversized fields result in a controlled 422 failure and FAILED status."""
+    _, analyst_token, _ = await _create_test_user(
+        async_session, "malformed_tester@example.com", "ANALYST"
+    )
+    auth_headers = {"Authorization": f"Bearer {analyst_token}"}
+    namespace = "MALFORMED_TEST_NS"
+
+    # 1. Malformed CSV syntax (e.g. unclosed quote with NUL or corrupt formatting)
+    malformed_csv = b'account_id,external_transaction_id,amount\n"unclosed_string_value'
+    files_bad = {"file": ("bad.csv", io.BytesIO(malformed_csv), "text/csv")}
+    res_bad = await client.post(
+        "/api/v1/datasets/imports",
+        files=files_bad,
+        data={"source_namespace": namespace},
+        headers=auth_headers,
+    )
+    assert res_bad.status_code == 422
+    assert res_bad.json()["error"]["code"] == "DOMAIN_VALIDATION_ERROR"
+    assert (
+        "CSV" in res_bad.json()["error"]["message"]
+        or "header" in res_bad.json()["error"]["message"].lower()
+    )
+
+    # 2. Oversized CSV field exceeding csv.field_size_limit (128 KB)
+    # Generate field with 140,000 chars
+    oversized_field = "X" * 140000
+    huge_field_csv = (
+        "transaction_id,source_namespace,account_id,occurred_at,amount,currency,transaction_type,direction,description\n"
+        f"TX1,{namespace},ACC1,2026-01-01T00:00:00Z,10.00,USD,PURCHASE,DEBIT,{oversized_field}\n"
+    ).encode()
+
+    files_huge = {"file": ("huge_field.csv", io.BytesIO(huge_field_csv), "text/csv")}
+    res_huge = await client.post(
+        "/api/v1/datasets/imports",
+        files=files_huge,
+        data={"source_namespace": namespace},
+        headers=auth_headers,
+    )
+    assert res_huge.status_code == 422
+    assert res_huge.json()["error"]["code"] == "DOMAIN_VALIDATION_ERROR"
+    assert "field larger than field limit" in res_huge.json()["error"]["message"]
+
+    # Verify import status in database is FAILED and queryable via API
+    stmt = select(DatasetImport).where(DatasetImport.filename == "huge_field.csv")
+    import_row = (await async_session.execute(stmt)).scalar_one_or_none()
+    assert import_row is not None
+    assert import_row.status == "FAILED"
+
+    # API query returns FAILED status
+    get_res = await client.get(
+        f"/api/v1/datasets/imports/{import_row.id}",
+        headers=auth_headers,
+    )
+    assert get_res.status_code == 200
+    assert get_res.json()["status"] == "FAILED"
+
+    # 3. Recovery endpoint with malformed CSV also returns controlled 422
+    rec_bad_res = await client.post(
+        f"/api/v1/datasets/imports/{import_row.id}/recover",
+        files={"file": ("bad.csv", io.BytesIO(malformed_csv), "text/csv")},
+        headers=auth_headers,
+    )
+    assert rec_bad_res.status_code == 422
+    assert rec_bad_res.json()["error"]["code"] == "DOMAIN_VALIDATION_ERROR"

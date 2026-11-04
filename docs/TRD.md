@@ -167,6 +167,15 @@ NumPy should be used where numerical operations benefit from array-based computa
 - **Structured Schema & Grounding Validation:** Enforces strict Pydantic v2 schema `AISummaryOutput` (`executive_summary`, `observed_facts`, `derived_signals`, `potential_interpretations`, `uncertainties_and_limitations`) with automated entity citation validation.
 - **Provider Abstraction (`BaseAIProvider`):** Implemented via `MockAIProvider` with simulated latency, deterministic scenario generation, and fault injection. Production external LLMs remain deferred.
 
+### Implemented Phase 11 Testing, Security & Hardening Capabilities
+- **CORS Defense & Origin Isolation:** Configured FastAPI `CORSMiddleware` with explicit origin allowlist (`cors_origins`), methods, headers, and credential isolation (`allow_credentials=True` only for explicit origins; wildcards with credentials forbidden).
+- **Bounded Streaming Ingestion & Recovery:** Streaming chunk-by-chunk processing with 50 MB hard cap (`MAX_UPLOAD_SIZE_BYTES = 52_428_800`), immediate HTTP 413 (`PayloadTooLargeError`) abort, `utf-8-sig` encoding supporting standard UTF-8 and UTF-8 BOM, safe stream handle detachment (`text_stream.detach()`), and explicit `csv.Error` recovery returning HTTP 422.
+- **Environment Isolation:** Custom Pydantic settings source `_FinSignalEnvSettingsSource` strips ambient OS environment variables, requiring `FINSIGNAL_` prefix for OS overrides while preserving backward-compatible `.env` parsing.
+- **Sliding-Window Login Rate Limiter (`AuthRateLimiter`):** Non-blocking in-memory rate limiter enforcing 5 failed attempts per 60 seconds per IP + email key, atomic in-flight admission control (max 2 concurrent requests per key), guaranteed non-eviction of active reservations, and HTTP 429 (`RATE_LIMIT_EXCEEDED`) with `Retry-After` header.
+- **Composite Counterparty Foreign Key:** Alembic migration `0008_security_hardening.py` adds composite foreign key `fk_transactions_counterparty_namespace` enforcing relational dataset isolation on transfers (`(counterparty_account_id, source_namespace)` references `accounts(id, source_namespace)`).
+- **Append-Only Audit Immutability:** Migration `0008_security_hardening.py` introduces database trigger `trg_no_update_delete_audit_events` on `audit_events` rejecting all SQL `UPDATE` and `DELETE` queries.
+- **Ingestion & Split Optimization:** Batched canonical lookups (`canonical_id = ANY(...)`), bounded reference entity caching (`max_cache_entries = 10_000`), and deterministic tie-breaker in chronological splitting (`str(id) ASC`).
+
 ---
 
 ## 3.5 Frontend

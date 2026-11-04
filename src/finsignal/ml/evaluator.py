@@ -171,6 +171,11 @@ class ModelEvaluator:
         scores_arr = np.asarray(val_scores, dtype=np.float64)
         labels_arr = np.asarray(val_labels, dtype=np.int32)
 
+        if max_alert_rate <= 0.0 or max_alert_rate > 1.0:
+            raise MLDomainError(
+                f"max_alert_rate must be in (0.0, 1.0]; got {max_alert_rate}."
+            )
+
         n = scores_arr.shape[0]
         if n == 0:
             raise MLDomainError("Validation partition is empty; cannot tune threshold.")
