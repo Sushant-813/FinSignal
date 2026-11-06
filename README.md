@@ -40,11 +40,12 @@ FinSignal is built as a clean modular monolith adhering to strict domain separat
 | **Phase 10** | AI Investigation Assistant | Dedicated AI domain (`src/finsignal/ai/`), two-transaction lifecycle, REPEATABLE READ snapshot isolation, CAS token fencing, expired pending recovery with atomic audit logging, dual fingerprinting (`evidence_hash`, `context_hash`), dynamic staleness detection, nonce delimiter defense-in-depth, grounding citation validation, MockAIProvider | **Completed** |
 | **Phase 11** | Testing, Security & Hardening | Configurable CORS middleware, 50 MB bounded streaming upload/recovery (HTTP 413, utf-8-sig BOM support), strict OS environment variable isolation (`FINSIGNAL_DEBUG`), in-memory sliding-window login rate limiting with active reservation safety (HTTP 429), composite counterparty namespace FK, audit events SQL immutability trigger, batched ingestion lookups, deterministic split tie-breaker | **Completed** |
 | **Phase 12** | Backend/ML Release & Finalization | Formal Phase 11 acceptance, ADR-065/067–073 ratification, CORS wildcard-credential validation, release gate verification, v1.0.0 code release | **Completed** |
+| **Frontend Planning** | Specifications & Architecture Audit | 8 frontend specifications completed and audited (`docs/FRONTEND_*.md`), design system established per `FRONTEND_DESIGN.md`, master roadmap integrated (Phases F0–F8) | **Planning Completed (Implementation Not Started)** |
 
 ### Upcoming Phases
 
 - **Phase 13 — Containerization & Production Deployment:** Production Dockerfile, Docker Compose multi-container configuration, cloud deployment procedures, and production orchestration (ADR-073).
-- **Deferred Future — Frontend Dashboard:** React, TypeScript, Vite, and Tailwind CSS client interface.
+- **Frontend Implementation Track (Phases F0–F8):** Comprehensive documentation suite completed (`docs/FRONTEND_*.md`). Implementation kick-off scheduled with Phase F0 (Decisions, Contract Verification & Repository Readiness). Frontend implementation is not yet started.
 
 ---
 

@@ -577,6 +577,10 @@ The exact API representation should be standardized across all financial endpoin
 
 # 21. Transaction API
 
+> [!IMPORTANT]
+> **Implementation Status: APPROVED REQUIREMENT — NOT YET IMPLEMENTED**
+> Per ADR-077, `GET /api/v1/transactions` and `GET /api/v1/transactions/{transaction_id}` are approved backend API readiness requirements scheduled for implementation in Phase F0. Detailed technical specifications, query patterns, and Pydantic schemas are defined in `docs/BACKEND_API_READINESS.md`. These endpoints are not part of the Backend + ML v1.0.0 release and must not be documented as implemented until backend code and automated tests are complete.
+
 ## 21.1 List Transactions
 
 ```http
@@ -769,6 +773,18 @@ Requires role `ADMIN` or `ANALYST`.
 - Reconciles previously committed row ordinals via `SELECT source_row_number FROM transaction_import_records WHERE dataset_import_id = :id`.
 - Processes only uncommitted rows, guaranteeing zero row duplication or gap skipping even across non-contiguous batch commits.
 - Returns `HTTP 200 OK` with updated `DatasetImportResponse`.
+
+---
+
+## 23.4 List Dataset Imports
+
+```http
+GET /api/v1/datasets/imports
+```
+
+> [!IMPORTANT]
+> **Implementation Status: APPROVED REQUIREMENT — NOT YET IMPLEMENTED**
+> Per ADR-077, `GET /api/v1/datasets/imports` is an approved backend API readiness requirement scheduled for implementation in Phase F0. It provides paginated listing of dataset import executions (excluding large row-level validation error payloads, which remain accessible via `GET /api/v1/datasets/imports/{import_id}`). Detailed technical specifications are defined in `docs/BACKEND_API_READINESS.md`. Do not document or treat this endpoint as implemented until backend code and automated tests are complete.
 
 ---
 
@@ -2564,19 +2580,20 @@ GET    /api/v1/accounts/{account_id}/behavior
 ### Transactions
 
 ```text
-GET    /api/v1/transactions
-GET    /api/v1/transactions/{transaction_id}
-POST   /api/v1/transactions
-GET    /api/v1/transactions/{transaction_id}/risk
-POST   /api/v1/transactions/{transaction_id}/risk/analyze
+GET    /api/v1/transactions               # Approved Requirement — Not Yet Implemented (ADR-077, Phase F0)
+GET    /api/v1/transactions/{transaction_id} # Approved Requirement — Not Yet Implemented (ADR-077, Phase F0)
+POST   /api/v1/transactions               # Potential/Unimplemented
+GET    /api/v1/transactions/{transaction_id}/risk # Implemented (Phase 8)
+POST   /api/v1/transactions/{transaction_id}/risk/analyze # Implemented (Phase 8)
 ```
 
 ### Dataset Imports
 
 ```text
-POST   /api/v1/datasets/imports
-GET    /api/v1/datasets/imports/{import_id}
-POST   /api/v1/datasets/imports/{import_id}/recover
+POST   /api/v1/datasets/imports           # Implemented (Phase 4)
+GET    /api/v1/datasets/imports           # Approved Requirement — Not Yet Implemented (ADR-077, Phase F0)
+GET    /api/v1/datasets/imports/{import_id} # Implemented (Phase 4)
+POST   /api/v1/datasets/imports/{import_id}/recover # Implemented (Phase 4)
 ```
 
 ### Analytics

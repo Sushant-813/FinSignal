@@ -1581,7 +1581,112 @@ Implement the Phase 10 AI Investigation Assistant subsystem to generate structur
 
 ---
 
-# 32. Log Maintenance Rules
+# 32. 2026-11-06 — Frontend Planning Documentation & Architecture Audit Milestone
+
+## Context
+
+Following the completion and release of Backend + ML v1.0.0, the frontend planning documentation suite was drafted to define the browser client. A comprehensive consistency audit was conducted across all frontend and backend documents, the FastAPI implementation, Pydantic schemas, and the live OpenAPI contract (`/openapi.json`) to identify architectural mismatches, security requirements, and missing API contracts before implementation begins.
+
+## Documents Created and Audited
+
+1. `docs/FRONTEND_PRD.md`: Frontend Product Requirements Document (operational workflows, role capabilities, screen inventory, data presentation rules, MVP acceptance criteria).
+2. `docs/FRONTEND_TRD.md`: Frontend Technical Requirements Document (React, TypeScript, Vite, Tailwind CSS, Apache ECharts, proposed dependency stack, performance budgets).
+3. `docs/FRONTEND_ARCHITECTURE.md`: Frontend Architecture Document (presentation, feature workflow, infrastructure, and API integration layers; state ownership and boundary rules).
+4. `docs/FRONTEND_DESIGN.md`: Frontend Design System (Coinbase-inspired financial clarity + IBM-inspired enterprise structure, token definitions, typography, layout, accessibility standards).
+5. `docs/FRONTEND_API_INTEGRATION.md`: Frontend API Integration Specification (endpoint mappings, error envelope handling, pagination, multipart upload contracts, staleness detection).
+6. `docs/FRONTEND_SECURITY.md`: Frontend Security Document (in-memory token handling, browser security controls, threat model, XSS/CSRF boundaries, audit trail integrity).
+7. `docs/FRONTEND_TESTING_STRATEGY.md`: Frontend Testing Strategy (Vitest, React Testing Library, MSW network boundary mocking, Playwright E2E, axe accessibility gates).
+8. `docs/FRONTEND_ROADMAP.md`: Frontend Implementation Roadmap (Phases F0 through F8, deliverables, and exit criteria).
+
+## Architecture & Design Direction Established
+
+- **Operational Role:** The frontend is an operational interface for analysts, investigators, and administrators; the backend remains the authoritative source for domain logic, financial aggregates, risk scores, features, evidence, and authorization.
+- **Design System:** Restrained light-first palette with cobalt blue primary actions, strict status semantic badges, high information density without clutter, and zero reliance on color alone for critical status.
+- **State Ownership:** Clear separation between server state (managed via TanStack Query caching) and local UI interaction state. Global state stores (e.g. Redux/Zustand) are avoided by default.
+- **Financial Precision:** Strict preservation of backend string decimals (`MoneyStr`) and UTC timestamps; floating-point math in browser JavaScript is prohibited for financial figures.
+
+## API Integration & Contract Verification Findings
+
+- **Live OpenAPI Audit:** Audited 26 active routes in FastAPI backend against `API_GUIDELINES.md` and frontend integration documents.
+- **Identified Contract Gaps:**
+  - `GET /api/v1/transactions` and `GET /api/v1/transactions/{id}` are documented in `API_GUIDELINES.md` but not implemented in the FastAPI backend router (only `/transactions/{id}/risk` exists).
+  - `GET /api/v1/datasets/imports` (listing dataset imports) is not implemented in the backend (only `POST /imports`, `GET /imports/{id}`, and `POST /imports/{id}/recover` exist).
+  - `InvestigationCreateRequest` backend schema strictly forbids additional properties (`extra="forbid"`) and contains only `transaction_id` and `priority` (no `notes` or `title`). Corrected in `FRONTEND_API_INTEGRATION.md`.
+  - `RiskAnalyzeRequest` backend schema accepts only `model_version_id` (no `force_recalculate`). Corrected in `FRONTEND_API_INTEGRATION.md`.
+
+## Security & Testing Strategy Documented
+
+- In-memory JWT access token storage recommended for Frontend MVP to prevent persistent token exposure on disk or in `localStorage`.
+- Role-aware UI elements are treated purely as presentation helpers; all authorization is authoritatively enforced by FastAPI dependencies.
+- Frontend testing pyramid established: pure unit tests (Vitest), component tests with simulated network boundaries (MSW), and full user journey tests (Playwright), with automated accessibility gates (axe-core). Frontend tests explicitly forbidden from duplicating backend ML/fraud algorithms.
+
+## Outstanding Decisions & Blockers
+
+1. **ADR-074 (Frontend Tech Stack & Dependencies):** Status: `PENDING` user approval.
+2. **ADR-075 (Frontend Auth & In-Memory Token Storage):** Status: `PENDING` user approval.
+3. **ADR-076 (OpenAPI Type Generation & Contract Verification):** Status: `PENDING` user approval.
+4. **ADR-077 (Transaction & Dataset Import Read API Requirements):** Status: `PENDING` user approval (decision to implement `GET /transactions` and `GET /datasets/imports` in backend during Phase F0).
+
+## Current Status & Next Milestone
+
+- **Backend + ML v1.0.0 Status:** Released & Stable (100% test coverage, clean migrations 0001–0008).
+- **Frontend Planning Status:** Completed and Audited (8 specifications complete, master roadmap and log synchronized).
+- **Frontend Implementation Status:** Not Started (0 React code generated).
+- **Next Milestone:** **Phase F0 — Decisions, Contract Verification & Repository Readiness**.
+
+---
+
+# 33. 2026-11-06 — ADR Ratification & Backend API Readiness Planning Milestone
+
+## Context
+
+Following completion of the frontend documentation audit, the system owner reviewed the four proposed architectural decisions (ADR-074 through ADR-077). Three decisions were formally approved, ADR-075 was revised to accurately evaluate token storage options, and a comprehensive engineering specification was authored for the missing backend read endpoints.
+
+## Decisions Recorded & Updated
+
+1. **ADR-074 (Frontend Technology Stack & Dependency Selection):** **ACCEPTED**.
+   - Preserves core stack from `TRD.md` (React, TypeScript, Vite, Tailwind CSS, Apache ECharts).
+   - Approves supporting libraries: React Router, TanStack Query, React Hook Form, Zod, Native Fetch API, `openapi-typescript`, Radix UI primitives, Lucide React, Vitest, React Testing Library, MSW, Playwright, npm.
+   - Mandates strict version pinning via `package-lock.json`, forbids unapproved dependencies, and rejects Redux or premature global state.
+2. **ADR-075 (Frontend Authentication, Session Lifecycle & Token Storage Strategy):** **PENDING (Revised Proposal)**.
+   - Replaced misleading claims regarding XSS immunity with precise security boundary definitions.
+   - Formally compared Option 1 (In-memory storage), Option 2 (sessionStorage/localStorage), and Option 3 (Backend HttpOnly cookies with CSRF defense).
+   - Verified actual backend token expiration: `Settings.access_token_expire_minutes` default is **30 minutes** (1,800 seconds), dynamically returned in `TokenResponse.expires_in`.
+   - Evaluated usability trade-offs of re-authentication on reload vs. security exposure. Kept in `PENDING` status for owner review.
+3. **ADR-076 (OpenAPI-Driven TypeScript Contract Generation & Network Boundary Validation):** **ACCEPTED**.
+   - Approves `openapi-typescript` for generating static TypeScript interfaces from live FastAPI `/openapi.json`.
+   - Records governance rules: output isolation, immutability of generated code, committed types with CI drift verification (`npm run check:types-drift`).
+   - Explicitly records technical distinction: generated types provide compile-time checking only and perform zero runtime response validation (no false 100% runtime contract safety claim).
+4. **ADR-077 (Transaction & Dataset Import Collection Read API Requirements):** **ACCEPTED**.
+   - Approves requirement to implement `GET /api/v1/transactions`, `GET /api/v1/transactions/{id}`, and `GET /api/v1/datasets/imports`.
+   - Scoped as a dedicated Backend API Readiness Enhancement within Phase F0.
+   - Preserves Backend + ML v1.0.0 release history without retroactive claims.
+
+## Specifications Created & Master Documents Synchronized
+
+- **Authored `docs/BACKEND_API_READINESS.md`:** Comprehensive engineering specification defining query parameters, filter feasibility against existing relational models, `risk_level` subquery architecture, deterministic tie-breaking (`occurred_at DESC, id DESC`), response schemas (`MoneyStr` serialization), not-found error envelopes, database index audits, and security boundaries.
+- **Synchronized `docs/API_GUIDELINES.md`:** Added Section 23.4 (List Dataset Imports), annotated Section 21 and Section 70 to clearly label the three endpoints as `APPROVED REQUIREMENT — NOT YET IMPLEMENTED`, linking to `BACKEND_API_READINESS.md`.
+- **Synchronized `docs/PROJECT_ROADMAP.md`:** Detailed Sub-Task F0.2 (Backend API Readiness Enhancement) under Phase F0.
+- **Synchronized `docs/FRONTEND_API_INTEGRATION.md` & `docs/FRONTEND_ROADMAP.md`:** Updated endpoint tables and Phase F0 coordination milestones.
+
+## Strict Restrictions Verified
+
+- Zero Python source code modified.
+- Zero database models or Alembic migrations modified.
+- Zero React components or frontend scaffolding created.
+- Zero npm dependencies installed.
+- Zero changes to API runtime behavior.
+
+## Current Status & Next Milestone
+
+- **Backend + ML v1.0.0:** Released & Stable.
+- **ADRs:** ADR-074 (ACCEPTED), ADR-075 (PENDING - Revised), ADR-076 (ACCEPTED), ADR-077 (ACCEPTED).
+- **Backend API Readiness:** Specification approved; implementation pending in Phase F0.
+- **Next Milestone:** Owner review of revised ADR-075; kick-off of Phase F0.
+
+---
+
+# 34. Log Maintenance Rules
 
 The project log should be updated when:
 
@@ -1607,7 +1712,7 @@ What happens next?
 
 ---
 
-# 32. Final Principle
+# 35. Final Principle
 
 The project log is a record of **engineering evolution**, not a diary of every command executed.
 

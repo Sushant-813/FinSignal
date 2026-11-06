@@ -587,7 +587,7 @@ FinSignal provides deterministic financial intelligence and aggregation capabili
 - **Phase 6 (Implemented):** Sliding-window behavioral feature engineering producing the validated 34-feature `FeatureVector` under `FEATURE_VERSION = "v1.0"`.
 - **Phase 7 (Implemented):** Machine learning anomaly detection via `IsolationForestModel`, chronological partitioning with equal-timestamp grouping, validation-only threshold tuning under an operational alert-rate cap ($\le 5\%$), pre-deserialization SHA-256 integrity verification, and active model promotion.
 - **Phase 8 (Implemented):** Hybrid risk scoring combining normalized unsupervised ML anomaly scores with deterministic financial heuristics into a 0–100 composite risk score, risk-tier mapping (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL`), structured explainable risk factors, and protected API endpoints with atomic PostgreSQL persistence and audit logging.
-- **Phase 9 (Deferred):** Case management, alert triage, evidence attachment, and investigator resolution workflows.
+- **Phase 9 (Implemented):** Case management, alert triage, evidence attachment, and investigator resolution workflows.
 
 ---
 

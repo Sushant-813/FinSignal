@@ -2,10 +2,10 @@
 
 **Project:** FinSignal — Financial Transaction Intelligence & Investigation Platform  
 **Document:** Project Roadmap  
-**Scope:** Backend + ML only  
-**Status:** Planning / Implementation-Ready  
-**Version:** 1.0.0  
-**Last Updated:** 2026-10-25
+**Scope:** Backend + ML v1.0.0 (Completed) & Frontend Implementation Track (Phases F0–F8)
+**Status:** Backend + ML v1.0.0 Released / Frontend Planning Complete (Implementation-Ready for F0)
+**Version:** 1.1.0
+**Last Updated:** 2026-11-06
 
 ---
 
@@ -15,7 +15,7 @@ This document defines the implementation roadmap for the first major version of 
 
 The roadmap covers the **Python backend, financial analytics, ML/anomaly detection, investigation workflows, AI-assisted investigation backend, testing, security, and deployment**.
 
-The frontend is intentionally excluded from this roadmap. Frontend planning and implementation will begin only after the Backend + ML scope reaches its defined completion point.
+The Backend + ML v1.0.0 scope is fully completed and released. The frontend implementation track (Phases F0–F8) is now integrated into this roadmap as the active next development track following completion of frontend planning documentation.
 
 The roadmap is designed to keep implementation incremental, testable, and portfolio-ready.
 
@@ -1002,7 +1002,7 @@ The Backend + ML release is complete only when the following are true:
 - [x] **Authentication works:** Verified with Argon2id password hashing, constant-time dummy verification, and JWT access tokens.
 - [x] **RBAC works:** Verified via `require_roles` dependency across ADMIN, ANALYST, and INVESTIGATOR roles.
 - [x] **Dataset ingestion works:** Verified with 50 MB bounded streaming, UTF-8 BOM recovery, advisory locks, and canonical deduplication.
-- [x] **Transaction APIs work:** Verified with immutable canonical persistence, pagination, and multi-field filtering.
+- [x] **Transaction persistence & ingestion work:** Verified with immutable canonical persistence, row-level provenance ledger, and transaction risk query/eval APIs (`/transactions/{id}/risk`). (Note: general collection browsing endpoints `GET /api/v1/transactions` are an identified API contract prerequisite for Frontend Phase F3).
 - [x] **Analytics work:** Verified via async SQL aggregate pushdown, timezone-aware calendar bucketing, and statistical median outliers.
 - [x] **Investigation workflow works:** Verified via manual triage queue, atomic primary transaction binding, and CAS status lifecycles.
 - [x] **Evidence management works:** Verified with polymorphic evidence types, SHA-256 payload hashing, and append-only trigger defense.
@@ -1392,4 +1392,200 @@ Backend + ML v1.0
 
 The frontend is intentionally the **next major development track after this chain is complete**.
 
-The success criterion for the current roadmap is therefore not visual completeness. It is a backend and ML platform that can ingest financial transactions, understand account behavior, identify anomalous activity, provide evidence-backed risk intelligence, support human investigations, and produce trustworthy AI-assisted summaries without compromising financial correctness, temporal integrity, security, or explainability.
+The success criterion for the backend roadmap was not visual completeness. It was a backend and ML platform that can ingest financial transactions, understand account behavior, identify anomalous activity, provide evidence-backed risk intelligence, support human investigations, and produce trustworthy AI-assisted summaries without compromising financial correctness, temporal integrity, security, or explainability. That platform is now released as v1.0.0.
+
+---
+
+# 29. Frontend Implementation Track (Phases F0–F8)
+
+Following the completion of Backend + ML v1.0.0 and the formal finalization of the frontend planning suite (`FRONTEND_PRD.md`, `FRONTEND_TRD.md`, `FRONTEND_ARCHITECTURE.md`, `FRONTEND_API_INTEGRATION.md`, `FRONTEND_SECURITY.md`, `FRONTEND_TESTING_STRATEGY.md`, `FRONTEND_ROADMAP.md`, `FRONTEND_DESIGN.md`), this section integrates the frontend implementation sequence into the master project roadmap.
+
+### High-Level Phase Sequence
+
+```text
+F0 — Decisions, Contract Verification & Repository Readiness
+  ↓
+F1 — Application Foundation & Design System
+  ↓
+F2 — Authentication, Session & Application Shell
+  ↓
+F3 — Analytics, Transaction Exploration & Risk
+  ↓
+F4 — Dataset Import & Processing Visibility
+  ↓
+F5 — Investigation Queue, Workspace & Lifecycle
+  ↓
+F6 — Evidence & AI-Assisted Investigation
+  ↓
+F7 — Integration, Accessibility, Security & Hardening
+  ↓
+F8 — Deployment, Acceptance & Frontend Release
+```
+
+---
+
+## Phase F0 — Decisions, Contract Verification & Repository Readiness
+
+- **Objective:** Eliminate architectural and contract unknowns before frontend feature construction. Ratify approved architectural decisions (ADR-074, ADR-076, ADR-077), finalize authentication strategy (ADR-075), execute the backend API readiness enhancement (`docs/BACKEND_API_READINESS.md`), verify the running FastAPI `/openapi.json` contract, and configure frontend repository tooling.
+- **Key Sub-Tasks:**
+  - **F0.1 Architectural Governance:** Record approved ADR-074, ADR-076, ADR-077 as `ACCEPTED`; submit revised ADR-075 (Authentication Strategy) for final approval.
+  - **F0.2 Backend API Readiness Enhancement (NOT STARTED):** Implement and test the three approved backend read endpoints strictly per `docs/BACKEND_API_READINESS.md` without modifying release history:
+    - `GET /api/v1/transactions` (paginated collection querying and multi-field filtering)
+    - `GET /api/v1/transactions/{id}` (single transaction detail retrieval)
+    - `GET /api/v1/datasets/imports` (paginated dataset import history)
+  - **F0.3 OpenAPI Type Generation & Contract Verification:** Run `openapi-typescript` against the verified running backend `/openapi.json` to generate static TypeScript DTOs (`src/api/generated/schema.ts`) and establish automated CI drift checks (ADR-076).
+  - **F0.4 Repository Scaffolding & Tooling:** Scaffold React + TypeScript + Vite application in `frontend/` directory with pinned `package-lock.json` (Node.js 20+ LTS), strict compiler flags, Tailwind design tokens (`FRONTEND_DESIGN.md`), ESLint, Prettier, and Vitest test harness.
+- **Exit Criteria:**
+  - All four frontend ADRs ratified in `DECISIONS.md`.
+  - Backend API readiness endpoints implemented, covered by 100% passing automated tests, and verified in OpenAPI.
+  - Frontend TypeScript types generated directly from running backend without handwritten modifications.
+  - Frontend repository builds cleanly (`npm run build`), passes lint/typecheck, and executes baseline Vitest unit tests.
+- **Status:** `NOT STARTED (Planning Complete; Implementation-Ready)`
+
+---
+
+## Phase F1 — Application Foundation & Design System
+
+- **Objective:** Build accessible design system primitives, layout foundations, and theme tokens conforming to `FRONTEND_DESIGN.md` (Coinbase clarity + IBM enterprise structure).
+- **Key Tasks:**
+  - Configure Tailwind CSS design tokens (typography, cobalt blue palette, semantic status badges, borders, spacing).
+  - Implement reusable UI primitives (Buttons, Inputs, Selects, Modals/Dialogs, Tables, Status Badges, Metric Cards).
+  - Build App Shell structure (Collapsible Sidebar, Header, Breadcrumbs, User Profile indicator).
+  - Setup Vitest and React Testing Library component test harnesses.
+- **Exit Criteria:**
+  - Shared UI component library passes automated rendering, keyboard focus, and accessibility tests.
+  - Zero hard-coded ad-hoc styles in feature pages; all styles derive from centralized tokens.
+- **Status:** `NOT STARTED`
+
+---
+
+## Phase F2 — Authentication, Session & Application Shell
+
+- **Objective:** Deliver secure login, authenticated session state, role-aware routing, and main application layout.
+- **Key Tasks:**
+  - Build Login page with client-side format validation (Argon2id password requirements, normalized email).
+  - Implement in-memory JWT authentication adapter per approved ADR-075.
+  - Implement current-user context (`GET /api/v1/auth/me`) and permission-aware navigation helpers.
+  - Implement protected route wrappers with unauthorized/forbidden fallback screens.
+  - Implement clean logout flow (discard token, clear query cache, redirect).
+- **Exit Criteria:**
+  - Successful login transitions to dashboard with verified role context (`ADMIN`, `ANALYST`, `INVESTIGATOR`).
+  - Access token is strictly held in memory and never written to `localStorage` or `sessionStorage`.
+  - Expired tokens or 401 responses trigger clean re-authentication.
+- **Status:** `NOT STARTED`
+
+---
+
+## Phase F3 — Analytics, Transaction Exploration & Risk
+
+- **Objective:** Deliver the operational dashboard, transaction exploration table, and risk explainability workflows.
+- **Key Tasks:**
+  - Implement Analytics Overview page with Apache ECharts visualizations (volume trends, category spending, top merchants).
+  - Build Transaction Exploration table with server-side pagination, sorting, and multi-field filtering.
+  - Implement Transaction Detail view preserving exact decimal precision (`MoneyStr`) and UTC timestamps.
+  - Implement Risk Result panel displaying hybrid score, risk tier badge, ML vs Rule score breakdown, and structured factor list.
+  - Implement on-demand risk analysis action (`POST /transactions/{id}/risk/analyze`) with model version awareness.
+- **Exit Criteria:**
+  - Analytics and transaction queries execute cleanly against backend endpoints.
+  - Decimal values render with zero floating-point corruption.
+  - Risk factors clearly distinguish between facts, heuristics, and model-derived signals.
+- **Status:** `NOT STARTED`
+
+---
+
+## Phase F4 — Dataset Import & Processing Visibility
+
+- **Objective:** Enable authorized analysts and administrators to upload CSV datasets, monitor progress, and review data quality results.
+- **Key Tasks:**
+  - Build multipart CSV file uploader with bounded client preflight (50 MB limit, `.csv` validation).
+  - Implement import submission (`POST /api/v1/datasets/imports`) with duplicate detection handling (`200 OK` vs `201 Created`).
+  - Build Import History & Detail view showing row counts (`INSERTED`, `MATCHED_EXISTING`, `QUARANTINED`, `REJECTED`).
+  - Implement recovery workflow (`POST /api/v1/datasets/imports/{id}/recover`) for interrupted imports.
+- **Exit Criteria:**
+  - 50 MB streaming uploads and recovery operate cleanly without browser crashes.
+  - Ingestion outcomes and validation errors render accurately with row-level provenance.
+- **Status:** `NOT STARTED`
+
+---
+
+## Phase F5 — Investigation Queue, Workspace & Lifecycle
+
+- **Objective:** Provide a manual-first triage queue, case creation workflow, and core investigation workspace.
+- **Key Tasks:**
+  - Implement Investigation Queue table with deterministic pagination, status filters (`OPEN`, `UNDER_REVIEW`, `RESOLVED`), and priority filters.
+  - Implement Manual Investigation Creation modal binding a valid primary transaction.
+  - Build Investigation Workspace layout assembling primary transaction facts, latest risk analysis, and case timeline.
+  - Implement Assignment actions (self-assign for Investigators, global assign for Admins) and state transition to `UNDER_REVIEW`.
+- **Exit Criteria:**
+  - Investigation creation and assignment strictly conform to backend RBAC and lifecycle validation.
+  - Pessimistic locking / conflict errors (`409`, `422`) are handled gracefully with clear user guidance.
+- **Status:** `NOT STARTED`
+
+---
+
+## Phase F6 — Evidence & AI-Assisted Investigation
+
+- **Objective:** Complete the investigative workflow with 1-hop transaction linking, immutable evidence attachment, grounded AI briefing summaries, and human resolution.
+- **Key Tasks:**
+  - Implement Related Transaction linking modal enforcing the 4-way 1-hop shared-party predicate.
+  - Build Evidence Attachment form supporting all 6 domain evidence types and user notes (up to 64 KB JSONB payload).
+  - Build Evidence List displaying immutable snapshots ordered deterministically (`created_at ASC, id ASC`).
+  - Implement AI Summary request and briefing display, with dynamic staleness indicator (`is_stale: true`) and grounded entity citations.
+  - Implement Case Resolution modal requiring non-empty notes and recording one of 4 standardized outcomes.
+- **Exit Criteria:**
+  - Resolved cases immediately transition to permanently immutable read-only presentation.
+  - AI summaries strictly present structured facts, signals, and limitations without making fraud verdicts.
+- **Status:** `NOT STARTED`
+
+---
+
+## Phase F7 — Integration, Accessibility, Security & Hardening
+
+- **Objective:** End-to-end integration testing, accessibility compliance, browser security hardening, and performance verification.
+- **Key Tasks:**
+  - Automated accessibility testing (axe-core) ensuring WCAG 2.1 AA compliance across all primary screens.
+  - Full keyboard navigation and screen-reader audit for investigation workspaces.
+  - End-to-end user journey tests with Playwright (login -> ingest -> triage -> investigate -> resolve).
+  - Browser security audit: Content Security Policy (CSP), subresource integrity, sanitization of user notes and CSV exports.
+  - Production build optimization: code splitting, route lazy-loading, bundle budget compliance (< 300 KB initial gzipped JS).
+- **Exit Criteria:**
+  - Zero critical or high accessibility violations.
+  - All E2E smoke journeys pass reliably against staging backend.
+  - Production bundle complies with size budgets.
+- **Status:** `NOT STARTED`
+
+---
+
+## Phase F8 — Deployment, Acceptance & Frontend Release
+
+- **Objective:** Finalize production deployment configuration, conduct formal user acceptance review, and release Frontend v1.0.0.
+- **Key Tasks:**
+  - Production static asset web server configuration (Nginx / Cloudflare Pages / Caddy) with security headers and history fallback routing.
+  - Synchronize documentation across all master and frontend specifications.
+  - Conduct formal end-to-end acceptance review with stakeholders.
+  - Tag git release `frontend-v1.0.0` with accompanying release notes.
+- **Exit Criteria:**
+  - Frontend successfully deployed and verified against production backend.
+  - Formal acceptance criteria from `FRONTEND_PRD.md` 100% satisfied.
+  - Working tree clean with release tag published.
+- **Status:** `NOT STARTED`
+
+---
+
+# 30. Final Master Integration Principle
+
+FinSignal delivers financial transaction intelligence through a strict hierarchy of authority:
+
+```text
+Backend PostgreSQL & Python Services (Authoritative Truth)
+                         ↓
+       FastAPI REST Endpoints (/api/v1)
+                         ↓
+  Verified OpenAPI Contract (/openapi.json)
+                         ↓
+      Typed React Application (Presentation & Orchestration)
+                         ↓
+     Human Investigator Decision (Final Operational Authority)
+```
+
+The frontend never replaces, duplicates, or bypasses backend domain logic, financial precision, risk algorithms, or authorization. It exists to make the system's analytical power accessible, transparent, and actionable for human investigators.

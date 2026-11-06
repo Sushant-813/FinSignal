@@ -188,9 +188,9 @@ The frontend will use:
 - Tailwind CSS
 - Apache ECharts
 
-The frontend is intentionally not covered in detail by this document.
+Detailed frontend technical specifications are established in `FRONTEND_TRD.md`, `FRONTEND_ARCHITECTURE.md`, and `FRONTEND_DESIGN.md`.
 
-Frontend-specific technical documentation will be created during the frontend phase.
+The frontend is an operational presentation and orchestration client; the backend remains the sole authoritative source of financial calculations, risk scoring, evidence immutability, and authorization.
 
 The backend must expose stable API contracts that allow the frontend to be developed independently.
 

@@ -2199,6 +2199,218 @@ During the Phase 11 review and Phase 12 release preparation, all core backend, d
 - **Traceability:** Preserves historical context from ADR-061 while transparently scheduling deployment work into a dedicated, subsequent phase.
 - **Operational Requirement:** Multi-container packaging and deployment scripts must be completed in Phase 13 prior to production deployment.
 
+---
+
+# ADR-074 — Frontend Technology Stack & Dependency Selection
+
+**Status:** ACCEPTED
+
+**Date:** 2026-11-06
+
+**Related decisions:** ADR-002, ADR-004, ADR-048, ADR-053
+
+## Context
+
+The main technical requirements document (`TRD.md` Section 3.5) established the high-level frontend technology choices: React, TypeScript, Vite, Tailwind CSS, and Apache ECharts.
+
+To transition from planning into implementation (Phase F0), concrete library and tooling decisions must be ratified for client-side routing, server-state management, client-side form orchestration, schema validation, HTTP communication, UI primitives, icons, and automated testing.
+
+## Decision
+
+Approve the proposed React Single-Page Application (SPA) architecture and the supporting library ecosystem:
+
+1. **Core Technology Baseline (Preserved from `TRD.md`):**
+   - UI Library: **React**
+   - Language: **TypeScript** (Strict Mode enabled)
+   - Build Tool & Development Server: **Vite**
+   - Styling: **Tailwind CSS** (design tokens per `FRONTEND_DESIGN.md`)
+   - Visual Analytics: **Apache ECharts**
+
+2. **Approved Supporting Libraries:**
+   - Client-Side Routing: **React Router**
+   - Server State, Caching & Data Lifecycle: **TanStack Query**
+   - Form Orchestration: **React Hook Form**
+   - Form & Input Validation: **Zod**
+   - HTTP Transport: **Native Fetch API** encapsulated in typed domain API modules (Axios is rejected)
+   - API Contract Typing: **`openapi-typescript`**
+   - Accessible UI Primitives: **Radix UI** primitives following selected structural patterns from shadcn/ui
+   - Iconography: **Lucide React**
+   - Unit & Component Testing: **Vitest**, **React Testing Library**, **user-event**
+   - API Network Mocking: **Mock Service Worker (MSW)**
+   - End-to-End Testing: **Playwright**
+   - Package Management: **npm** with pinned `package-lock.json` and Node.js 20+ LTS
+
+## Governance Requirements & Constraints
+
+1. **Version Selection Discipline:** Architectural approval of a technology is strictly distinguished from installing specific package versions. Mutually compatible, stable, and actively supported versions must be selected at implementation kickoff in Phase F0.
+2. **Deterministic Locking:** All dependencies must be strictly pinned through `package-lock.json`. Unpinned production dependencies, floating CDN scripts, and unvetted transitive upgrades are forbidden.
+3. **No Unapproved Dependencies:** No additional external libraries or abstractions may be introduced without documented justification and formal approval.
+4. **No Premature Global State:** Redux, Zustand, or any other global state management library is rejected for the initial MVP. Server state is owned by TanStack Query; localized interaction state is managed by React component state or lightweight React Context. A global store will be considered only if a demonstrated, concrete state-sharing requirement emerges.
+
+## Consequences
+
+### Positive
+
+- Clean separation between server state (cached, deduplicated, lifecycle-managed) and UI interaction state.
+- Leverages standard browser Fetch without third-party HTTP client bloat.
+- Provides accessible, keyboard-operable UI components via headless Radix primitives.
+- Ensures fast, deterministic unit testing via Vitest and realistic network-boundary tests via MSW.
+
+### Negative
+
+- Requires disciplined dependency management and package-lock maintenance.
+- Requires team adherence to server-state patterns to avoid reinventing global state.
+
+---
+
+# ADR-075 — Frontend Authentication, Session Lifecycle & Token Storage Strategy
+
+**Status:** PENDING
+
+**Date:** 2026-11-06
+
+**Related decisions:** ADR-006, ADR-007, ADR-053
+
+## Context
+
+FinSignal backend implements stateless Bearer JWT authentication (`POST /api/v1/auth/login`, `GET /api/v1/auth/me`, `POST /api/v1/auth/logout`). The backend configuration (`src/finsignal/core/config.py`) establishes `access_token_expire_minutes` with a **default expiration of 30 minutes** (1,800 seconds), dynamically returned to the client in the login response payload (`TokenResponse.expires_in`). The configuration allows setting expiration between 1 and 1,440 minutes (24 hours).
+
+The backend does not implement refresh tokens, server-side session persistence, or token revocation blocklists (ADR-006). A secure, realistic browser authentication strategy must be selected for holding, applying, and invalidating access tokens.
+
+## Detailed Comparison of Evaluated Approaches
+
+### Option 1 — In-Memory Access-Token Storage (Proposed MVP)
+
+- **Mechanics:** The access token is held strictly in JavaScript memory within an application authentication service or React Context. Outgoing requests attach the token via `Authorization: Bearer <token>`.
+- **Persistence:** Token is never written to persistent browser storage (`localStorage`, `sessionStorage`, or cookies).
+- **Reload Behavior:** A full browser page reload (F5), navigation away from the application, or opening a new tab completely clears the token from memory.
+- **Expiration Behavior:** With the verified 30-minute default access-token lifetime and no refresh endpoint, the session expires in 30 minutes. Once expired, API requests return HTTP 401, forcing the user to log in again.
+- **Security Boundaries:**
+  - *Mitigation:* Reduces persistent token exposure on disk and eliminates token survival after browser restart or tab closure.
+  - *Limitation:* **Does NOT protect an active session against active Cross-Site Scripting (XSS).** Any malicious same-origin script executing in the browser can still intercept in-memory variables, invoke authenticated API methods through the in-memory client, or exfiltrate the token while the session is live.
+- **Usability Impact:** High friction on accidental page reloads and at the 30-minute expiration mark. Investigators working on long-running cases may lose unsubmitted form inputs if forced to re-authenticate unexpectedly.
+
+### Option 2 — Browser Persistent Storage (`localStorage` or `sessionStorage`)
+
+- **Mechanics:** The access token is saved in `localStorage` or `sessionStorage` upon login and retrieved on application initialization.
+- **Persistence:** `localStorage` persists indefinitely across browser restarts and all tabs in the origin. `sessionStorage` survives page reloads within the current tab, but is typically cleared when the tab is closed.
+- **Reload Behavior:** The user remains authenticated across page reloads (F5), significantly reducing workflow interruption.
+- **Security Boundaries:**
+  - *Limitation:* Both `localStorage` and `sessionStorage` are completely accessible to any same-origin JavaScript. A successful XSS vulnerability or compromised browser extension can directly read and exfiltrate the token.
+  - `localStorage` substantially expands the window of vulnerability because the stolen token remains accessible long after the user finishes their immediate session.
+- **Usability Impact:** Minimal friction; seamless page reload and multi-tab experience until the 30-minute token expires.
+
+### Option 3 — Backend-Supported HttpOnly, Secure Cookies with CSRF Defense
+
+- **Mechanics:** The backend issues authentication tokens inside an HTTP cookie tagged with `HttpOnly; Secure; SameSite=Strict` (or `Lax`). The browser automatically includes the cookie in same-origin or authorized cross-origin requests.
+- **Persistence:** Governed by cookie headers (`Max-Age` / `Expires`).
+- **Reload Behavior:** Survives page reloads seamlessly while the cookie remains valid.
+- **Security Boundaries:**
+  - *Mitigation:* JavaScript code (and therefore XSS scripts) cannot directly read or steal the token from the cookie jar.
+  - *Limitation:* Vulnerable to Cross-Site Request Forgery (CSRF) unless paired with strict CSRF tokens, anti-CSRF headers, and strict SameSite configuration.
+- **Architectural Prerequisite:** **Cannot be implemented as a frontend-only change.** Requires coordinated backend architectural modifications:
+  1. Backend cookie issuance on `POST /api/v1/auth/login`.
+  2. Backend cookie clearance on `POST /api/v1/auth/logout`.
+  3. Coordinated CORS credentials configuration (`allow_credentials=True` with explicit non-wildcard origins).
+  4. CSRF protection middleware and Double-Submit or synchronizer token patterns.
+  5. Formal session refresh/rotation and revocation semantics.
+
+## Trade-off Analysis & Recommendation
+
+| Criteria | Option 1: In-Memory | Option 2: Web Storage | Option 3: HttpOnly Cookies |
+|---|---|---|---|
+| **Direct Script Token Access** | Accessible to active XSS | Accessible to active & passive XSS | Completely inaccessible to script |
+| **Post-Session Disk Persistence** | None (Zero disk trace) | High (`localStorage` persists indefinitely) | Configurable / Session-bound |
+| **Page Reload (F5) Usability** | Poor (Requires re-login) | Good (Survives reload) | Excellent (Survives reload) |
+| **Session Lifetime** | 30 minutes (Verified default) | 30 minutes (Verified default) | Flexible (Supports refresh rotation) |
+| **Backend Modification Required** | None (Uses existing Bearer API) | None (Uses existing Bearer API) | Substantial backend re-architecture |
+
+### Recommendation
+
+**Adopt Option 1 (In-Memory Token Storage) as the baseline for Frontend MVP**, subject to the following implementation mitigations:
+1. Clearly document that in-memory storage reduces persistent disk exposure, but does not render the client immune to active same-origin script execution.
+2. In Phase F2, implement route-state preservation so that when a user is forced to re-authenticate following a reload or 30-minute expiration, they are automatically returned to their prior investigation workspace.
+3. If user feedback during Phase F2/F3 demonstrates that re-authenticating on reload or at 30 minutes unacceptably impairs investigator efficiency, formally schedule Option 3 (Backend HttpOnly Cookies with Refresh Rotation) as a coordinated full-stack milestone in Phase 13 or post-v1.0.
+
+---
+
+# ADR-076 — OpenAPI-Driven TypeScript Contract Generation & Network Boundary Validation
+
+**Status:** ACCEPTED
+
+**Date:** 2026-11-06
+
+**Related decisions:** ADR-047, ADR-048, ADR-053
+
+## Context
+
+The FastAPI backend exposes an authoritative OpenAPI 3.1 specification at `/openapi.json` derived directly from Pydantic v2 schemas. Manual replication of TypeScript types in the frontend introduces inevitable schema drift, subtle field type mismatches (such as string decimals vs numbers), and omission of optionality constraints.
+
+## Decision
+
+Approve **`openapi-typescript`** as the standard tooling for generating static TypeScript interfaces from the running backend OpenAPI specification.
+
+## Governance & Engineering Requirements
+
+1. **Source of Truth:** Types must be generated directly from the live or exported `/openapi.json` of the running FastAPI backend, never from handwritten mock files.
+2. **Separation of Generated Code:** Generated types must be written to an isolated directory (e.g. `src/api/generated/schema.ts`) and kept strictly separated from handwritten application code.
+3. **Immutability of Output:** Developers must not manually modify, patch, or edit generated TypeScript files. Any schema defect must be corrected upstream in the backend Pydantic models.
+4. **Repository & CI Strategy:** Generated types will be committed to the repository to allow offline builds and local frontend development without requiring a running database or backend service. CI must execute an automated contract drift check (`npm run check:types-drift`) that boots the backend or compares exported schemas to ensure generated types remain in exact synchronization.
+5. **Feature Module Integration:** Feature API clients (`src/features/*/api/*.ts`) must consume generated types for all request bodies, query parameters, and response models.
+6. **Compile-Time Typing vs. Runtime Validation:**
+   - *Important Distinction:* **OpenAPI-generated TypeScript types provide compile-time type checking only; they perform zero validation at runtime.** TypeScript types are erased upon JavaScript compilation.
+   - The application does not claim 100% runtime contract safety solely from generated types.
+   - Runtime response validation (e.g., using Zod schemas) will not be introduced globally by default to avoid redundant parsing overhead, but should be employed selectively at critical boundaries (such as complex financial decimal validation or external file parsing) where a concrete operational need justifies it.
+
+## Consequences
+
+### Positive
+
+- Zero schema drift between backend Pydantic models and frontend TypeScript compilation.
+- Zero runtime overhead or bundle weight added by static type definitions.
+- Automatic propagation of backend schema changes to frontend type-checking during development.
+
+### Negative
+
+- Requires backend execution or an exported schema artifact whenever API contracts evolve.
+
+---
+
+# ADR-077 — Transaction & Dataset Import Collection Read API Requirements
+
+**Status:** ACCEPTED
+
+**Date:** 2026-11-06
+
+**Related decisions:** ADR-008, ADR-028, ADR-058, ADR-064, ADR-065
+
+## Context
+
+The Frontend PRD (`FRONTEND_PRD.md` Screens 7.1 and 8.2) requires an analyst/investigator to explore, sort, and filter transaction records across namespaces, currencies, date ranges, and accounts. Additionally, Screen 7.1 requires viewing past dataset import executions and their error logs.
+
+The comprehensive documentation audit revealed that while `API_GUIDELINES.md` sections 21, 22, and 70 document `GET /api/v1/transactions` and `GET /api/v1/transactions/{id}`, these endpoints were not implemented in the FastAPI router during Backend Phases 1–12 (only `/transactions/{id}/risk` and `/investigations/{id}/transactions` exist). Furthermore, `src/finsignal/api/v1/datasets.py` lacks a collection listing endpoint (`GET /api/v1/datasets/imports`).
+
+## Decision
+
+1. **Approve Requirement for Missing Endpoints:** Ratify the requirement to implement the following three read endpoints in the FastAPI backend:
+   - `GET /api/v1/transactions` (paginated collection querying and multi-field filtering)
+   - `GET /api/v1/transactions/{id}` (single transaction fact retrieval)
+   - `GET /api/v1/datasets/imports` (paginated dataset import history)
+2. **Scope as Backend API Readiness Enhancement:** Treat the implementation of these endpoints as a separately scoped backend API readiness enhancement within Phase F0.
+3. **Preserve Release Integrity:** Do not rewrite Backend + ML v1.0.0 release history. v1.0.0 remains the released backend milestone. These three endpoints represent an operational contract enhancement required to enable Frontend MVP workflows.
+4. **Technical Specification:** All three endpoints must be implemented strictly according to the dedicated technical specification in `docs/BACKEND_API_READINESS.md`.
+
+## Consequences
+
+### Positive
+
+- Fully unblocks the frontend MVP transaction exploration and dataset visibility screens with authentic PostgreSQL-backed contracts.
+- Avoids fragile client-side mocks or scope compromises.
+
+### Negative
+
+- Requires backend implementation, testing, and documentation verification during Phase F0 before frontend Phase F3/F4 development can commence.
+
 # 4. Decision Dependency Map
 
 ```text
@@ -2279,7 +2491,7 @@ The following decisions remain intentionally open until implementation provides 
 9. Exact deployment platform.
 10. Exact rate-limiting implementation defaults.
 11. Exact background-job strategy if batch processing becomes slow.
-12. Exact frontend architecture after Backend + ML completion.
+12. Exact frontend architecture after Backend + ML completion — Resolved via ADR-074 (Frontend Stack: ACCEPTED), ADR-076 (OpenAPI Type Generation: ACCEPTED), and ADR-077 (Transaction & Dataset Import Read APIs: ACCEPTED). ADR-075 (Authentication & Token Storage Strategy) remains PENDING owner review of revised comparison.
 13. Exact retention window for completed-file re-upload deduplication — Resolved via ADR-065 (Perpetual retention for byte-identical files with separately authorized administrative reprocessing).
 14. Policy for differing contextual metadata on canonical match — Resolved via ADR-065 (Candidate 1: Immutable canonical preservation with row-hash provenance).
 15. Account external identifier uniqueness and namespace resolution contract — Policy selected via proposed ADR-065 Decision D (Namespace-Scoped Account Identity `(source_namespace, external_account_id)`); schema migration and existing data backfill pending implementation authorization.
