@@ -3,6 +3,7 @@
 import hashlib
 import io
 import uuid
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import (
@@ -10,6 +11,7 @@ from fastapi import (
     Depends,
     File,
     Form,
+    Query,
     Response,
     UploadFile,
     status,
@@ -21,6 +23,7 @@ from finsignal.common.exceptions import PayloadTooLargeError, ValidationError
 from finsignal.core.database import get_db_session
 from finsignal.dataset.schemas import (
     DatasetImportDetailResponse,
+    DatasetImportListResponse,
     DatasetImportResponse,
 )
 from finsignal.dataset.service import DatasetImportService
@@ -119,6 +122,59 @@ async def upload_dataset_import(
         response.status_code = status.HTTP_201_CREATED
 
     return import_resp
+
+
+@router.get(
+    "/imports",
+    response_model=DatasetImportListResponse,
+    status_code=status.HTTP_200_OK,
+    summary="List and filter dataset import executions",
+)
+async def list_dataset_imports(
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    current_user: Annotated[
+        User, Depends(require_roles("ADMIN", "ANALYST", "INVESTIGATOR"))
+    ],
+    import_service: Annotated[DatasetImportService, Depends(get_import_service)],
+    page: Annotated[int, Query(ge=1, description="1-indexed page number")] = 1,
+    page_size: Annotated[
+        int, Query(ge=1, le=100, description="Items per page (max 100)")
+    ] = 20,
+    source_namespace: Annotated[
+        str, Query(description="Target namespace partition")
+    ] = "SYNTHETIC",
+    import_status: Annotated[
+        str | None,
+        Query(
+            alias="status",
+            pattern=r"^(PENDING|PROCESSING|COMPLETED|FAILED)$",
+            description="Filter by import status",
+        ),
+    ] = None,
+    source_type: Annotated[
+        str | None,
+        Query(min_length=1, max_length=32, description="Filter by source type"),
+    ] = None,
+    from_time: Annotated[
+        datetime | None,
+        Query(description="Start boundary for started_at (inclusive, ISO 8601)"),
+    ] = None,
+    to_time: Annotated[
+        datetime | None,
+        Query(description="End boundary for started_at (exclusive, ISO 8601)"),
+    ] = None,
+) -> DatasetImportListResponse:
+    """List paginated dataset import executions without row-level error payloads."""
+    return await import_service.list_imports(
+        session=session,
+        page=page,
+        page_size=page_size,
+        source_namespace=source_namespace,
+        status=import_status,
+        source_type=source_type,
+        from_time=from_time,
+        to_time=to_time,
+    )
 
 
 @router.get(

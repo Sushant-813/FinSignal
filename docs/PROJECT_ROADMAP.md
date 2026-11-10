@@ -3,9 +3,9 @@
 **Project:** FinSignal — Financial Transaction Intelligence & Investigation Platform  
 **Document:** Project Roadmap  
 **Scope:** Backend + ML v1.0.0 (Completed) & Frontend Implementation Track (Phases F0–F8)
-**Status:** Backend + ML v1.0.0 Released / Frontend Planning Complete (Implementation-Ready for F0)
-**Version:** 1.1.0
-**Last Updated:** 2026-11-06
+**Status:** Backend + ML v1.0.0 Released / Phase F0 Complete (Ready for Phase F1)
+**Version:** 1.2.0
+**Last Updated:** 2026-11-10
 
 ---
 
@@ -1426,21 +1426,21 @@ F8 — Deployment, Acceptance & Frontend Release
 
 ## Phase F0 — Decisions, Contract Verification & Repository Readiness
 
-- **Objective:** Eliminate architectural and contract unknowns before frontend feature construction. Ratify approved architectural decisions (ADR-074, ADR-076, ADR-077), finalize authentication strategy (ADR-075), execute the backend API readiness enhancement (`docs/BACKEND_API_READINESS.md`), verify the running FastAPI `/openapi.json` contract, and configure frontend repository tooling.
+- **Objective:** Eliminate architectural and contract unknowns before frontend feature construction. Execute the backend API readiness enhancement after architectural governance has been ratified (ADR-074 through ADR-077), verify the running FastAPI `/openapi.json` contract, and configure frontend repository tooling.
 - **Key Sub-Tasks:**
-  - **F0.1 Architectural Governance:** Record approved ADR-074, ADR-076, ADR-077 as `ACCEPTED`; submit revised ADR-075 (Authentication Strategy) for final approval.
-  - **F0.2 Backend API Readiness Enhancement (NOT STARTED):** Implement and test the three approved backend read endpoints strictly per `docs/BACKEND_API_READINESS.md` without modifying release history:
+  - **F0.1 Architectural Governance (COMPLETED):** ADR-074, ADR-075, ADR-076, and ADR-077 are `ACCEPTED`. ADR-075 selects in-memory Bearer-token storage for the MVP; implementation must follow `DECISIONS.md` and `FRONTEND_SECURITY.md`.
+  - **F0.2 Backend API Readiness Enhancement (COMPLETED):** Implemented shared monetary types (`src/finsignal/common/types.py`) and the three approved backend read endpoints per `docs/BACKEND_API_READINESS.md` without modifying release history:
     - `GET /api/v1/transactions` (paginated collection querying and multi-field filtering)
-    - `GET /api/v1/transactions/{id}` (single transaction detail retrieval)
+    - `GET /api/v1/transactions/{transaction_id}` (single transaction detail retrieval with optional `source_namespace` partition fence)
     - `GET /api/v1/datasets/imports` (paginated dataset import history)
-  - **F0.3 OpenAPI Type Generation & Contract Verification:** Run `openapi-typescript` against the verified running backend `/openapi.json` to generate static TypeScript DTOs (`src/api/generated/schema.ts`) and establish automated CI drift checks (ADR-076).
-  - **F0.4 Repository Scaffolding & Tooling:** Scaffold React + TypeScript + Vite application in `frontend/` directory with pinned `package-lock.json` (Node.js 20+ LTS), strict compiler flags, Tailwind design tokens (`FRONTEND_DESIGN.md`), ESLint, Prettier, and Vitest test harness.
+  - **F0.3 OpenAPI Type Generation & Contract Verification (COMPLETED):** Exported OpenAPI from `create_app().openapi()` (`frontend/openapi.json`), generated static TypeScript DTOs (`frontend/src/api/generated/schema.ts`) via `openapi-typescript`, and added automated drift verification (`npm run check:types-drift`, ADR-076).
+  - **F0.4 Repository Scaffolding & Tooling (COMPLETED):** Scaffolded React + TypeScript + Vite application in `frontend/` with pinned `package-lock.json` (Node.js `>=20.0.0`, `.nvmrc`), strict compiler flags, Tailwind CSS, ESLint, Prettier, Vitest (`tests/smoke.test.tsx`), Playwright configuration, API client (`src/lib/api/client.ts`), and in-memory token store (`src/lib/auth/token-store.ts`).
 - **Exit Criteria:**
-  - All four frontend ADRs ratified in `DECISIONS.md`.
-  - Backend API readiness endpoints implemented, covered by 100% passing automated tests, and verified in OpenAPI.
-  - Frontend TypeScript types generated directly from running backend without handwritten modifications.
-  - Frontend repository builds cleanly (`npm run build`), passes lint/typecheck, and executes baseline Vitest unit tests.
-- **Status:** `NOT STARTED (Planning Complete; Implementation-Ready)`
+  - [x] All four frontend ADRs ratified in `DECISIONS.md` (ADR-074 through ADR-077 are `ACCEPTED`).
+  - [x] Backend API readiness endpoints implemented, covered by passing unit/API/PostgreSQL integration tests (`593` backend tests), and verified in OpenAPI.
+  - [x] Frontend TypeScript types generated directly from backend OpenAPI with automated zero-drift verification.
+  - [x] Frontend repository builds cleanly (`npm run build`), passes lint/format/typecheck, and executes baseline Vitest unit tests (`4` passed).
+- **Status:** `COMPLETED (2026-11-10) — F0.1–F0.4 complete and verified; ready for Phase F1`
 
 ---
 

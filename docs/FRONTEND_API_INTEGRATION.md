@@ -2,8 +2,8 @@
 
 **Document:** `FRONTEND_API_INTEGRATION.md`  
 **Product:** FinSignal — Financial Transaction Intelligence & Investigation Platform  
-**Version:** 1.0  
-**Status:** Draft for contract verification  
+**Version:** 1.1  
+**Status:** Reconciled with Phase F0 OpenAPI Contract (`frontend/openapi.json`)  
 **Scope:** Integration between the browser frontend and FastAPI `/api/v1` API  
 **Prerequisites:** `FRONTEND_PRD.md`, `FRONTEND_TRD.md`, `FRONTEND_ARCHITECTURE.md`
 
@@ -50,29 +50,29 @@ Examples:
 
 ### 3.2 Configuration
 
-Suggested public Vite configuration:
+Configured public Vite environment (`frontend/.env.example`):
 
 ```env
-VITE_API_BASE_URL=http://localhost:8000/api/v1
+VITE_API_BASE_URL=/api/v1
+VITE_APP_ENV=development
 ```
 
 Rules:
 
-- Keep the API origin configurable by environment.
+- Keep the API base URL configurable by environment (`frontend/src/lib/api/env.ts` defaults to `/api/v1`).
 - Do not hard-code hostnames in feature modules.
 - Do not put secrets in `VITE_` variables; Vite exposes these values to browser code.
-- Ensure the configured base URL includes the version prefix exactly once.
+- Ensure the configured base URL includes the version prefix (`/api/v1`) exactly once.
 - Production must use HTTPS.
-- Backend CORS must explicitly allow the deployed frontend origin.
+- Backend CORS (`Settings.cors_origins` in `src/finsignal/core/config.py`, defaulting to `["http://localhost:3000", "http://localhost:5173"]`) must explicitly allow the deployed frontend origin when making cross-origin requests.
 
 ### 3.3 Local development
 
-Choose and document one of the following:
+The frontend workspace (`frontend/vite.config.ts`) uses a **same-origin Vite development proxy** by default:
 
-- Vite development proxy to the local backend, or
-- Direct requests to a configured backend origin with backend CORS configured.
-
-Do not configure both approaches inconsistently. The selected setup must work with the authentication strategy finalized in `FRONTEND_SECURITY.md`.
+- `VITE_API_BASE_URL=/api/v1` sends browser requests to the Vite dev server on `http://localhost:5173/api/v1/...`.
+- `vite.config.ts` proxies `/api` to `VITE_DEV_PROXY_TARGET ?? "http://127.0.0.1:8000"`.
+- Direct cross-origin mode (for separate staging/production hosts) is supported via `VITE_API_BASE_URL=https://<api-host>/api/v1` paired with explicit backend `cors_origins`.
 
 ## 4. Authentication Integration
 
@@ -251,54 +251,57 @@ Examples:
 
 ```http
 GET /api/v1/transactions?page=1&page_size=50
+GET /api/v1/datasets/imports?page=1&page_size=20
 GET /api/v1/investigations?page=1&page_size=25
 ```
 
-Endpoint-specific defaults may differ. Investigation evidence documents `page_size=50`; AI summary history documents `page_size=20`. Use the actual endpoint contract.
+Endpoint-specific defaults intentionally differ across domains (`/transactions` defaults to `50`, `/datasets/imports` defaults to `20`, `/investigations` defaults to `25`, `/investigations/{id}/evidence` documents `50`, and `/investigations/{id}/ai-summary/history` documents `20`; max `page_size=100`). Always use each endpoint's OpenAPI contract.
 
-Cursor pagination is described as a possible future option for high-volume transaction feeds, not a universal MVP requirement. Do not send `cursor` or `limit` unless the live endpoint supports them.
+Cursor pagination is not implemented in MVP endpoints. Do not send `cursor` or `limit` unless the live endpoint supports them.
 
 ### 6.4 Sorting
 
-The API guidelines describe:
+Transaction listing (`GET /api/v1/transactions`) uses:
 
 ```text
-sort=<whitelisted_field>
-order=asc|desc
+sort_by=occurred_at|amount|created_at
+sort_order=asc|desc
 ```
 
 Example:
 
 ```http
-GET /api/v1/transactions?sort=occurred_at&order=desc
+GET /api/v1/transactions?sort_by=occurred_at&sort_order=desc
 ```
 
 Only send sorting parameters supported by the endpoint's actual OpenAPI schema.
 
 ### 6.5 Filtering and search
 
-The guidelines describe explicit filters, including transaction fields such as:
+Implemented filters on `GET /api/v1/transactions` (verified in `frontend/openapi.json`):
 
+- `source_namespace` (default `"SYNTHETIC"`, pattern `^[A-Z0-9_]{3,64}$`)
 - `account_id`
 - `merchant_id`
 - `device_id`
 - `location_id`
 - `transaction_type`
-- `direction`
+- `direction` (`DEBIT` | `CREDIT`)
 - `category`
-- `risk_level`
-- `from`
-- `to`
-- `min_amount`
-- `max_amount`
+- `currency` (3-letter uppercase ISO 4217)
+- `risk_level` (`LOW` | `MEDIUM` | `HIGH` | `CRITICAL`)
+- `from_time` (timezone-aware ISO 8601, inclusive)
+- `to_time` (timezone-aware ISO 8601, exclusive)
+- `min_amount` (`Decimal >= 0.01`)
+- `max_amount` (`Decimal >= 0.01`, `min_amount <= max_amount`)
 
-Do not assume every endpoint supports every filter. Search must be scoped to documented fields; do not invent a generic `q` parameter.
+On `GET /api/v1/transactions/{transaction_id}`, `source_namespace` is an optional query parameter (`None` by default): passing it activates opt-in partition fencing (`404 TRANSACTION_NOT_FOUND` on namespace mismatch), whereas omitting it resolves the transaction globally by UUID. Search is strictly scoped to explicit OpenAPI parameters; do not invent a generic `q` parameter.
 
 ### 6.6 Date/time
 
-- API timestamps use ISO-8601 and are timezone-aware.
+- API timestamps use ISO-8601 and must include timezone offsets (normalized to UTC on the backend; naive timestamps are rejected with `422 INVALID_TIMEZONE`).
 - Preserve timezone offsets and use explicit display timezone rules.
-- Analytics time windows use the documented half-open interval `[from_time, to_time)`.
+- Transaction, dataset import, and analytics time windows use the half-open interval `[from_time, to_time)` (`from_time >= to_time` returns `422 INVALID_DATE_RANGE`).
 - Do not silently convert a user-selected inclusive end date into an incorrect timestamp boundary. Implement date-range serialization in one tested utility based on each endpoint's contract.
 
 ### 6.7 Monetary values
@@ -329,18 +332,18 @@ The tables below summarize routes documented in `API_GUIDELINES.md`. They are an
 
 ### 7.2 Transactions and risk
 
-> [!IMPORTANT]
+> [!NOTE]
 > **Endpoint Implementation Status:**
-> - `GET /transactions`: **APPROVED REQUIREMENT — NOT YET IMPLEMENTED** (Per ADR-077, scheduled for implementation in Phase F0 per `docs/BACKEND_API_READINESS.md`).
-> - `GET /transactions/{transaction_id}`: **APPROVED REQUIREMENT — NOT YET IMPLEMENTED** (Per ADR-077, scheduled for implementation in Phase F0 per `docs/BACKEND_API_READINESS.md`).
+> - `GET /transactions`: **IMPLEMENTED** (Phase F0, ADR-077).
+> - `GET /transactions/{transaction_id}`: **IMPLEMENTED** (Phase F0, ADR-077).
 > - `POST /transactions`: Unimplemented / Deferred (Creation occurs via dataset CSV ingestion; individual transaction creation is not an MVP workflow).
 > - `GET /transactions/{transaction_id}/risk`: **IMPLEMENTED** (Phase 8).
 > - `POST /transactions/{transaction_id}/risk/analyze`: **IMPLEMENTED** (Phase 8).
 
 | Method | Path | Frontend use | Documented access / behavior |
 |---|---|---|---|
-| GET | `/transactions` | Transaction list | **Approved Requirement — Not Yet Implemented.** Paginated & filterable; see `BACKEND_API_READINESS.md` |
-| GET | `/transactions/{transaction_id}` | Transaction detail | **Approved Requirement — Not Yet Implemented.** Returns core transaction facts; see `BACKEND_API_READINESS.md` |
+| GET | `/transactions` | Transaction list | Implemented (Phase F0). Admin, Analyst, Investigator; paginated (`page_size=50`, max `100`) & filterable; `BACKEND_API_READINESS.md` |
+| GET | `/transactions/{transaction_id}` | Transaction detail | Implemented (Phase F0). Admin, Analyst, Investigator; returns transaction facts, relational summaries, nullable `latest_risk`, and optional `source_namespace` partition fence |
 | POST | `/transactions` | Transaction creation | Not implemented; not a frontend MVP workflow |
 | GET | `/transactions/{transaction_id}/risk` | Latest persisted risk | Implemented (Phase 8). Admin, Analyst, Investigator; pure read; 404 if no analysis |
 | POST | `/transactions/{transaction_id}/risk/analyze` | On-demand risk analysis | Implemented (Phase 8). Role and model-lifecycle restrictions |
@@ -360,17 +363,17 @@ Documented risk response includes score, risk level, model/config versions, ML s
 
 ### 7.3 Dataset imports
 
-> [!IMPORTANT]
+> [!NOTE]
 > **Endpoint Implementation Status:**
 > - `POST /datasets/imports`: **IMPLEMENTED** (Phase 4).
-> - `GET /datasets/imports`: **APPROVED REQUIREMENT — NOT YET IMPLEMENTED** (Per ADR-077, scheduled for implementation in Phase F0 per `docs/BACKEND_API_READINESS.md`).
+> - `GET /datasets/imports`: **IMPLEMENTED** (Phase F0, ADR-077).
 > - `GET /datasets/imports/{import_id}`: **IMPLEMENTED** (Phase 4).
 > - `POST /datasets/imports/{import_id}/recover`: **IMPLEMENTED** (Phase 4).
 
 | Method | Path | Frontend use | Access |
 |---|---|---|---|
 | POST | `/datasets/imports` | Upload CSV | Implemented (Phase 4). Admin, Analyst |
-| GET | `/datasets/imports` | List import executions | **Approved Requirement — Not Yet Implemented.** Paginated import history; see `BACKEND_API_READINESS.md` |
+| GET | `/datasets/imports` | List import executions | Implemented (Phase F0). Admin, Analyst, Investigator; paginated (`page_size=20`, max `100`) without row errors; `BACKEND_API_READINESS.md` |
 | GET | `/datasets/imports/{import_id}` | Import detail and validation errors | Implemented (Phase 4). Admin, Analyst, Investigator |
 | POST | `/datasets/imports/{import_id}/recover` | Recover failed/interrupted import | Implemented (Phase 4). Admin, Analyst |
 
@@ -877,12 +880,12 @@ Before generating types:
 
 ### 15.3 Generated artifacts
 
-- Store generated types in a marked generated file or directory.
+- OpenAPI snapshot exported from FastAPI `create_app().openapi()`: `frontend/openapi.json` (28 paths, 67 schemas verified in Phase F0).
+- Generated static TypeScript definitions (via `npm run api:types` using `openapi-typescript`): `frontend/src/api/generated/schema.ts`.
+- Automated drift check: `npm run check:types-drift` (`frontend/scripts/check-types-drift.mjs`) verifies that `src/api/generated/schema.ts` matches `openapi.json`.
 - Do not manually edit generated output.
-- Choose and document whether generated output is committed or generated in CI.
-- Add a CI check for stale generated types if practical.
-- Use endpoint-specific generated types in API modules.
-- Keep runtime validation selective; generated TypeScript types do not validate JSON at runtime.
+- Shared HTTP transport & in-memory Bearer token integration live in `frontend/src/lib/api/client.ts`, `frontend/src/lib/api/env.ts`, and `frontend/src/lib/auth/token-store.ts`.
+- Use endpoint-specific generated types in API modules; keep runtime validation selective where needed.
 
 ### 15.4 Contract tests
 
@@ -906,8 +909,8 @@ The following items require verification rather than frontend assumptions.
 | Logout | `/auth/logout` appears in endpoint summary, while section 9.4 describes logout strategy options and says JWT is stateless by default. | Verify whether route is implemented, its method/body/response, and whether it revokes anything. |
 | Authentication expiration | Login response includes `expires_in`; exact expiration and refresh strategy remain open. | Confirm runtime token policy and document it in `FRONTEND_SECURITY.md`. |
 | Role matrix | Section 10 is conceptual and differs from endpoint-specific rules in dataset, investigation, evidence, and AI sections. | Use endpoint-specific rules; reconcile source docs and ADRs. |
-| Transaction filters | Guidelines list supported filters as “may include.” | Inspect actual OpenAPI query parameters. |
-| Pagination | Page-based convention is general; endpoint defaults differ; cursor pagination is only a future possibility. | Use exact per-endpoint schema and defaults. |
+| Transaction filters | Phase F0 verified exact query parameters in `frontend/openapi.json` (`source_namespace`, `sort_by`, `sort_order`, `from_time`, `to_time`, `min_amount`, `max_amount`, `risk_level`, relational UUIDs). | Reconciled in `BACKEND_API_READINESS.md` and §6.4–§6.5; consume generated OpenAPI types directly. |
+| Pagination | Phase F0 established exact per-endpoint defaults (`/transactions` = 50, `/datasets/imports` = 20, `/investigations` = 25; max = 100); cursor pagination is unimplemented. | Use exact per-endpoint schema and defaults from OpenAPI. |
 | Analytics filters/responses | Endpoint sections define detailed examples, but exact live schemas must be checked. | Generate types from running OpenAPI and compare examples. |
 | Investigation PATCH | Described as assignment/priority/status update; precise field-level role rules and valid transitions must be confirmed from implementation/OpenAPI/security docs. | Verify request model and permission matrix before exposing controls. |
 | Workspace composition | Workspace endpoint is documented as a complete envelope, but exact nested schema must be verified. | Inspect generated schema and runtime response. |

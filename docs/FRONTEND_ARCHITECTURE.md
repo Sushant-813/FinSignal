@@ -1016,7 +1016,7 @@ Do not add virtualization, a global state library, or complex caching layers unt
 
 The following must be resolved in the relevant documents or ADRs:
 
-1. **Authentication session mechanism:** token storage and logout behavior must be finalized in `FRONTEND_SECURITY.md`.
+1. **Authentication session mechanism:** implement the accepted in-memory token strategy and logout/session behavior defined by ADR-075 in `DECISIONS.md` and `FRONTEND_SECURITY.md`.
 2. **State/query library:** ratify TanStack Query or document a simpler alternative.
 3. **Routing library:** ratify React Router or document the chosen routing approach.
 4. **API type generation:** verify OpenAPI completeness and choose generation/CI workflow.

@@ -103,14 +103,15 @@ The frontend must not decode a JWT and treat its claims as proof that a request 
 | `localStorage` | Persistent across browser restarts and tabs | Accessible to same-origin JavaScript; persistent token theft impact; not recommended as the default |
 | `HttpOnly` secure cookie | JavaScript cannot directly read the cookie; can support server-managed session patterns | Requires deliberate backend cookie support, `Secure`, `SameSite`, credentialed CORS, and CSRF design; not a frontend-only change |
 
-### 4.3 Recommended MVP decision
+### 4.3 Approved MVP decision — ADR-075 (2026-11-10)
 
-<badge color="warning">Proposed — approval required</badge>
+<badge color="success">Accepted</badge>
 
-**Recommendation: keep the access token in memory only for the initial MVP.**
+**Decision: keep the access token in memory only for the initial MVP.**
 
 Rationale:
 
+- The system owner approved Option 1 (in-memory access-token storage) under ADR-075 on 2026-11-10.
 - The current backend contract is a Bearer-token API.
 - The backend documentation does not establish a refresh-token endpoint or revocation mechanism.
 - In-memory storage avoids persisting the access token in `localStorage` or `sessionStorage`.
@@ -123,9 +124,11 @@ Implementation implications:
 3. Do not store the token in global state that is persisted by a persistence plugin.
 4. Clear the token on explicit logout and confirmed invalid/expired-session responses.
 5. Re-authenticate after a full page reload.
-6. Do not attempt silent refresh unless a backend refresh contract is implemented and approved.
+6. Do not attempt silent refresh unless a backend refresh contract is implemented and separately approved.
+7. Treat `TokenResponse.expires_in` as authoritative; 30 minutes is the documented default, not a frontend constant.
+8. After re-authentication, restore only a validated safe internal destination. Do not persist sensitive evidence, private notes, or unsaved sensitive form payloads to preserve navigation.
 
-This recommendation is a trade-off, not a claim that in-memory storage prevents XSS. Any script executing in the application origin may be able to make authenticated requests while the session is active.
+This accepted decision is a trade-off, not a claim that in-memory storage prevents XSS. Any script executing in the application origin may be able to access or use the token while the session is active.
 
 ### 4.4 Alternatives requiring backend changes
 
@@ -158,7 +161,7 @@ Do not treat a successful login response alone as sufficient to populate all use
 
 ### 5.2 Session bootstrap
 
-For the proposed in-memory strategy, a full reload starts unauthenticated. If a later strategy persists session state, bootstrap must validate the session with `/auth/me` before protected content is rendered.
+For the approved in-memory strategy (ADR-075), a full reload starts unauthenticated. If a later strategy persists session state, bootstrap must validate the session with `/auth/me` before protected content is rendered.
 
 While session status is unknown:
 
@@ -180,7 +183,7 @@ While session status is unknown:
 
 The backend security documentation explains that stateless JWT access tokens remain valid until expiration unless server-side revocation exists.
 
-For the proposed in-memory MVP:
+For the approved in-memory MVP (ADR-075):
 
 - Clear the in-memory access token.
 - Clear current-user and authenticated query/cache state.
@@ -534,7 +537,7 @@ Do not infer implementation from a recommendation in a design document. If runti
 
 The frontend security baseline is acceptable for MVP review when:
 
-- [ ] Authentication transport and token storage are explicitly approved in `DECISIONS.md`.
+- [x] Authentication transport and token storage are explicitly approved in `DECISIONS.md` (ADR-075; in-memory Bearer token).
 - [ ] Logout semantics are accurately represented.
 - [ ] `/auth/me` establishes current-user context.
 - [ ] Protected UI does not render while authentication is unresolved.

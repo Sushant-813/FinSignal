@@ -2265,9 +2265,10 @@ Approve the proposed React Single-Page Application (SPA) architecture and the su
 
 # ADR-075 — Frontend Authentication, Session Lifecycle & Token Storage Strategy
 
-**Status:** PENDING
+**Status:** ACCEPTED
 
-**Date:** 2026-11-06
+**Proposed:** 2026-11-06  
+**Accepted:** 2026-11-10
 
 **Related decisions:** ADR-006, ADR-007, ADR-053
 
@@ -2325,12 +2326,28 @@ The backend does not implement refresh tokens, server-side session persistence, 
 | **Session Lifetime** | 30 minutes (Verified default) | 30 minutes (Verified default) | Flexible (Supports refresh rotation) |
 | **Backend Modification Required** | None (Uses existing Bearer API) | None (Uses existing Bearer API) | Substantial backend re-architecture |
 
-### Recommendation
+### Decision — ACCEPTED (2026-11-10)
 
-**Adopt Option 1 (In-Memory Token Storage) as the baseline for Frontend MVP**, subject to the following implementation mitigations:
-1. Clearly document that in-memory storage reduces persistent disk exposure, but does not render the client immune to active same-origin script execution.
-2. In Phase F2, implement route-state preservation so that when a user is forced to re-authenticate following a reload or 30-minute expiration, they are automatically returned to their prior investigation workspace.
-3. If user feedback during Phase F2/F3 demonstrates that re-authenticating on reload or at 30 minutes unacceptably impairs investigator efficiency, formally schedule Option 3 (Backend HttpOnly Cookies with Refresh Rotation) as a coordinated full-stack milestone in Phase 13 or post-v1.0.
+**Adopt Option 1 — In-Memory Access-Token Storage for the FinSignal Frontend MVP.** The system owner explicitly approved this option on 2026-11-10.
+
+#### Binding implementation requirements
+
+1. Hold the access token only in a narrowly scoped in-memory authentication/session service. Do not persist it in `localStorage`, `sessionStorage`, cookies, IndexedDB, or another browser persistence mechanism.
+2. Attach the token to protected API requests using `Authorization: Bearer <access_token>` through the centralized API client.
+3. Never expose token values through component props, URL parameters, query keys, logs, error reports, analytics, or browser-visible diagnostics.
+4. Do not put the token in a persisted global state store or persistence plugin.
+5. Clear the in-memory token and authenticated user/query state on explicit client logout and on a confirmed invalid/expired-session response (`401`). Do not treat `403` as session expiry.
+6. After a full page reload or opening a new tab, require the user to authenticate again. Do not implement silent refresh without a separately approved backend refresh contract.
+7. After authentication expiry or reload, preserve at most a validated, safe internal destination so the user can return to the relevant workspace after signing in. Do not persist access tokens, sensitive evidence, private notes, or unsaved sensitive form payloads to achieve route restoration.
+8. Treat `TokenResponse.expires_in` as the authoritative lifetime supplied by the backend. The documented default is 30 minutes; deployments may configure a different value. Do not hard-code 30 minutes in frontend logic.
+9. The backend remains authoritative for authentication and authorization. `/auth/me` establishes current-user presentation context; frontend role checks are not a security boundary.
+10. Document the security boundary accurately: in-memory storage reduces persistent token exposure but does **not** protect an active session from same-origin XSS or malicious script execution.
+
+#### Deferred alternative and review trigger
+
+If reload/re-authentication friction materially harms investigator workflows, evaluate Option 3 (backend-supported `HttpOnly`, `Secure`, appropriately `SameSite` cookies with explicit CSRF protection, credentialed CORS, refresh/rotation, expiry, and revocation semantics) as a coordinated full-stack decision. This is not authorized by this ADR and must not be approximated as a frontend-only change. Reconsider only with evidence from MVP usage or a changed security/product requirement.
+
+Option 2 (`sessionStorage`/`localStorage`) is not selected for the MVP.
 
 ---
 
@@ -2491,7 +2508,7 @@ The following decisions remain intentionally open until implementation provides 
 9. Exact deployment platform.
 10. Exact rate-limiting implementation defaults.
 11. Exact background-job strategy if batch processing becomes slow.
-12. Exact frontend architecture after Backend + ML completion — Resolved via ADR-074 (Frontend Stack: ACCEPTED), ADR-076 (OpenAPI Type Generation: ACCEPTED), and ADR-077 (Transaction & Dataset Import Read APIs: ACCEPTED). ADR-075 (Authentication & Token Storage Strategy) remains PENDING owner review of revised comparison.
+12. Exact frontend architecture after Backend + ML completion — Resolved via ADR-074 (Frontend Stack: ACCEPTED), ADR-075 (Authentication & Token Storage Strategy: ACCEPTED), ADR-076 (OpenAPI Type Generation: ACCEPTED), and ADR-077 (Transaction & Dataset Import Read APIs: ACCEPTED).
 13. Exact retention window for completed-file re-upload deduplication — Resolved via ADR-065 (Perpetual retention for byte-identical files with separately authorized administrative reprocessing).
 14. Policy for differing contextual metadata on canonical match — Resolved via ADR-065 (Candidate 1: Immutable canonical preservation with row-hash provenance).
 15. Account external identifier uniqueness and namespace resolution contract — Policy selected via proposed ADR-065 Decision D (Namespace-Scoped Account Identity `(source_namespace, external_account_id)`); schema migration and existing data backfill pending implementation authorization.

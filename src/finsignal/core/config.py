@@ -276,7 +276,7 @@ class Settings(BaseSettings):
     )
 
     cors_origins: list[str] = Field(
-        default=["http://localhost:3000"],
+        default=["http://localhost:3000", "http://localhost:5173"],
         validation_alias=AliasChoices("finsignal_cors_origins", "cors_origins"),
     )
 

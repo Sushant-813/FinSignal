@@ -445,14 +445,14 @@ Example:
 GET /api/v1/transactions?page=1&page_size=50
 ```
 
-Suggested limits:
+Suggested limits (general convention):
 
 ```text
-default page_size = 25
+default page_size = 25   # endpoint defaults vary (e.g., 50 for /transactions, 20 for /datasets/imports, 25 for /investigations)
 maximum page_size = 100
 ```
 
-The exact limits may be configuration-driven.
+The exact per-endpoint limits and defaults are defined in each endpoint's specification and live `/openapi.json` schema.
 
 ---
 
@@ -480,10 +480,10 @@ It is not necessary for every MVP endpoint.
 
 Use explicit query parameters.
 
-Example:
+Example (`GET /api/v1/transactions`):
 
 ```http
-GET /api/v1/transactions?sort=occurred_at&order=desc
+GET /api/v1/transactions?sort_by=occurred_at&sort_order=desc
 ```
 
 Only allow whitelisted sortable fields.
@@ -496,15 +496,16 @@ Do not pass raw client-provided column names directly into SQL.
 
 Filters should be explicit.
 
-Example:
+Example (`GET /api/v1/transactions`):
 
 ```http
 GET /api/v1/transactions?
-account_id=<uuid>
+source_namespace=SYNTHETIC
+&account_id=<uuid>
 &risk_level=HIGH
 &transaction_type=TRANSFER
-&from=2026-09-01T00:00:00Z
-&to=2026-09-30T23:59:59Z
+&from_time=2026-09-01T00:00:00Z
+&to_time=2026-10-01T00:00:00Z
 ```
 
 The API should validate:
@@ -577,9 +578,9 @@ The exact API representation should be standardized across all financial endpoin
 
 # 21. Transaction API
 
-> [!IMPORTANT]
-> **Implementation Status: APPROVED REQUIREMENT — NOT YET IMPLEMENTED**
-> Per ADR-077, `GET /api/v1/transactions` and `GET /api/v1/transactions/{transaction_id}` are approved backend API readiness requirements scheduled for implementation in Phase F0. Detailed technical specifications, query patterns, and Pydantic schemas are defined in `docs/BACKEND_API_READINESS.md`. These endpoints are not part of the Backend + ML v1.0.0 release and must not be documented as implemented until backend code and automated tests are complete.
+> [!NOTE]
+> **Implementation Status: IMPLEMENTED (Phase F0)**
+> `GET /api/v1/transactions` and `GET /api/v1/transactions/{transaction_id}` are implemented in Phase F0 (ADR-077) per `docs/BACKEND_API_READINESS.md` and covered by unit, API, and PostgreSQL integration tests. Protected by `require_roles("ADMIN", "ANALYST", "INVESTIGATOR")`.
 
 ## 21.1 List Transactions
 
@@ -587,27 +588,33 @@ The exact API representation should be standardized across all financial endpoin
 GET /api/v1/transactions
 ```
 
-Supported filters may include:
+Pagination defaults to `page=1`, `page_size=50` (`ge=1, le=100`), with deterministic ordering (`(occurred_at|amount|created_at)` + `occurred_at DESC` tie-break where applicable + `id DESC`).
+
+Supported query filters:
 
 ```text
-account_id
-merchant_id
-device_id
-location_id
-transaction_type
-direction
-category
-risk_level
-from
-to
-min_amount
-max_amount
+source_namespace   (default: "SYNTHETIC", regex ^[A-Z0-9_]{3,64}$, verified against DB)
+account_id         (UUID)
+merchant_id        (UUID)
+device_id          (UUID)
+location_id        (UUID)
+transaction_type   (str, length 1..32)
+direction          (DEBIT | CREDIT)
+category           (str, length 1..64)
+currency           (3-letter uppercase ISO 4217)
+from_time          (timezone-aware ISO 8601, normalized to UTC, inclusive)
+to_time            (timezone-aware ISO 8601, normalized to UTC, exclusive)
+min_amount         (finite Decimal >= 0.01)
+max_amount         (finite Decimal >= 0.01, min_amount <= max_amount)
+risk_level         (LOW | MEDIUM | HIGH | CRITICAL — matched against latest risk by (created_at DESC, id DESC) LIMIT 1)
+sort_by            (occurred_at | amount | created_at; default occurred_at)
+sort_order         (asc | desc, case-insensitive; default desc)
 ```
 
 Example:
 
 ```http
-GET /api/v1/transactions?account_id=<uuid>&risk_level=HIGH
+GET /api/v1/transactions?source_namespace=SYNTHETIC&account_id=<uuid>&risk_level=HIGH&sort_by=occurred_at&sort_order=desc
 ```
 
 ---
@@ -618,27 +625,63 @@ GET /api/v1/transactions?account_id=<uuid>&risk_level=HIGH
 GET /api/v1/transactions/{transaction_id}
 ```
 
-Response should include core transaction facts.
+Supports optional query parameter `source_namespace: str | None = None` as an opt-in partition fence. When provided, mismatches across namespaces return `HTTP 404 TRANSACTION_NOT_FOUND`; when omitted, lookup resolves globally by `transaction_id` under global RBAC (`ADMIN`, `ANALYST`, `INVESTIGATOR`).
 
-Example:
+Response (`TransactionDetailResponse`) includes core transaction facts (`amount` serialized via `MoneyStr`), embedded relational summaries (`account`, `counterparty_account`, `merchant`, `device`, `location`), and a nullable `latest_risk` snapshot (`analysis_id`, `score`, `risk_level`, `model_version`, `evaluated_at`) while keeping full risk feature/factor payloads in `GET /api/v1/transactions/{transaction_id}/risk`:
 
 ```json
 {
   "id": "uuid",
   "source_namespace": "SYNTHETIC",
   "external_transaction_id": "TXN_00012345",
+  "first_seen_import_id": "uuid",
   "account_id": "uuid",
+  "counterparty_account_id": "uuid",
   "merchant_id": "uuid",
+  "device_id": "uuid",
+  "location_id": "uuid",
   "occurred_at": "2026-09-15T14:30:00Z",
   "amount": "75000.00",
   "currency": "INR",
   "transaction_type": "TRANSFER",
   "direction": "DEBIT",
-  "category": "OTHER"
+  "category": "OTHER",
+  "payment_method": "IMPS",
+  "channel": "MOBILE_APP",
+  "created_at": "2026-09-15T14:30:05.123456Z",
+  "account": {
+    "id": "uuid",
+    "external_account_id": "ACC_001234",
+    "account_type": "SAVINGS",
+    "status": "ACTIVE"
+  },
+  "counterparty_account": null,
+  "merchant": {
+    "id": "uuid",
+    "external_merchant_id": "M_001",
+    "merchant_name": "Acme Electronics",
+    "merchant_category": "ELECTRONICS"
+  },
+  "device": {
+    "id": "uuid",
+    "external_device_id": "DEV_001",
+    "device_type": "DESKTOP"
+  },
+  "location": {
+    "id": "uuid",
+    "city": "Mumbai",
+    "state": "MH",
+    "country": "India"
+  },
+  "latest_risk": {
+    "analysis_id": "uuid",
+    "score": 82.5,
+    "risk_level": "CRITICAL",
+    "model_version": "1.0.0",
+    "evaluated_at": "2026-09-15T14:30:06Z"
+  }
 }
 ```
-
-Risk intelligence should be returned separately or as an explicitly named nested representation.
 
 ---
 
@@ -782,9 +825,9 @@ Requires role `ADMIN` or `ANALYST`.
 GET /api/v1/datasets/imports
 ```
 
-> [!IMPORTANT]
-> **Implementation Status: APPROVED REQUIREMENT — NOT YET IMPLEMENTED**
-> Per ADR-077, `GET /api/v1/datasets/imports` is an approved backend API readiness requirement scheduled for implementation in Phase F0. It provides paginated listing of dataset import executions (excluding large row-level validation error payloads, which remain accessible via `GET /api/v1/datasets/imports/{import_id}`). Detailed technical specifications are defined in `docs/BACKEND_API_READINESS.md`. Do not document or treat this endpoint as implemented until backend code and automated tests are complete.
+> [!NOTE]
+> **Implementation Status: IMPLEMENTED (Phase F0)**
+> Implemented in Phase F0 (ADR-077) per `docs/BACKEND_API_READINESS.md` and protected by `require_roles("ADMIN", "ANALYST", "INVESTIGATOR")`. Returns `DatasetImportListResponse` (`page=1`, `page_size=20`, `ge=1, le=100`), ordered deterministically by `(started_at DESC, id DESC)`, filtered by mandatory `source_namespace` (default `"SYNTHETIC"`), optional `status`, `source_type`, and `[from_time, to_time)` (aware ISO 8601 normalized to UTC). Row-level `dataset_import_errors` collections are excluded; access them via `GET /api/v1/datasets/imports/{import_id}`.
 
 ---
 
@@ -2580,8 +2623,8 @@ GET    /api/v1/accounts/{account_id}/behavior
 ### Transactions
 
 ```text
-GET    /api/v1/transactions               # Approved Requirement — Not Yet Implemented (ADR-077, Phase F0)
-GET    /api/v1/transactions/{transaction_id} # Approved Requirement — Not Yet Implemented (ADR-077, Phase F0)
+GET    /api/v1/transactions               # Implemented (Phase F0, ADR-077)
+GET    /api/v1/transactions/{transaction_id} # Implemented (Phase F0, ADR-077)
 POST   /api/v1/transactions               # Potential/Unimplemented
 GET    /api/v1/transactions/{transaction_id}/risk # Implemented (Phase 8)
 POST   /api/v1/transactions/{transaction_id}/risk/analyze # Implemented (Phase 8)
@@ -2591,7 +2634,7 @@ POST   /api/v1/transactions/{transaction_id}/risk/analyze # Implemented (Phase 8
 
 ```text
 POST   /api/v1/datasets/imports           # Implemented (Phase 4)
-GET    /api/v1/datasets/imports           # Approved Requirement — Not Yet Implemented (ADR-077, Phase F0)
+GET    /api/v1/datasets/imports           # Implemented (Phase F0, ADR-077)
 GET    /api/v1/datasets/imports/{import_id} # Implemented (Phase 4)
 POST   /api/v1/datasets/imports/{import_id}/recover # Implemented (Phase 4)
 ```

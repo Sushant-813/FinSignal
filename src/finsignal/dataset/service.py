@@ -6,6 +6,7 @@ import io
 import logging
 import re
 import uuid
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,24 +15,119 @@ from finsignal.common.exceptions import ConflictError, NotFoundError, Validation
 from finsignal.dataset.ingestion.engine import TransactionIngestionEngine
 from finsignal.dataset.ingestion.locking import acquire_import_advisory_lock
 from finsignal.dataset.models import DatasetImport, DatasetImportError
+from finsignal.dataset.repository import DatasetImportRepository
 from finsignal.dataset.schemas import (
     DatasetImportDetailResponse,
     DatasetImportErrorItem,
+    DatasetImportListResponse,
     DatasetImportResponse,
 )
 
 logger = logging.getLogger("finsignal.dataset.service")
 
 NAMESPACE_PATTERN = re.compile(r"^[A-Z0-9_]{3,64}$")
+ALLOWED_IMPORT_STATUSES: frozenset[str] = frozenset(
+    {"PENDING", "PROCESSING", "COMPLETED", "FAILED"}
+)
 
 
 class DatasetImportService:
     """Orchestrates file upload verification, advisory locking, deduplication, and ingestion."""
 
     def __init__(
-        self, ingestion_engine: TransactionIngestionEngine | None = None
+        self,
+        ingestion_engine: TransactionIngestionEngine | None = None,
+        import_repo: DatasetImportRepository | None = None,
     ) -> None:
         self.engine = ingestion_engine or TransactionIngestionEngine()
+        self.import_repo = import_repo or DatasetImportRepository()
+
+    def _validate_namespace(self, namespace: str) -> str:
+        """Validate namespace format against canonical regex."""
+        if not NAMESPACE_PATTERN.match(namespace):
+            raise ValidationError(
+                message=(
+                    f"Invalid namespace format: '{namespace}'. "
+                    "Must match ^[A-Z0-9_]{3,64}$."
+                ),
+                code="INVALID_NAMESPACE_FORMAT",
+                details={"source_namespace": namespace},
+            )
+        return namespace
+
+    def _normalize_utc_datetime(
+        self, value: datetime | None, field_name: str
+    ) -> datetime | None:
+        """Reject naive datetimes and normalize timezone-aware datetimes to UTC."""
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValidationError(
+                message=f"Parameter '{field_name}' must include timezone information (UTC ISO 8601).",
+                code="INVALID_TIMEZONE",
+                details={"field": field_name},
+            )
+        return value.astimezone(UTC)
+
+    async def list_imports(
+        self,
+        session: AsyncSession,
+        *,
+        page: int = 1,
+        page_size: int = 20,
+        source_namespace: str = "SYNTHETIC",
+        status: str | None = None,
+        source_type: str | None = None,
+        from_time: datetime | None = None,
+        to_time: datetime | None = None,
+    ) -> DatasetImportListResponse:
+        """List paginated dataset import summaries without validation error collections."""
+        norm_ns = self._validate_namespace(source_namespace)
+        norm_from = self._normalize_utc_datetime(from_time, "from_time")
+        norm_to = self._normalize_utc_datetime(to_time, "to_time")
+        if norm_from is not None and norm_to is not None and norm_from >= norm_to:
+            raise ValidationError(
+                message="from_time must be strictly earlier than to_time.",
+                code="INVALID_DATE_RANGE",
+                details={
+                    "from_time": norm_from.isoformat(),
+                    "to_time": norm_to.isoformat(),
+                },
+            )
+
+        if status is not None and status not in ALLOWED_IMPORT_STATUSES:
+            raise ValidationError(
+                message=f"Invalid status '{status}'. Must be one of {sorted(ALLOWED_IMPORT_STATUSES)}.",
+                code="INVALID_IMPORT_STATUS",
+                details={"status": status},
+            )
+
+        exists = await self.import_repo.verify_namespace_exists(session, norm_ns)
+        if not exists:
+            raise NotFoundError(
+                message=f"Target namespace '{norm_ns}' does not exist.",
+                code="NAMESPACE_NOT_FOUND",
+                details={"source_namespace": norm_ns},
+            )
+
+        rows, total, total_pages = await self.import_repo.list_imports(
+            session,
+            source_namespace=norm_ns,
+            page=page,
+            page_size=page_size,
+            status=status,
+            source_type=source_type,
+            from_time=norm_from,
+            to_time=norm_to,
+        )
+        items = [DatasetImportResponse.model_validate(imp) for imp in rows]
+        return DatasetImportListResponse(
+            items=items,
+            page=page,
+            page_size=page_size,
+            total=total,
+            total_pages=total_pages,
+        )
 
     async def import_dataset(
         self,

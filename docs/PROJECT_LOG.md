@@ -1684,9 +1684,88 @@ Following completion of the frontend documentation audit, the system owner revie
 - **Backend API Readiness:** Specification approved; implementation pending in Phase F0.
 - **Next Milestone:** Owner review of revised ADR-075; kick-off of Phase F0.
 
+> **Historical status note:** This 2026-11-06 status snapshot records the state at that date. ADR-075 was subsequently accepted on 2026-11-10; see the following milestone entry.
+
+
 ---
 
-# 34. Log Maintenance Rules
+# 34. 2026-11-10 — ADR-075 Ratification & Frontend F0 Governance Gate
+
+## Context
+
+The system owner reviewed the revised authentication and token-storage comparison and explicitly selected Option 1 — In-Memory Access-Token Storage — for the FinSignal Frontend MVP.
+
+## Decision Recorded
+
+- **ADR-075: ACCEPTED (2026-11-10).**
+- Access tokens are held only in a narrowly scoped JavaScript in-memory authentication/session service.
+- Tokens must not be written to `localStorage`, `sessionStorage`, cookies, IndexedDB, or another browser persistence mechanism.
+- Protected API requests use the existing Bearer-token contract through the centralized API client.
+- Full page reloads and new tabs require re-authentication; no silent refresh is permitted without a separately approved backend contract.
+- The frontend must use the backend-provided `TokenResponse.expires_in`; 30 minutes is the documented default, not a hard-coded frontend lifetime.
+- Confirmed `401` responses clear the in-memory session and authenticated query state; `403` remains an authorization failure, not session expiry.
+- Route restoration may preserve only a validated safe internal destination. Sensitive evidence, private notes, and unsaved sensitive form payloads must not be persisted for this purpose.
+- The decision explicitly does not claim protection against active same-origin XSS.
+- HttpOnly-cookie authentication with CSRF protection, credentialed CORS, refresh/rotation, and revocation remains deferred and requires a separate coordinated backend decision.
+
+## Documentation Synchronized
+
+- Updated `DECISIONS.md`: ADR-075 status changed to `ACCEPTED`, acceptance date recorded, binding implementation requirements and deferred alternative documented.
+- Updated `FRONTEND_SECURITY.md`: proposed authentication recommendation replaced with the approved MVP decision; session lifecycle and security checklist aligned.
+- Updated `PROJECT_ROADMAP.md`: F0.1 governance and F0 exit criteria now recognize all four frontend ADRs as accepted.
+
+## Validation & Scope
+
+- Documentation consistency checked across the ADR, frontend security specification, frontend architecture, frontend roadmap, master roadmap, and project log.
+- No backend source code, database models, Alembic migrations, API behavior, React source code, or npm dependencies changed as part of this decision ratification.
+
+## Current Status & Next Milestone
+
+- **Backend + ML v1.0.0:** Released & Stable.
+- **Frontend ADRs:** ADR-074, ADR-075, ADR-076, and ADR-077 — all `ACCEPTED`.
+- **Phase F0:** Governance decision gate complete; backend API readiness enhancement and remaining F0 execution tasks are still pending.
+- **Next Milestone:** Begin F0.2 — implement and test the three approved backend read endpoints strictly against `BACKEND_API_READINESS.md`.
+
+---
+
+# 35. 2026-11-10 — Phase F0 Implementation & Documentation Reconciliation Complete
+
+## Context
+
+Following ratification of ADR-074 through ADR-077, Phase F0 (`F0.2` Backend API Readiness Enhancement, `F0.3` OpenAPI Type Generation & Contract Verification, `F0.4` Frontend Repository Scaffolding, and `F0-D` Documentation Reconciliation) was executed to prepare the repository for Frontend Phase F1.
+
+## What Changed
+
+- **F0.2 Backend Read APIs & Shared Monetary Types:**
+  - Relocated `MoneyStr`, `OptionalMoneyStr`, `to_money_str`, and `to_optional_money_str` verbatim to `src/finsignal/common/types.py`, preserving backward-compatible re-exports in `src/finsignal/analytics/schemas.py`.
+  - Implemented `GET /api/v1/transactions` (`TransactionListResponse`, `page_size=50` default, max `100`), deterministic ordering (`occurred_at|amount|created_at` with UUID tie-breaking), service-level semantic validation (`INVALID_NAMESPACE_FORMAT`, `INVALID_TIMEZONE`, `INVALID_DATE_RANGE`, `INVALID_AMOUNT_RANGE`, `UNSUPPORTED_SORT_FIELD`, `INVALID_SORT_ORDER`), and deterministic `risk_level` filtering using correlated `(created_at DESC, id DESC) LIMIT 1` tie-breaking.
+  - Implemented `GET /api/v1/transactions/{transaction_id}` (`TransactionDetailResponse`) with eager-loaded `account`, `counterparty_account`, `merchant`, `device`, `location`, nullable `latest_risk` (`TransactionLatestRiskDTO`), and optional `source_namespace` partition fencing.
+  - Implemented `GET /api/v1/datasets/imports` (`DatasetImportListResponse`, `page_size=20` default, max `100`) ordered by `(started_at DESC, id DESC)` without `dataset_import_errors` collections.
+- **F0.3 OpenAPI & TypeScript Contract (`ADR-076`):**
+  - Exported the FastAPI OpenAPI document (`28` paths, `67` schemas) to `frontend/openapi.json` and generated `frontend/src/api/generated/schema.ts` via `openapi-typescript`.
+  - Added automated drift verification (`npm run check:types-drift` -> `frontend/scripts/check-types-drift.mjs`).
+- **F0.4 Frontend Workspace Foundation (`ADR-074`, `ADR-075`):**
+  - Created standalone `frontend/` workspace (`React 19`, `TypeScript 5.8`, `Vite 6`, Tailwind CSS v4, ESLint, Prettier, Vitest, Playwright configuration, pinned `package-lock.json`, `.nvmrc`).
+  - Implemented centralized HTTP client (`frontend/src/lib/api/client.ts`), public env loader (`frontend/src/lib/api/env.ts`), in-memory Bearer token store (`frontend/src/lib/auth/token-store.ts`), and baseline tests (`frontend/tests/smoke.test.tsx`).
+- **F0-D Documentation Reconciliation & Security Gate Decision:**
+  - Reconciled `BACKEND_API_READINESS.md`, `API_GUIDELINES.md`, `FRONTEND_API_INTEGRATION.md`, `FRONTEND_ROADMAP.md`, `PROJECT_ROADMAP.md`, and `PROJECT_LOG.md` against the verified implementation and OpenAPI schema.
+  - Confirmed **Option B** for `GET /api/v1/transactions/{transaction_id}`: `source_namespace` remains an optional opt-in partition fence (`None` by default); because `User` carries no tenant/namespace attribute, omitting `source_namespace` executes a global UUIDv4 lookup gated by global RBAC (`ADMIN`, `ANALYST`, `INVESTIGATOR`). Updated `BACKEND_API_READINESS.md` (§3.4, §6.2) and `FRONTEND_API_INTEGRATION.md` (§6.5, §7.2) to state this explicitly rather than claiming unconditional detail isolation.
+
+## Validation
+
+- Backend test suite (`uv run pytest -q`): `593 passed` (including unit, API, and PostgreSQL integration coverage in `tests/unit/test_common_types.py`, `tests/unit/test_transaction_schemas.py`, `tests/unit/test_transaction_service.py`, `tests/api/test_transactions_api.py`, `tests/api/test_dataset_imports_api.py`, and `tests/integration/test_transactions_api.py`).
+- Backend quality gates: `uv run ruff check .`, `uv run ruff format --check .`, and `uv run mypy src tests` passed with zero issues.
+- Frontend verification: `npm run typecheck`, `npm run lint`, `npm run format:check`, `npm run test` (`4 passed`), `npm run build`, and `npm run check:types-drift` all passed with zero drift.
+
+## Current Status & Next Milestone
+
+- **Backend + ML v1.0.0:** Released & Stable.
+- **Phase F0 (F0.1–F0.4 & F0-D):** Completed & Verified.
+- **Next Milestone:** Begin Phase F1 — Application Foundation & Design System (`docs/FRONTEND_ROADMAP.md` §7).
+
+---
+
+# 36. Log Maintenance Rules
 
 The project log should be updated when:
 
@@ -1712,7 +1791,7 @@ What happens next?
 
 ---
 
-# 35. Final Principle
+# 37. Final Principle
 
 The project log is a record of **engineering evolution**, not a diary of every command executed.
 

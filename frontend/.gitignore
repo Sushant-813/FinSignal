@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Testing / caches
+coverage/
+test-results/
+playwright-report/
+.vite/
+*.tsbuildinfo
+
+# Logs & OS
+*.log
+.DS_Store
+Thumbs.db
+

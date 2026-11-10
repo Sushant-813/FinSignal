@@ -2,8 +2,8 @@
 
 **Document:** `FRONTEND_ROADMAP.md`  
 **Product:** FinSignal — Financial Transaction Intelligence & Investigation Platform  
-**Version:** 1.0  
-**Status:** Draft — implementation-ready after prerequisite decisions and API contract verification  
+**Version:** 1.1  
+**Status:** Phase F0 Complete — Ready for F1 (Application Foundation & Design System)  
 **Scope:** Frontend planning and implementation following Backend + ML v1.0.0
 
 ---
@@ -123,42 +123,44 @@ The phases are dependency-oriented, not calendar commitments. Some isolated task
 
 ## 6. F0 — Decisions, Contract Verification & Repository Readiness
 
+> [!NOTE]
+> **Phase Status: COMPLETED (2026-11-10)**
+
 ### Objective
 
 Remove the major unknowns that could force expensive rework during implementation. Coordinate and verify backend read API readiness (`BACKEND_API_READINESS.md`), ratify frontend architectural decisions, and prepare the repository foundation.
 
-### Key tasks
+### Completed tasks
 
-- Ratify and record frontend ADRs (ADR-074, ADR-076, ADR-077 ACCEPTED; finalize ADR-075 review).
-- Coordinate backend API readiness implementation for missing read endpoints per `docs/BACKEND_API_READINESS.md`:
+- [x] ADR governance: ADR-074, ADR-075, ADR-076, and ADR-077 are all `ACCEPTED` in `DECISIONS.md`. ADR-075 selects in-memory Bearer-token storage for the MVP.
+- [x] Backend API readiness implementation and tests for read endpoints per `docs/BACKEND_API_READINESS.md`:
   - `GET /api/v1/transactions`
-  - `GET /api/v1/transactions/{id}`
+  - `GET /api/v1/transactions/{transaction_id}`
   - `GET /api/v1/datasets/imports`
-- Verify running backend OpenAPI routes and schemas (`/openapi.json`) for every MVP workflow.
-- Execute build-time TypeScript type generation via `openapi-typescript` (ADR-076).
-- Confirm package manager (npm) and Node.js 20+ LTS runtime policy (.nvmrc).
-- Configure development CORS origins and Vite development proxying.
-- Confirm role and object-level authorization rules.
-- Finalize access-token storage and session lifecycle decision (ADR-075).
-- Scaffold frontend workspace with strict TypeScript compiler flags, ESLint, Prettier, and Vitest.
+  - Relocated shared `MoneyStr` types into `src/finsignal/common/types.py` with backward-compatible re-exports in `src/finsignal/analytics/schemas.py`.
+- [x] Verified running FastAPI OpenAPI routes and schemas (`28` paths, `67` component schemas exported to `frontend/openapi.json`).
+- [x] Executed build-time TypeScript type generation via `openapi-typescript` into `frontend/src/api/generated/schema.ts` and added `npm run check:types-drift` (`frontend/scripts/check-types-drift.mjs`, ADR-076).
+- [x] Confirmed package manager (`npm`), `frontend/package-lock.json`, and Node.js `>=20.0.0` policy (`frontend/.nvmrc`).
+- [x] Confirmed backend CORS defaults (`http://localhost:3000`, `http://localhost:5173`) and Vite `/api` development proxy (`frontend/vite.config.ts`).
+- [x] Reconciled RBAC (`UNAUTHORIZED` 401 / `FORBIDDEN` 403) and documented opt-in `source_namespace` fencing on `GET /api/v1/transactions/{transaction_id}`.
+- [x] Implemented in-memory access-token store (`frontend/src/lib/auth/token-store.ts`) and typed HTTP client (`frontend/src/lib/api/client.ts`, `frontend/src/lib/api/env.ts`).
+- [x] Scaffolded `frontend/` workspace with strict TypeScript, ESLint, Prettier, Tailwind CSS, Vitest, and Playwright config.
 
 ### Deliverables
 
-- Ratified frontend decisions in `DECISIONS.md`.
-- Backend API readiness endpoints implemented, tested, and verified in OpenAPI (`docs/BACKEND_API_READINESS.md`).
-- Verified MVP API contract inventory and generated TypeScript types.
-- Scaffolded frontend project with passing baseline smoke test and typecheck.
-- Confirmed development environment and test-account plan.
+- Ratified frontend decisions in `DECISIONS.md` (ADR-074 through ADR-077 `ACCEPTED`).
+- Backend API readiness endpoints implemented, tested (`593` backend tests passing), and verified against `frontend/openapi.json`.
+- Generated TypeScript types (`frontend/src/api/generated/schema.ts`) and zero-drift check script (`npm run check:types-drift`).
+- Scaffolded `frontend/` project with passing Vitest smoke tests (`4 passed`), ESLint, Prettier, TypeScript build, and Vite production build.
+- Reconciled API, integration, roadmap, and project log documentation.
 
-### Exit criteria
+### Exit criteria (Met)
 
-- Backend API readiness endpoints (`/transactions`, `/transactions/{id}`, `/datasets/imports`) return HTTP 200 with verified Pydantic schemas.
-- No unresolved security decision blocks authentication implementation.
-- All MVP endpoint contracts are verified in `/openapi.json` with generated types committed.
-- Frontend builds cleanly, passes lint/typecheck, and runs unit tests without error.
-- Core dependency choices are approved and locked via `package-lock.json`.
-
-**Do not start dependent implementation while critical F0 decisions remain unresolved.**
+- [x] Backend API readiness endpoints (`/transactions`, `/transactions/{transaction_id}`, `/datasets/imports`) return HTTP 200 with verified Pydantic schemas.
+- [x] No unresolved security decision blocks authentication implementation (`ADR-075` `ACCEPTED`; opt-in `source_namespace` detail behavior explicitly documented).
+- [x] All MVP endpoint contracts verified in `frontend/openapi.json` with generated `schema.ts` committed and drift-checked.
+- [x] Frontend builds cleanly, passes lint/format/typecheck, and runs unit tests without error.
+- [x] Core dependency choices are approved and locked via `frontend/package-lock.json`.
 
 ---
 
@@ -568,7 +570,7 @@ Use this table during implementation. Status values should be controlled and evi
 
 | Phase | Status | Completion evidence | Open blockers |
 |---|---|---|---|
-| F0 — Decisions & contract verification | NOT STARTED | ADRs, verified OpenAPI inventory | |
+| F0 — Decisions & contract verification | COMPLETED | ADR-074–077 accepted; 3 F0 read endpoints & shared `MoneyStr` types implemented (`593` backend tests); `frontend/` scaffolded with `openapi.json`, `schema.ts`, drift check, API client, in-memory token store, and `4` Vitest smoke tests; documentation reconciled | None |
 | F1 — Foundation & design system | NOT STARTED | Build, CI, component tests | |
 | F2 — Auth & application shell | NOT STARTED | Auth E2E and role checks | |
 | F3 — Analytics, transactions & risk | NOT STARTED | API-backed workflow tests | |

@@ -43,3 +43,15 @@ class DatasetImportDetailResponse(DatasetImportResponse):
     """Detailed summary of a dataset import including recorded errors."""
 
     errors: list[DatasetImportErrorItem] = Field(default_factory=list)
+
+
+class DatasetImportListResponse(BaseModel):
+    """Paginated collection response for dataset import executions."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[DatasetImportResponse]
+    page: int = Field(..., ge=1)
+    page_size: int = Field(..., ge=1, le=100)
+    total: int = Field(..., ge=0)
+    total_pages: int = Field(..., ge=0)
