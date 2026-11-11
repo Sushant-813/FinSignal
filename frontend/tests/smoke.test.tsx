@@ -1,55 +1,22 @@
 import { render, screen } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
-import { setupServer } from "msw/node";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import App from "../src/App.tsx";
 import type { components } from "../src/api/generated/schema.ts";
 import { ApiClientError, apiRequest } from "../src/lib/api/client.ts";
 import { resolveApiBaseUrl } from "../src/lib/api/env.ts";
 import { clearAccessToken, getAccessToken, setAccessToken } from "../src/lib/auth/token-store.ts";
+import { apiErrorFixtures } from "./fixtures/api-errors.ts";
+import { server } from "./mocks/server.ts";
 
 type TransactionListResponse = components["schemas"]["TransactionListResponse"];
 
-const server = setupServer(
-  http.get("http://localhost/api/v1/transactions", ({ request }) => {
-    const auth = request.headers.get("Authorization");
-    if (auth !== "Bearer test-jwt-token") {
-      return HttpResponse.json(
-        {
-          error: {
-            code: "UNAUTHORIZED",
-            message: "Authentication credentials were not provided or are invalid.",
-            details: {},
-            request_id: "req-unauth",
-          },
-        },
-        { status: 401 }
-      );
-    }
-
-    const payload: TransactionListResponse = {
-      items: [],
-      page: 1,
-      page_size: 50,
-      total: 0,
-      total_pages: 0,
-    };
-    return HttpResponse.json(payload);
-  })
-);
-
-beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
-afterEach(() => {
-  server.resetHandlers();
-  clearAccessToken();
-});
-afterAll(() => server.close());
-
-describe("Phase F0 frontend readiness baseline", () => {
-  it("renders baseline FinSignal readiness shell", () => {
+describe("Phase F1 application foundation baseline", () => {
+  it("renders themed FinSignal foundation view at /", () => {
     render(<App />);
     expect(screen.getByRole("heading", { name: "FinSignal" })).toBeInTheDocument();
-    expect(screen.getByText(/Phase F0 readiness baseline/i)).toBeInTheDocument();
+    expect(screen.getByText("Phase F1 Foundation")).toBeInTheDocument();
+    expect(screen.getByText("/api/v1")).toBeInTheDocument();
   });
 
   it("normalizes VITE_API_BASE_URL safely", () => {
@@ -69,6 +36,24 @@ describe("Phase F0 frontend readiness baseline", () => {
   });
 
   it("injects Bearer token and parses generated OpenAPI response + error envelopes via MSW", async () => {
+    server.use(
+      http.get("http://localhost/api/v1/transactions", ({ request }) => {
+        const auth = request.headers.get("Authorization");
+        if (auth !== "Bearer test-jwt-token") {
+          return apiErrorFixtures.unauthorized();
+        }
+
+        const payload: TransactionListResponse = {
+          items: [],
+          page: 1,
+          page_size: 50,
+          total: 0,
+          total_pages: 0,
+        };
+        return HttpResponse.json(payload);
+      })
+    );
+
     await expect(
       apiRequest<TransactionListResponse>("/transactions", {
         baseUrl: "http://localhost/api/v1",
@@ -77,7 +62,7 @@ describe("Phase F0 frontend readiness baseline", () => {
       name: "ApiClientError",
       status: 401,
       code: "UNAUTHORIZED",
-      requestId: "req-unauth",
+      requestId: "req-401",
     } satisfies Partial<ApiClientError>);
 
     setAccessToken("test-jwt-token");

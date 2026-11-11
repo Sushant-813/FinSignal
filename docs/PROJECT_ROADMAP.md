@@ -3,9 +3,9 @@
 **Project:** FinSignal — Financial Transaction Intelligence & Investigation Platform  
 **Document:** Project Roadmap  
 **Scope:** Backend + ML v1.0.0 (Completed) & Frontend Implementation Track (Phases F0–F8)
-**Status:** Backend + ML v1.0.0 Released / Phase F0 Complete (Ready for Phase F1)
-**Version:** 1.2.0
-**Last Updated:** 2026-11-10
+**Status:** Backend + ML v1.0.0 Released / Phase F0 Complete / Phase F1 CONDITIONALLY READY (Pending Formal Acceptance)
+**Version:** 1.2.1
+**Last Updated:** 2026-11-11
 
 ---
 
@@ -1446,22 +1446,26 @@ F8 — Deployment, Acceptance & Frontend Release
 
 ## Phase F1 — Application Foundation & Design System
 
-- **Objective:** Build accessible design system primitives, layout foundations, and theme tokens conforming to `FRONTEND_DESIGN.md` (Coinbase clarity + IBM enterprise structure).
-- **Key Tasks:**
-  - Configure Tailwind CSS design tokens (typography, cobalt blue palette, semantic status badges, borders, spacing).
-  - Implement reusable UI primitives (Buttons, Inputs, Selects, Modals/Dialogs, Tables, Status Badges, Metric Cards).
-  - Build App Shell structure (Collapsible Sidebar, Header, Breadcrumbs, User Profile indicator).
-  - Setup Vitest and React Testing Library component test harnesses.
+- **Objective:** Build accessible design system primitives, application foundation providers, routing resilience, and theme tokens conforming to `FRONTEND_DESIGN.md` (Coinbase clarity + IBM enterprise structure). Note: Application Shell construction (Collapsible Sidebar, Header, Breadcrumbs, User Profile indicator) belongs to Phase F2 (`FRONTEND_ROADMAP.md` §8), not Phase F1.
+- **Completed Tasks & Audit Remediation (2026-11-11):**
+  - Configured centralized Tailwind CSS v4 design tokens (`frontend/src/styles/tokens.css`, non-circular `--fs-*` → `@theme inline`), global `:focus-visible`, `.tabular-nums`, and `prefers-reduced-motion` (`frontend/src/index.css`).
+  - Implemented 10 domain-agnostic UI primitives (`Button`, `Badge`, `Card`, `Input`, `Select`, `Table`, `Dialog`, `Alert`, `Skeleton`/`TableSkeleton`, `EmptyState`), `QueryProvider`/`AppProviders`, `RootErrorBoundary`, `FoundationPage`, and `NotFoundPage`.
+  - Configured Vitest `5.1.0`, React Testing Library, MSW `2.15.0` (`onUnhandledRequest: "error"`), and `.github/workflows/ci.yml` (`frontend` job).
+  - Remediated all blocking F1 audit findings: Prettier formatting across 17 files (`F1-AUD-001`), mutually exclusive `Input` state utilities & `TableSkeleton` `text-sm` height (`F1-AUD-003`), cross-realm `AbortSignal` listener bridge in `tests/setup.ts` (`F1-AUD-004`), `Button` `asChild` prop stripping (`F1-AUD-008`), and approved upgrades to `zod@4.6.7` (`ADR-078`) and `vitest@5.1.0` with Node `24` alignment (`ADR-079`).
+- **Verification Snapshot:** Prettier (`PASS`), ESLint (`PASS`), TypeScript (`PASS`), Vitest (`47/47 PASS` across 15 files), Vite production build (`PASS`), OpenAPI drift check (`PASS`), `npm audit --omit=dev` (`0` vulnerabilities), full `npm audit` (`7 moderate` dev-only `minimatch@10.2.6` advisories), system-Chrome computed-style/responsive/Dialog verification (`PASS`), remote GitHub Actions CI (`PENDING`).
+- **Explicitly Deferred Findings:** `F1-AUD-005` (API client/env edge-case hardening → F2 API milestone), `F1-AUD-006` (committed Playwright `tests/e2e/` suite & `webServer` → F2 testing milestone), `F1-AUD-009` (`Button` `size="icon"` loading & `Alert` attribute passthrough → future UI refinement).
 - **Exit Criteria:**
-  - Shared UI component library passes automated rendering, keyboard focus, and accessibility tests.
-  - Zero hard-coded ad-hoc styles in feature pages; all styles derive from centralized tokens.
-- **Status:** `NOT STARTED`
+  - [x] Shared UI component library passes automated rendering, keyboard focus, accessibility, and Chrome computed-style checks (`47/47` Vitest tests).
+  - [x] Zero hard-coded color classes in `frontend/src/`; styles derive from centralized tokens.
+  - [x] Zero production dependency vulnerabilities (`npm audit --omit=dev` = `0`).
+  - [ ] Formal owner acceptance of temporary dev-only `minimatch@10.2.6` security exception (`ADR-080`, `PENDING OWNER APPROVAL`) and first remote GitHub Actions CI run.
+- **Status:** `CONDITIONALLY READY (2026-11-11) — implementation remediation and local verification complete; formal acceptance pending security-exception approval (ADR-080) and remote CI verification`
 
 ---
 
 ## Phase F2 — Authentication, Session & Application Shell
 
-- **Objective:** Deliver secure login, authenticated session state, role-aware routing, and main application layout.
+- **Objective:** Deliver secure login, authenticated session state, role-aware routing, and main application layout (including Collapsible Sidebar, Header, Breadcrumbs, and User Profile indicator).
 - **Key Tasks:**
   - Build Login page with client-side format validation (Argon2id password requirements, normalized email).
   - Implement in-memory JWT authentication adapter per approved ADR-075.
@@ -1472,7 +1476,7 @@ F8 — Deployment, Acceptance & Frontend Release
   - Successful login transitions to dashboard with verified role context (`ADMIN`, `ANALYST`, `INVESTIGATOR`).
   - Access token is strictly held in memory and never written to `localStorage` or `sessionStorage`.
   - Expired tokens or 401 responses trigger clean re-authentication.
-- **Status:** `NOT STARTED`
+- **Status:** `NEXT / BLOCKED UNTIL F1 ACCEPTANCE`
 
 ---
 

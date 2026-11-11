@@ -2,8 +2,8 @@
 
 **Document:** `FRONTEND_ARCHITECTURE.md`  
 **Product:** FinSignal — Financial Transaction Intelligence & Investigation Platform  
-**Version:** 1.0  
-**Status:** Draft for technical review  
+**Version:** 1.1  
+**Status:** Synchronized with Phase F0/F1 Foundation Baseline (Feature Modules Pending Phase F2+)  
 **Scope:** Browser frontend architecture  
 **Prerequisites:** `FRONTEND_PRD.md`, `FRONTEND_TRD.md`, and `FRONTEND_DESIGN.md`
 
@@ -272,7 +272,78 @@ frontend/
 └── vite.config.ts
 ```
 
-This structure is intentionally illustrative. Do not create empty folders for every planned feature. Add a folder when a real implementation needs it. The final structure should be updated based on actual code rather than treated as a rigid template.
+This structure is intentionally illustrative for the full MVP; empty feature folders (`src/features/*`, `src/app/layouts/`, `ProtectedRoute.tsx`, `RoleGate.tsx`, `tests/e2e/`) are deferred until their respective Phase F2+ workflows begin.
+
+### 6.1 Implemented Phase F1 Directory Baseline
+
+As of Phase F1 remediation, the actual repository structure in `frontend/` is:
+
+```text
+frontend/
+├── openapi.json
+├── package.json
+├── package-lock.json
+├── playwright.config.ts
+├── tsconfig.json
+├── tsconfig.app.json
+├── tsconfig.node.json
+├── vite.config.ts
+├── .nvmrc                         # Pinned Node 24 for Vitest 5 compatibility (ADR-079)
+├── .env.example
+├── .prettierrc.json
+├── eslint.config.js
+├── scripts/
+│   └── check-types-drift.mjs      # Zero-drift OpenAPI check (ADR-076)
+├── src/
+│   ├── App.tsx                    # Wraps RouterProvider(createAppRouter) inside AppProviders
+│   ├── main.tsx
+│   ├── index.css                  # Tailwind CSS v4 import, tokens.css, focus/motion base rules
+│   ├── vite-env.d.ts
+│   ├── api/generated/
+│   │   └── schema.ts              # Generated OpenAPI types (read-only / never hand-edited)
+│   ├── app/
+│   │   ├── errors/
+│   │   │   ├── RootErrorBoundary.tsx   # Non-leaky fallback UI + ErrorFallbackView
+│   │   │   └── NotFoundPage.tsx        # Fallback route component (*)
+│   │   ├── providers/
+│   │   │   ├── AppProviders.tsx        # RootErrorBoundary -> QueryProvider composition
+│   │   │   └── QueryProvider.tsx       # TanStack QueryClient (retry: false defaults)
+│   │   └── router/
+│   │       ├── FoundationPage.tsx      # Phase F1 baseline route (/)
+│   │       └── routes.tsx              # createBrowserRouter (/ and *) with errorElement
+│   ├── components/ui/             # 10 domain-agnostic design-system primitives + barrel index.ts
+│   │   ├── Alert.tsx, Badge.tsx, Button.tsx, Card.tsx, Dialog.tsx,
+│   │   ├── EmptyState.tsx, Input.tsx, Select.tsx, Skeleton.tsx, Table.tsx, index.ts
+│   ├── lib/
+│   │   ├── api/
+│   │   │   ├── client.ts          # Typed Fetch wrapper, ApiClientError, Bearer injection
+│   │   │   └── env.ts             # Public VITE_API_BASE_URL / VITE_APP_ENV loader
+│   │   ├── auth/
+│   │   │   └── token-store.ts     # Strictly in-memory token store (ADR-075)
+│   │   └── utils/
+│   │       └── cn.ts              # Plain class concatenation helper (no utility deduplication)
+│   └── styles/
+│       └── tokens.css             # --fs-* custom properties mapped to Tailwind @theme inline
+└── tests/
+    ├── setup.ts                   # DOM polyfills, PatchedRequest AbortSignal bridge, MSW hooks
+    ├── smoke.test.tsx
+    ├── components/                # 11 UI primitive & router resilience test suites
+    ├── fixtures/api-errors.ts     # Standard HTTP 401/403/404/409/422/429/500 error builders
+    ├── mocks/
+    │   ├── handlers.ts            # Empty default handlers (fail fast on unexpected calls)
+    │   └── server.ts              # msw/node setupServer
+    └── unit/
+        ├── api-client.test.ts     # Fetch, FormData, error envelope, in-flight abort tests
+        ├── cn.test.ts
+        └── zod-rhf.test.tsx       # Zod 4 + @hookform/resolvers compatibility suite
+```
+
+Implemented Phase F1 architectural boundaries:
+- **Provider Composition (`src/app/providers/`):** `AppProviders` composes `RootErrorBoundary` around `QueryProvider` (`QueryClient` with `queries.retry: false`, `refetchOnWindowFocus: false`, `mutations.retry: false`), wrapping `RouterProvider` in `App.tsx`.
+- **Minimal Routing & Error Resilience (`src/app/router/`, `src/app/errors/`):** `createAppRouter()` configures `createBrowserRouter` with `/` (`FoundationPage`) and `*` (`NotFoundPage`), each guarded by `errorElement: <ErrorFallbackView />`. `RootErrorBoundary` suppresses raw stack traces and internal payloads while allowing safe reload/return-home recovery.
+- **UI Primitive Boundary (`src/components/ui/`):** All 10 primitives are domain-agnostic and import zero feature APIs, auth state, or domain labels; `cn()` performs pure concatenation, requiring components to emit mutually exclusive state utilities.
+- **API, Env & Token Boundaries (`src/lib/`):** `frontendEnv` exposes only public `VITE_*` configuration; `token-store.ts` holds access tokens strictly in memory (`ADR-075`); `apiRequest()` handles JSON/multipart serialization, Bearer injection, and backend error-envelope normalization (`F1-AUD-005` edge-case hardening deferred to Phase F2).
+- **Testing & MSW Boundary (`tests/`):** Global `beforeAll` starts `msw/node` with `onUnhandledRequest: "error"`; `afterEach` runs RTL `cleanup()`, `server.resetHandlers()`, and `clearAccessToken()`. Committed `tests/e2e/` Playwright tests remain deferred to Phase F2 (`F1-AUD-006`).
 
 ## 7. Feature Boundaries and Responsibilities
 

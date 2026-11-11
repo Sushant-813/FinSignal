@@ -3,11 +3,11 @@
 **Product:** FinSignal — Financial Transaction Intelligence &
 Investigation Platform  
 **Document:** Frontend Design System (`FRONTEND_DESIGN.md`)  
-**Version:** 1.0.0  
-**Status:** Baseline approved for frontend implementation  
+**Version:** 1.0.1  
+**Status:** Baseline approved and partially implemented (Phase F1 Tokens & 10 UI Primitives)  
 **Design direction:** Coinbase-inspired financial clarity + IBM-inspired
 enterprise structure  
-**Last Updated:** 2026-11-06
+**Last Updated:** 2026-11-11
 
 ------------------------------------------------------------------------
 
@@ -436,6 +436,17 @@ Rules:
 - Use a visible focus ring.
 - Distinguish read-only values from editable controls.
 
+#### Implemented `Input` state styling (`src/components/ui/Input.tsx`)
+
+Because the class joiner (`cn`) concatenates strings without utility deduplication, `Input` emits mutually exclusive foreground, surface, and border token classes per state (verified via compiled stylesheet inspection and Chromium computed styles):
+
+| State | Foreground | Surface / Background | Border | Additional Rules / ARIA |
+|---|---|---|---|---|
+| **Normal** | `text-text-primary` (`#111827`) | `bg-surface` (`#FFFFFF`) | `border-border-strong` (`#CBD1D9`) | Editable default |
+| **Disabled** | `text-text-disabled` (`#9CA3AF`) | `bg-surface-subtle` (`#F3F4F6`) | `border-border` (`#E2E5EA`) | `cursor-not-allowed`, `opacity-75`; takes visual precedence over `readOnly`; never emits `text-text-primary` |
+| **Read-only** | `text-text-secondary` (`#4B5563`) | `bg-surface-subtle` (`#F3F4F6`) | `border-border` (`#E2E5EA`) | `readOnly` HTML attribute preserved; editable-surface border suppressed |
+| **Error / Invalid** | Preserves active state foreground (`text-text-primary`, `text-text-secondary`, or `text-text-disabled`) | Preserves active state surface | `border-danger` (`#B42318`) | Sets `aria-invalid="true"`, renders inline error icon + text, and associates hint/error via `aria-describedby` |
+
 ### 7.3 Tables
 
 Tables are a primary interaction pattern in FinSignal.
@@ -782,6 +793,11 @@ applicable:
 - Keep the page context visible during background refreshes.
 - Avoid flashing empty states while a request is still loading.
 
+#### Implemented `Skeleton` & `TableSkeleton` sizing (`src/components/ui/Skeleton.tsx`)
+
+- **`Skeleton` variants:** Supports explicit non-conflicting variants `"text"` (`h-4` / `16px`, `rounded-badge`), `"text-sm"` (`h-3.5` / `14px`, `rounded-badge`), `"block"` (`h-20`, `rounded-control`), and `"circle"` (`h-9 w-9`, `rounded-full`) with `aria-hidden="true"` and `animate-pulse bg-surface-subtle`.
+- **`TableSkeleton`:** Renders header cells with `variant="text-sm"` (`14px`) and body cells with `variant="text"` (`16px`), avoiding passing conflicting Tailwind `h-*` utilities over a fixed default height (because compiled CSS puts `.h-4` after `.h-3.5`).
+
 ### Empty
 
 - Explain why there is no data.
@@ -960,28 +976,25 @@ Suggested token names:
 }
 ```
 
-These are design-level tokens. The implementation must map them to the
-final Tailwind/theme configuration rather than duplicating literal
-values across components.
+These are design-level tokens. The implementation maps them in `frontend/src/styles/tokens.css` using `--fs-*` CSS custom properties under `:root` mapped cleanly into Tailwind CSS v4 `@theme inline` namespaces (avoiding self-referential CSS variables), with base layout, `:focus-visible` (`2px solid var(--fs-focus)`), `.tabular-nums`, and `@media (prefers-reduced-motion: reduce)` rules in `frontend/src/index.css`.
 
 ### 16.1 Component consistency
 
 Prefer a small set of reusable primitives:
 
-- Button
-- Input / Select / Date range
-- Badge
-- Card / Panel
-- Table
-- Tabs
-- Dialog / Drawer
-- Alert
-- Tooltip
-- Pagination
-- Skeleton
-- Empty state
-- Page header
-- Filter bar
+- `Button` *(Implemented F1 — variants `primary`, `secondary`, `tertiary`, `danger`; sizes `sm`, `md`, `lg`, `icon`; `isLoading` + `aria-busy`; `asChild` via Radix Slot strips `disabled`/`isLoading` even in production builds; `F1-AUD-009` icon-loading crowding deferred)*
+- `Input` / `Select` *(Implemented F1 — accessible labels, hints, errors, mutually exclusive state classes; Date range deferred to F2+)*
+- `Badge` *(Implemented F1 — `neutral`, `brand`, semantic `info`/`success`/`warning`/`danger`, risk tiers `risk-low`/`risk-medium`/`risk-high`/`risk-critical`)*
+- `Card` (`Card`, `CardHeader`, `CardTitle`, `CardDescription`, `CardContent`, `CardFooter`) *(Implemented F1)*
+- `Table` (`TableContainer`, `Table`, `TableHeader`, `TableBody`, `TableRow`, `TableHead`, `TableCell`, `TableCaption`) *(Implemented F1 — `numeric` right-aligned monospace `.tabular-nums` without float coercion; `aria-sort`)*
+- `Tabs` *(Deferred to F2+)*
+- `Dialog` *(Implemented F1 — Radix Dialog portal, backdrop overlay, focus trap, Escape/close restoration; Drawer deferred to F2+)*
+- `Alert` *(Implemented F1 — `status` default, opt-in `alert`/`region`, `requestId`, escaped React children; `F1-AUD-009` attribute passthrough deferred)*
+- `Tooltip` *(Deferred to F2+)*
+- `Pagination` *(Deferred to F3)*
+- `Skeleton` / `TableSkeleton` *(Implemented F1)*
+- `EmptyState` *(Implemented F1 — `"empty"` vs `"no-results"` variants)*
+- `Page header` / `Filter bar` *(Deferred to F2/F3)*
 
 Feature-specific components should compose these primitives rather than
 implement unrelated visual variants.

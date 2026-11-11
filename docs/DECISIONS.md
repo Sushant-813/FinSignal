@@ -2428,6 +2428,108 @@ The comprehensive documentation audit revealed that while `API_GUIDELINES.md` se
 
 - Requires backend implementation, testing, and documentation verification during Phase F0 before frontend Phase F3/F4 development can commence.
 
+---
+
+# ADR-078 — Frontend Zod 3 to Zod 4 Migration (`4.6.7`)
+
+**Status:** ACCEPTED (2026-11-11)
+
+**Related decisions:** ADR-074, ADR-076
+
+## Context
+
+The independent Phase F1 post-implementation audit identified 11 `npm audit` vulnerabilities, including 1 high-severity advisory (`1243066`: memory exhaustion when validating oversized constrained collections, affecting `zod < 4.6.6`) on direct production dependency `zod@3.25.76` (`package.json` `"zod": "^3.25.23"`). Although `zod` had not yet been invoked in Phase F1 runtime code, it ships in the production dependency tree (`npm audit --omit=dev` flagged `zod` as the sole production vulnerability). `@hookform/resolvers@5.9.2` already supports `"zod": "^3.25.0 || ^4.0.0"`, and no Zod 3-specific breaking APIs were used in existing `frontend/src/` or `frontend/tests/`.
+
+## Decision
+
+Approve and execute the upgrade of `zod` from `3.25.76` to `^4.6.7` (locked at `4.6.7` in `frontend/package-lock.json`), verified with React Hook Form (`7.91.0`) and `@hookform/resolvers` (`5.9.2`), and require sensible collection length limits (such as `.max(...)`) on untrusted array/string inputs in future Phase F2+ form schemas.
+
+## Rationale
+
+- Eliminates the sole high-severity production dependency advisory without weakening audit policy or introducing npm `overrides`.
+- Migrates before feature form schemas are authored in Phase F2+, avoiding later multi-feature schema rewrites.
+
+## Alternatives Considered
+
+1. **Pin Zod 3.x with a risk-acceptance waiver:** Leaves a known high-severity DoS advisory in the production dependency graph and fails `npm audit --omit=dev`.
+2. **Replace Zod with another validator:** Violates ADR-074 stack selection and loses unified `@hookform/resolvers` schema typing.
+
+## Consequences
+
+- `npm audit --omit=dev` passes with `0` vulnerabilities.
+- Future validation schemas must use Zod 4 APIs and enforce bounded collection constraints under TypeScript `strict: true`.
+
+---
+
+# ADR-079 — Vitest 3 to Vitest 5 Migration (`5.1.0`) & Node.js 24 Runtime Alignment
+
+**Status:** ACCEPTED (2026-11-11)
+
+**Related decisions:** ADR-074 (partially amends Node.js runtime baseline and Vite floor)
+
+## Context
+
+The Phase F1 post-implementation audit identified 2 critical development-tooling vulnerabilities in `vitest@3.2.7` (`tinypool <= 2.1.1` prototype pollution to RCE advisories `1241260`/`1241261` and `@vitest/mocker` path-traversal/code-injection advisories `1193683`/`1193684`/`1242767`), with remediation requiring a semver-major upgrade to `vitest@5.1.0`. However, `vitest@5.1.0` specifies `"engines": { "node": "^22.12.0 || ^24.0.0 || >=26.0.0" }` (dropping Node 20) and `"peerDependencies": { "vite": "^6.4.0 || ^7.0.0 || ^8.0.0", ... }`, whereas Phase F0 `ADR-074` targeted Node.js `20+` LTS (`frontend/.nvmrc = 20`, `package.json` `engines.node = ">=20.0.0"`, and `"vite": "^6.3.5"` while locked at `6.4.6`).
+
+## Decision
+
+1. Upgrade `vitest` from `3.2.7` to `^5.1.0` (locked at `5.1.0` in `frontend/package-lock.json`).
+2. Align `frontend/.nvmrc` from `20` to `24` (matching active Node.js `v24.18.0` LTS verification), update `frontend/package.json` `"engines.node"` to `"^22.12.0 || >=24.0.0"`, and align `"vite"` range to `"^6.4.0"` (keeping locked `vite@6.4.6` without an unrelated Vite major upgrade).
+
+## Rationale
+
+- Eliminates all critical development-tooling vulnerabilities and removes `tinypool@1.1.1` (22 packages removed) while preserving existing Vitest + `jsdom` + MSW testing architecture (`47/47` tests passing).
+- Updating `.nvmrc` prevents `.github/workflows/ci.yml` (`actions/setup-node@v4`) from provisioning Node 20 against Vitest 5's incompatible engine constraint.
+
+## Alternatives Considered
+
+1. **Upgrade to Vitest `4.1.12` instead of `5.1.0`:** Retains Node 20 compatibility but lags behind the owner-approved Vitest 5 target.
+2. **Keep `vitest@3.2.7` or leave `.nvmrc` at `20`:** Retains critical `tinypool` advisories or breaks CI Node version parity.
+
+## Consequences
+
+- Zero critical or high vulnerabilities remain in the frontend dependency tree.
+- Local development and CI environments must use Node.js `^22.12.0 || >=24.0.0` (`.nvmrc = 24`).
+- Superseded aspect of `ADR-074`: `Node.js 20+ LTS` baseline is replaced by `^22.12.0 || >=24.0.0` (`.nvmrc = 24`).
+
+---
+
+# ADR-080 — Temporary Development Dependency Security Exception for `minimatch@10.2.6`
+
+**Status:** PENDING OWNER APPROVAL (Proposed 2026-11-11)
+
+**Related decisions:** ADR-074, ADR-079
+
+## Context
+
+After migrating `zod` to `4.6.7` (`ADR-078`) and `vitest` to `5.1.0` (`ADR-079`), `npm audit --omit=dev` reports `0` production vulnerabilities, while full `npm audit` reports `7 moderate` development-only advisories for `GHSA-g3hv-75wg-m249` (*minimatch has potential denial of service via globparts amplification*, affected range `7.0.0 - 11.0.0`).
+
+The verified dependency path is dev-only ESLint CLI tooling:
+
+- `typescript-eslint@8.72.2` (latest upstream release) → `@typescript-eslint/{eslint-plugin,parser,type-utils,utils,typescript-estree}@8.72.2` → `minimatch@10.2.6`.
+
+`@typescript-eslint/typescript-estree@8.72.2` depends on `"minimatch": "^10.2.2"`, and `10.2.6` is the latest release in the `10.x` line (the upstream fix is `minimatch@11.0.1+`). Running `npm audit fix` without `--force` reports `up to date` and performs no upgrades.
+
+## Technical Finding vs. Risk Acceptance Governance
+
+- **Technical finding (Verified):** No production bundle (`dist/`) exposure exists; `npm audit --omit=dev` passes with `0` vulnerabilities. No compatible non-forcing upstream upgrade exists without adding an unvetted npm `overrides` rule or running `npm audit fix --force`.
+- **Owner risk acceptance decision:** **`PENDING OWNER APPROVAL`** — this exception is **not** accepted until explicitly approved by the project owner.
+
+## Proposed Decision (Awaiting Owner Approval)
+
+Approve a temporary, scoped development-only exception allowing `minimatch@10.2.6` under `@typescript-eslint/typescript-estree@8.72.2` during Phase F1 without adding manual npm `overrides` or running `npm audit fix --force`, subject to mandatory re-evaluation before Phase F7/F8 release or immediately when upstream `typescript-eslint` adopts `minimatch@^11.0.1`.
+
+## Alternatives Considered
+
+1. **Add an npm `overrides` entry forcing `minimatch@^11.0.1`:** May introduce subtle breaking behavior inside `@typescript-eslint/typescript-estree` glob handling and bypasses normal upstream semver resolution without maintainer approval.
+2. **Run `npm audit fix --force`:** Risks breaking/downgrading ESLint packages across incompatible major versions.
+3. **Wait in Phase F1 until upstream releases a patched `@typescript-eslint`:** Blocks F1 formal sign-off despite zero production exposure.
+
+## Consequences (If Approved)
+
+- Permits Phase F1 formal acceptance with `npm audit --omit=dev` (`0` vulnerabilities) enforced strictly while tracking the 7 moderate dev-only advisories until upstream remediation.
+- Requires revisiting this exception in CI/dependency checks prior to Phase F7 hardening and upgrading `typescript-eslint` as soon as a compatible patch releases.
+
 # 4. Decision Dependency Map
 
 ```text
@@ -2508,11 +2610,12 @@ The following decisions remain intentionally open until implementation provides 
 9. Exact deployment platform.
 10. Exact rate-limiting implementation defaults.
 11. Exact background-job strategy if batch processing becomes slow.
-12. Exact frontend architecture after Backend + ML completion — Resolved via ADR-074 (Frontend Stack: ACCEPTED), ADR-075 (Authentication & Token Storage Strategy: ACCEPTED), ADR-076 (OpenAPI Type Generation: ACCEPTED), and ADR-077 (Transaction & Dataset Import Read APIs: ACCEPTED).
-13. Exact retention window for completed-file re-upload deduplication — Resolved via ADR-065 (Perpetual retention for byte-identical files with separately authorized administrative reprocessing).
-14. Policy for differing contextual metadata on canonical match — Resolved via ADR-065 (Candidate 1: Immutable canonical preservation with row-hash provenance).
-15. Account external identifier uniqueness and namespace resolution contract — Policy selected via proposed ADR-065 Decision D (Namespace-Scoped Account Identity `(source_namespace, external_account_id)`); schema migration and existing data backfill pending implementation authorization.
-16. Sparse/new-account baseline strategy — Resolved in Phase 6 via Candidate 2+3 Hybrid (Provisional minimum observation threshold N=3 with neutral sentinels and cold-start indicator).
+12. Exact frontend architecture after Backend + ML completion — Resolved via ADR-074 (Frontend Stack: ACCEPTED), ADR-075 (Authentication & Token Storage Strategy: ACCEPTED), ADR-076 (OpenAPI Type Generation: ACCEPTED), ADR-077 (Transaction & Dataset Import Read APIs: ACCEPTED), ADR-078 (Zod 4.6.7 Migration: ACCEPTED), and ADR-079 (Vitest 5.1.0 & Node 24 Alignment: ACCEPTED).
+13. Temporary development dependency security exception for `minimatch@10.2.6` (`GHSA-g3hv-75wg-m249`, `typescript-eslint@8.72.2`) — Documented in ADR-080. (Status: PENDING OWNER APPROVAL).
+14. Exact retention window for completed-file re-upload deduplication — Resolved via ADR-065 (Perpetual retention for byte-identical files with separately authorized administrative reprocessing).
+15. Policy for differing contextual metadata on canonical match — Resolved via ADR-065 (Candidate 1: Immutable canonical preservation with row-hash provenance).
+16. Account external identifier uniqueness and namespace resolution contract — Policy selected via proposed ADR-065 Decision D (Namespace-Scoped Account Identity `(source_namespace, external_account_id)`); schema migration and existing data backfill pending implementation authorization.
+17. Sparse/new-account baseline strategy — Resolved in Phase 6 via Candidate 2+3 Hybrid (Provisional minimum observation threshold N=3 with neutral sentinels and cold-start indicator).
 
 ### Resolved Decision Note: Contextual Metadata Divergence on Canonical Match
 - **Status:** RESOLVED via proposed ADR-065 (Decision A: Candidate 1 — Immutable Canonical Preservation with Hash Provenance).

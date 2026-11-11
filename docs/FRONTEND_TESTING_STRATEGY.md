@@ -2,8 +2,8 @@
 
 **Document:** `FRONTEND_TESTING_STRATEGY.md`  
 **Product:** FinSignal — Financial Transaction Intelligence & Investigation Platform  
-**Version:** 1.0  
-**Status:** Draft — align test coverage with verified API contracts and approved frontend decisions  
+**Version:** 1.1  
+**Status:** Reconciled with Phase F1 Testing Infrastructure (`Vitest 5.1.0`, `MSW 2.15.0`); Playwright E2E Suite Deferred to Phase F2  
 **Scope:** Automated and manual testing of the React/TypeScript frontend
 
 ---
@@ -645,3 +645,31 @@ A frontend feature is complete when:
 FinSignal's frontend must not merely look correct in a successful demo. It must behave correctly when the API is slow, unavailable, unauthorized, stale, conflicting, or returns incomplete data.
 
 **Test the boundaries and failure states that protect financial meaning, evidence integrity, and human investigation decisions—not just whether a page renders.**
+
+---
+
+## 21. Implemented Phase F1 Test Infrastructure & Baseline (2026-11-11)
+
+### 21.1 Implemented Test Stack & Environment
+
+- **Test Runner & DOM Environment:** `vitest@5.1.0` (`ADR-079`) configured in `frontend/vite.config.ts` with `environment: "jsdom"` (`jsdom@26.1.0`), `globals: true`, `setupFiles: ["./tests/setup.ts"]`, `include: ["tests/**/*.test.{ts,tsx}"]`, and `exclude: ["tests/e2e/**"]`.
+- **Component & Interaction Tooling:** `@testing-library/react@16.3.3`, `@testing-library/user-event@14.6.9`, and `@testing-library/jest-dom@6.9.1`.
+- **Network Mocking (`MSW 2.15.0`):** Shared `setupServer(...handlers)` in `frontend/tests/mocks/server.ts` with default `handlers` empty (`frontend/tests/mocks/handlers.ts`). `tests/setup.ts` enforces `server.listen({ onUnhandledRequest: "error" })` in `beforeAll`, `cleanup()` + `server.resetHandlers()` + `clearAccessToken()` in `afterEach`, and `server.close()` in `afterAll`. Reusable backend error envelope builders live in `frontend/tests/fixtures/api-errors.ts` (`401`, `403`, `404`, `409`, `422`, `429` with `Retry-After`, `500`).
+- **Cross-Realm `AbortSignal` Shim (`frontend/tests/setup.ts`):** Node.js 24 `undici.Request` rejects `jsdom` `AbortSignal` instances across realms during React Router v7 / `fetch` request instantiation. `PatchedRequest` resolves Node's native `AbortController` via `globalThis.process?.getBuiltinModule?.("node:vm")?.runInThisContext?.("AbortController")` and:
+  - preserves already-aborted signal state and `reason` via `NativeAbortSignal.abort(foreignSignal.reason)`;
+  - bridges active foreign signals to a native `AbortController` using a `{ once: true }` `"abort"` listener (with symmetric listener removal on native abort to prevent leaks).
+
+### 21.2 Verified Phase F1 Test Coverage (`15` Files, `47/47` Passing)
+
+- `tests/smoke.test.tsx` (`4` tests): Root foundation rendering at `/`, `resolveApiBaseUrl`, in-memory token store zero-storage invariants, Bearer injection + MSW `401` envelope parsing.
+- `tests/unit/api-client.test.ts` (`11` tests): `204 No Content`, `FormData` `Content-Type` omission, JSON + Bearer injection, pre-aborted `AbortSignal` propagation, **in-flight `AbortController` cancellation regression (`F1-AUD-004`)**, integer vs non-integer `Retry-After`, `body.error.request_id` vs `X-Request-ID`, malformed non-JSON HTTP error handling, `401`/`403`/`409`/`422` normalization, env/token-store isolation.
+- `tests/unit/cn.test.ts` (`2` tests): Truthy class concatenation and explicit non-deduplication contract.
+- `tests/unit/zod-rhf.test.tsx` (`2` tests): Zod `4.6.7` (`ADR-078`) bounded collection validation (`.max(5)`) and React Hook Form `useForm` + `@hookform/resolvers/zod` + `Input` accessible error integration.
+- `tests/components/*.test.tsx` (`25` tests across `10` component files + `resilience.test.tsx`):
+  - `button.test.tsx` (`7` tests, including non-DEV `asChild` stripping of coerced `disabled`/`isLoading` for `F1-AUD-008`), `input.test.tsx` (`3` tests, including mutually exclusive normal/readOnly/disabled/error utility assertions for `F1-AUD-003`), `skeleton.test.tsx` (`2` tests, verifying `TableSkeleton` `h-3.5` header vs `h-4` body without height conflicts for `F1-AUD-003`), `select.test.tsx` (`4`), `alert.test.tsx` (`3`), `dialog.test.tsx` (`2`), `badge.test.tsx` (`1`), `card.test.tsx` (`1`), `empty-state.test.tsx` (`1`), `table.test.tsx` (`1`), `resilience.test.tsx` (`3` tests covering `/`, `/nonexistent` `NotFoundPage`, `RootErrorBoundary`, and route `errorElement` stack-trace suppression).
+
+### 21.3 Browser Verification Status & Explicit Limitations
+
+- **Ad-Hoc Chrome Verification (`PASS`):** Targeted real-browser checks executed using system Google Chrome (`playwright` `channel: "chrome"`) against `vite preview` (`1440`, `1024`, `768`, `360` viewports, zero horizontal overflow, body canvas `rgb(247, 248, 250)`, `/` and `/nonexistent`) and an external `esbuild` harness (`DEV: false`) loading `dist/assets/index-*.css` (verifying computed `Input` disabled foreground `rgb(156, 163, 175)`, `TableSkeleton` header height `14px` vs body `16px`, `Button` `asChild` attribute omission, and `Dialog` portal/focus trap/Escape restoration).
+- **Important Boundary (`F1-AUD-006` Deferred):** This external verification harness is **not** a committed automated Playwright E2E suite. Although `@playwright/test@1.65.0` and `frontend/playwright.config.ts` exist, `frontend/tests/e2e/` contains no spec files yet, `npm run test:e2e` is not yet wired, and bundled Playwright Chromium binaries are not provisioned in CI. Committed Playwright E2E coverage is scheduled for **Phase F2**.
+- **Deferred API Client Tests (`F1-AUD-005`):** Network `TypeError` normalization, non-JSON `2xx` response handling, `/api/v1` path deduplication, and `resolveApiBaseUrl` scheme checks remain deferred to **Phase F2 API integration**.

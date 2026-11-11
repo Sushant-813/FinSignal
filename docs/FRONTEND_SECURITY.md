@@ -2,8 +2,8 @@
 
 **Document:** `FRONTEND_SECURITY.md`  
 **Product:** FinSignal — Financial Transaction Intelligence & Investigation Platform  
-**Version:** 1.0  
-**Status:** Draft — security decisions requiring approval are explicitly marked  
+**Version:** 1.1  
+**Status:** Phase F0/F1 Security Controls Implemented (`ADR-075`, `ADR-078`, `ADR-079`); `ADR-080` Dev-Tooling Exception Pending Owner Approval  
 **Scope:** Browser security, authentication/session handling, authorization presentation, sensitive financial data, and secure frontend integration
 
 ---
@@ -452,6 +452,21 @@ Provider selection, prompt security, data retention, and external data processin
 
 A dependency scanner is a detection aid, not proof that the application is secure.
 
+### 13.1 Phase F1 Verification & Dependency Exception Status (2026-11-11)
+
+- **Verified Phase F1 Runtime & Code Controls:**
+  - `frontend/src/lib/auth/token-store.ts` holds access tokens strictly in memory (`ADR-075`), with zero `localStorage`, `sessionStorage`, or `document.cookie` writes (`smoke.test.tsx`, `api-client.test.ts`).
+  - `frontend/src/lib/api/env.ts` and `frontend/.env.example` expose only non-secret public variables (`VITE_API_BASE_URL`, `VITE_APP_ENV`); repository scans confirm zero backend credentials or secrets in `frontend/src/`.
+  - `frontend/src/app/errors/RootErrorBoundary.tsx` suppresses raw stack traces and internal error payloads (`resilience.test.tsx`); `Alert` renders children via safe escaped React text (`alert.test.tsx`).
+  - `zod` upgraded to `4.6.7` (`ADR-078`) and `vitest` upgraded to `5.1.0` (`ADR-079`) without `npm audit fix --force` or silent `overrides`.
+- **Production Dependency Audit (`npm audit --omit=dev`):** **`0` vulnerabilities** (`PASS`, exit `0`).
+- **Full Dependency Audit (`npm audit`) — Mandatory Transparency (`ADR-080`):**
+  - `npm audit` reports **`7 moderate` advisories** (`0 critical`, `0 high`) on advisory **`GHSA-g3hv-75wg-m249`** (*`minimatch` denial of service via globparts amplification*, affected range `7.0.0 - 11.0.0`).
+  - **Dependency path:** `typescript-eslint@8.72.2` (direct devDependency, latest upstream release) → `@typescript-eslint/{eslint-plugin,parser,type-utils,utils,typescript-estree}@8.72.2` → `minimatch@10.2.6`.
+  - **Exposure & governance:** Exposed strictly in development/CI ESLint static analysis CLI tooling (`devDependencies`); absent from the Vite production bundle (`dist/`). Because `@typescript-eslint/typescript-estree@8.72.2` constrains `"minimatch": "^10.2.2"` and `10.2.6` is the newest `10.x` release (`11.0.1+` is a major bump), `npm audit fix` (without `--force`) performs zero changes.
+  - **Approval status:** **`PENDING OWNER APPROVAL`** (`ADR-080`). This exception is **not** accepted automatically and must be explicitly approved by the project owner and revisited when upstream `@typescript-eslint` adopts `minimatch@^11.0.1` (and before Phase F7/F8 release).
+- **Deferred Security Hardening:** `F1-AUD-005` (`resolveApiBaseUrl` URL-scheme validation and `apiRequest` network/non-JSON response normalization) is deferred to the Phase F2 API integration milestone.
+
 ## 14. Error and Failure Handling
 
 - Normalize API errors without discarding stable backend error codes.
@@ -537,7 +552,8 @@ Do not infer implementation from a recommendation in a design document. If runti
 
 The frontend security baseline is acceptable for MVP review when:
 
-- [x] Authentication transport and token storage are explicitly approved in `DECISIONS.md` (ADR-075; in-memory Bearer token).
+- [x] Authentication transport and token storage are explicitly approved in `DECISIONS.md` (ADR-075; in-memory Bearer token verified in F0/F1 tests).
+- [x] Phase F1 production dependencies pass `npm audit --omit=dev` (`0` vulnerabilities); dev-only `minimatch@10.2.6` exception (`ADR-080`) documented and awaiting owner approval.
 - [ ] Logout semantics are accurately represented.
 - [ ] `/auth/me` establishes current-user context.
 - [ ] Protected UI does not render while authentication is unresolved.

@@ -1,0 +1,126 @@
+/* FinSignal Design System Tokens (FRONTEND_DESIGN.md) */
+:root {
+  /* Brand & focus */
+  --fs-brand-700: #0052ff;
+  --fs-brand-800: #003ecc;
+  --fs-brand-100: #eaf0ff;
+  --fs-brand-50: #f5f8ff;
+  --fs-focus: #2563eb;
+
+  /* Neutral surfaces & borders */
+  --fs-canvas: #f7f8fa;
+  --fs-surface: #ffffff;
+  --fs-surface-subtle: #f3f4f6;
+  --fs-surface-hover: #f8fafc;
+  --fs-border: #e2e5ea;
+  --fs-border-strong: #cbd1d9;
+  --fs-overlay: rgba(15, 23, 42, 0.48);
+
+  /* Text hierarchy */
+  --fs-text-primary: #111827;
+  --fs-text-secondary: #4b5563;
+  --fs-text-muted: #6b7280;
+  --fs-text-disabled: #9ca3af;
+  --fs-text-inverse: #ffffff;
+
+  /* Risk & semantic status foregrounds */
+  --fs-risk-critical: #b42318;
+  --fs-risk-high: #d92d20;
+  --fs-risk-medium: #b54708;
+  --fs-risk-low: #027a48;
+  --fs-info: #175cd3;
+  --fs-success: #067647;
+  --fs-warning: #b54708;
+  --fs-danger: #b42318;
+
+  /* Restrained semantic surface tints (WCAG >= 4.5:1 contrast with semantic foregrounds) */
+  --fs-tint-neutral: #f3f4f6;
+  --fs-tint-info: #eff8ff;
+  --fs-tint-success: #ecfdf3;
+  --fs-tint-warning: #fffaeb;
+  --fs-tint-danger: #fef3f2;
+  --fs-tint-risk-critical: #fef3f2;
+  --fs-tint-risk-high: #fef3f2;
+  --fs-tint-risk-medium: #fffaeb;
+  --fs-tint-risk-low: #ecfdf3;
+
+  /* Typography (system/local stacks only; no external CDN calls) */
+  --fs-font-sans:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --fs-font-mono: "IBM Plex Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+
+  /* Compact enterprise radii */
+  --fs-radius-badge: 6px;
+  --fs-radius-control: 8px;
+  --fs-radius-panel: 10px;
+  --fs-radius-dialog: 12px;
+
+  /* Subtle elevation */
+  --fs-shadow-card: 0 1px 2px 0 rgb(15 23 42 / 0.04);
+  --fs-shadow-overlay: 0 10px 25px -5px rgb(15 23 42 / 0.12), 0 4px 10px -4px rgb(15 23 42 / 0.06);
+
+  /* 4px base spacing scale */
+  --fs-space-1: 4px;
+  --fs-space-2: 8px;
+  --fs-space-3: 12px;
+  --fs-space-4: 16px;
+  --fs-space-5: 20px;
+  --fs-space-6: 24px;
+  --fs-space-8: 32px;
+  --fs-space-10: 40px;
+  --fs-space-12: 48px;
+}
+
+@theme inline {
+  --color-brand-700: var(--fs-brand-700);
+  --color-brand-800: var(--fs-brand-800);
+  --color-brand-100: var(--fs-brand-100);
+  --color-brand-50: var(--fs-brand-50);
+  --color-focus: var(--fs-focus);
+
+  --color-canvas: var(--fs-canvas);
+  --color-surface: var(--fs-surface);
+  --color-surface-subtle: var(--fs-surface-subtle);
+  --color-surface-hover: var(--fs-surface-hover);
+  --color-border: var(--fs-border);
+  --color-border-strong: var(--fs-border-strong);
+  --color-overlay: var(--fs-overlay);
+
+  --color-text-primary: var(--fs-text-primary);
+  --color-text-secondary: var(--fs-text-secondary);
+  --color-text-muted: var(--fs-text-muted);
+  --color-text-disabled: var(--fs-text-disabled);
+  --color-text-inverse: var(--fs-text-inverse);
+
+  --color-risk-critical: var(--fs-risk-critical);
+  --color-risk-high: var(--fs-risk-high);
+  --color-risk-medium: var(--fs-risk-medium);
+  --color-risk-low: var(--fs-risk-low);
+  --color-info: var(--fs-info);
+  --color-success: var(--fs-success);
+  --color-warning: var(--fs-warning);
+  --color-danger: var(--fs-danger);
+
+  --color-tint-neutral: var(--fs-tint-neutral);
+  --color-tint-info: var(--fs-tint-info);
+  --color-tint-success: var(--fs-tint-success);
+  --color-tint-warning: var(--fs-tint-warning);
+  --color-tint-danger: var(--fs-tint-danger);
+  --color-tint-risk-critical: var(--fs-tint-risk-critical);
+  --color-tint-risk-high: var(--fs-tint-risk-high);
+  --color-tint-risk-medium: var(--fs-tint-risk-medium);
+  --color-tint-risk-low: var(--fs-tint-risk-low);
+
+  --font-sans: var(--fs-font-sans);
+  --font-mono: var(--fs-font-mono);
+
+  --radius-badge: var(--fs-radius-badge);
+  --radius-control: var(--fs-radius-control);
+  --radius-panel: var(--fs-radius-panel);
+  --radius-dialog: var(--fs-radius-dialog);
+
+  --shadow-card: var(--fs-shadow-card);
+  --shadow-overlay: var(--fs-shadow-overlay);
+
+  --breakpoint-wide: 90rem;
+}

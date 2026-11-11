@@ -1765,7 +1765,55 @@ Following ratification of ADR-074 through ADR-077, Phase F0 (`F0.2` Backend API 
 
 ---
 
-# 36. Log Maintenance Rules
+# 36. 2026-11-11 — Phase F1 Implementation, Audit Remediation & Documentation Synchronization
+
+## Context
+
+Following Phase F0 completion, Phase F1 (Application Foundation & Design System) was implemented, subjected to an independent post-implementation technical audit (`FAIL` on initial audit due to Prettier failures on 17 files, two Tailwind v4 CSS cascade conflicts, 11 `npm audit` vulnerabilities, cross-realm `AbortSignal` stripping, and production `Button` `asChild` prop leakage), and subsequently remediated and re-verified before documentation synchronization.
+
+## Audit Remediation & Technical Changes
+
+- **Formatting (`F1-AUD-001`):** Ran `npm run format` across `frontend/` to remove extra trailing newlines across 17 F1 files without altering `.prettierrc.json` or unrelated F0 files.
+- **Dependency Upgrades & Runtime Alignment (`F1-AUD-002`, `ADR-078`, `ADR-079`):**
+  - Upgraded `zod` from `3.25.76` to `^4.6.7` (locked `4.6.7`), resolving the high-severity production collection-validation DoS advisory (`1243066`) and verifying compatibility with `react-hook-form@7.91.0` and `@hookform/resolvers@5.9.2`.
+  - Upgraded `vitest` from `3.2.7` to `^5.1.0` (locked `5.1.0`), eliminating the 2 critical dev-only advisories (`tinypool@1.1.1`, `@vitest/mocker`) and removing 22 obsolete packages.
+  - Because `vitest@5.1.0` drops Node 20 (`"engines": { "node": "^22.12.0 || ^24.0.0 || >=26.0.0" }`) and requires `vite@^6.4.0`, aligned `frontend/.nvmrc` (`20` → `24`), `frontend/package.json` `"engines.node"` (`>=20.0.0` → `^22.12.0 || >=24.0.0`), and `"vite"` range (`^6.3.5` → `^6.4.0`, locked at `6.4.6`).
+- **CSS Cascade Remediation (`F1-AUD-003`):**
+  - Refactored `frontend/src/components/ui/Input.tsx` to emit mutually exclusive surface, text, and border state utilities (`bg-surface-subtle text-text-disabled border-border` vs `bg-surface text-text-primary border-border-strong` vs `text-text-secondary` vs `border-danger`) so `.text-text-primary` cannot override `.text-text-disabled`.
+  - Extended `SkeletonVariant` in `frontend/src/components/ui/Skeleton.tsx` with `"text-sm"` (`h-3.5`) and updated `TableSkeleton` header cells to render `variant="text-sm"` (`14px`) without conflicting `h-4` classes.
+- **Cross-Realm `AbortSignal` Fix (`F1-AUD-004`):** Updated `PatchedRequest` in `frontend/tests/setup.ts` to obtain Node's native `AbortController` via `globalThis.process?.getBuiltinModule?.("node:vm")?.runInThisContext?.("AbortController")` and bridge non-aborted foreign `jsdom` signals with `{ once: true }` `"abort"` listeners and cleanup instead of deleting `rest.signal`.
+- **Button `asChild` Hardening (`F1-AUD-008`):** Updated `frontend/src/components/ui/Button.tsx` to explicitly destructure and drop `disabled` and `isLoading` before forwarding `...slotRest` to Radix `<Slot>` even when `import.meta.env.DEV` dead-code elimination removes the development throw.
+- **Regression Tests Added/Expanded:** Added Zod 4 + `@hookform/resolvers/zod` + `Input` validation integration tests (`tests/unit/zod-rhf.test.tsx`), in-flight `AbortController` MSW cancellation test (`tests/unit/api-client.test.ts`), mutually exclusive state class assertions (`tests/components/input.test.tsx`), header/body height class assertions (`tests/components/skeleton.test.tsx`), and non-DEV `asChild` prop-stripping verification (`tests/components/button.test.tsx`).
+
+## Validation & Security Audit Results (Post-Remediation)
+
+- **Formatting (`npm run format:check`):** `PASS` (exit `0`).
+- **Linting (`npm run lint`):** `PASS` (`0` errors, `0` warnings).
+- **TypeScript (`npm run typecheck`):** `PASS` (`strict: true`, `tsc -b --pretty`).
+- **Vitest (`npm run test`, `v5.1.0`):** `47 passed` across `15` test files (`0` failed, `0` skipped).
+- **Production build (`npm run build`, `vite v6.4.6`):** `PASS` (`dist/index.html` `0.39 kB`, CSS `23.18 kB` / `5.58 kB` gzip, JS `362.12 kB` / `114.54 kB` gzip).
+- **OpenAPI drift (`npm run check:types-drift`):** `PASS` (`0` drift).
+- **Browser verification (system Chrome):** `PASS` against `vite preview` (`1440`/`1024`/`768`/`360`, zero horizontal overflow) and an external `esbuild` harness over built CSS confirming disabled `Input` foreground (`rgb(156, 163, 175)`), `TableSkeleton` header height (`14px`) vs body (`16px`), `Button` `asChild` production attribute stripping, and `Dialog` portal/focus trap. (Note: Not a committed Playwright E2E suite.)
+- **Production dependency audit (`npm audit --omit=dev`):** `PASS` (`found 0 vulnerabilities`).
+- **Full dependency audit (`npm audit`):** `7 moderate` development-only advisories remain (`typescript-eslint@8.72.2` → `minimatch@10.2.6`, `GHSA-g3hv-75wg-m249`). No safe non-forcing automated fix exists upstream; exception recorded in `ADR-080` as **`PENDING OWNER APPROVAL`**.
+- **Remote GitHub Actions CI (`.github/workflows/ci.yml`):** `PENDING` (not yet executed remotely).
+
+## Explicitly Deferred Findings
+
+- `F1-AUD-005`: API client network `TypeError` normalization, non-JSON `2xx` guard, `/api/v1` path deduplication, and `VITE_API_BASE_URL` scheme validation → **Phase F2 API milestone**.
+- `F1-AUD-006`: Committed Playwright `tests/e2e/` suite and `playwright.config.ts` `webServer` wiring → **Phase F2 testing milestone**.
+- `F1-AUD-009`: `Button` `size="icon"` loading icon replacement layout and `Alert` attribute passthrough ergonomics → **Future UI refinement**.
+
+## Current Status & Next Milestone
+
+- **Backend + ML v1.0.0:** Released & Stable.
+- **Phase F0:** Completed & Verified.
+- **Phase F1:** **`CONDITIONALLY READY`** — implementation remediation and local verification complete; formal acceptance pending owner approval of `ADR-080` (`minimatch@10.2.6` dev-only exception) and remote GitHub Actions CI verification.
+- **Next Milestone:** Obtain formal Phase F1 acceptance sign-off, then begin **Phase F2 — Authentication, Session & Application Shell** (`NEXT / BLOCKED UNTIL F1 ACCEPTANCE`).
+
+---
+
+# 37. Log Maintenance Rules
 
 The project log should be updated when:
 
@@ -1791,7 +1839,7 @@ What happens next?
 
 ---
 
-# 37. Final Principle
+# 38. Final Principle
 
 The project log is a record of **engineering evolution**, not a diary of every command executed.
 

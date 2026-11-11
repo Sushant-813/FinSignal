@@ -2,8 +2,8 @@
 
 **Document:** `FRONTEND_TRD.md`  
 **Product:** FinSignal — Financial Transaction Intelligence & Investigation Platform  
-**Version:** 1.0  
-**Status:** Draft for technical review  
+**Version:** 1.1  
+**Status:** Reconciled with Phase F0/F1 Implementation Baseline (`package-lock.json` Authoritative; Phase F1 Conditionally Ready)  
 **Scope:** Browser-based frontend for the existing Backend + ML v1.0.0 platform  
 **Prerequisite:** `FRONTEND_PRD.md` and `FRONTEND_DESIGN.md`
 
@@ -68,30 +68,46 @@ The frontend implementation must:
 | Linting/formatting | ESLint and Prettier | Proposed; exact config to be committed |
 | Package manager | npm with committed `package-lock.json` | Proposed default unless repository already standardizes another manager |
 
-### 3.2 Version policy
+### 3.2 Implemented, Approved, and Deferred Toolchain Baseline (Phase F1 Lockfile)
 
-- Use mutually compatible stable releases at implementation kickoff.
-- Pin dependency resolution through the package lockfile.
-- Do not use floating CDN scripts or unpinned production dependencies.
-- Record the actual Node.js version in `.nvmrc` or an equivalent repository tool-version file.
-- Record the selected package manager and version in repository documentation.
-- Upgrade dependencies deliberately, with tests and release notes reviewed.
-- Do not copy version numbers from this draft; the lockfile and `package.json` are authoritative.
+Per `frontend/package.json`, `frontend/package-lock.json`, and `frontend/.nvmrc` (authoritative over draft estimates), the current dependency and runtime status is:
 
-### 3.3 Stack decisions requiring approval
+| Concern | Package / Runtime | `package.json` Range | Installed (`package-lock.json`) | Phase F1 Status |
+|---|---|---|---|---|
+| Node.js runtime | Node.js | `engines.node`: `^22.12.0 \|\| >=24.0.0` | `.nvmrc`: `24` (verified `v24.18.0`) | **Active (`ADR-079`)** |
+| Package manager | npm | — | Verified `11.16.0` | **Active (`ADR-074`)** |
+| UI library | `react`, `react-dom` | `^19.1.0` | `19.3.1` | **Installed & Active** |
+| TypeScript | `typescript` | `^5.8.3` | `5.9.3` | **Installed & Active** |
+| Build/dev server | `vite`, `@vitejs/plugin-react` | `^6.4.0`, `^4.5.0` | `6.4.6`, `4.7.0` | **Installed & Active** |
+| Styling | `tailwindcss`, `@tailwindcss/vite` | `^4.1.7` | `4.3.5` | **Installed & Active** |
+| Routing | `react-router` | `^7.6.0` | `7.18.5` | **Installed & Active (`/` + `*` F1 routes)** |
+| Server state | `@tanstack/react-query` | `^5.76.1` | `5.107.1` | **Installed & Provider Wired (`QueryProvider`)** |
+| Forms & validation | `react-hook-form`, `@hookform/resolvers`, `zod` | `^7.56.4`, `^5.0.1`, `^4.6.7` | `7.91.0`, `5.9.2`, `4.6.7` | **Installed & Active (`ADR-078`; tested with forms in F2+)** |
+| UI primitives & icons | `@radix-ui/react-dialog`, `react-select`, `react-slot`, `lucide-react` | `^1.1.14`, `^2.2.5`, `^1.2.3`, `^0.511.0` | `1.3.1`, `2.4.1`, `1.5.0`, `0.511.0` | **Installed & Active** |
+| Charts | Apache ECharts | — *(not yet in `package.json`)* | Not installed | **Approved (`ADR-074`), Deferred to Phase F3** |
+| Global client store | Zustand / Redux | — | Rejected / Not installed | **Excluded (`ADR-074`)** |
+| HTTP transport | Native `fetch` (`src/lib/api/client.ts`) | Built-in browser/Node | Built-in | **Implemented (F0); F1-AUD-005 hardening deferred to F2** |
+| API contract types | `openapi-typescript` | `^7.8.0` | `7.13.0` | **Installed & Active (`ADR-076`)** |
+| Unit/component tests | `vitest`, `@testing-library/*`, `jsdom` | `^5.1.0`, `^16.3.0`/`^6.6.3`/`^14.6.1`, `^26.1.0` | `5.1.0`, `16.3.3`/`6.9.1`/`14.6.9`, `26.1.0` | **Installed & Active (`ADR-079`)** |
+| Network mocking | `msw` | `^2.8.4` | `2.15.0` | **Installed & Active (`onUnhandledRequest: "error"`)** |
+| End-to-end tests | `@playwright/test` | `^1.52.0` | `1.65.0` | **Installed & configured (`playwright.config.ts`); E2E specs deferred to Phase F2 (`F1-AUD-006`)** |
+| Linting / formatting | `eslint`, `typescript-eslint`, `prettier` | `^9.27.0`, `^8.32.1`, `^3.5.3` | `9.39.5`, `8.72.2`, `3.9.10` | **Installed & Active (`ADR-080` pending for `minimatch@10.2.6`)** |
 
-Before scaffolding, ratify the proposed additions in `DECISIONS.md`:
+### 3.3 Version policy
 
-- React Router
-- TanStack Query
-- React Hook Form + Zod
-- Native Fetch API
-- `openapi-typescript`
-- Radix/shadcn primitives
-- Vitest / Testing Library / MSW / Playwright
-- npm versus an existing repository package-manager convention
+- Use mutually compatible stable releases and pin exact dependency trees in `frontend/package-lock.json`.
+- **Node.js & Vite alignment (`ADR-079`):** Because `vitest@5.1.0` requires Node.js `^22.12.0 || ^24.0.0 || >=26.0.0` (dropping Node 20) and `vite@^6.4.0`, `frontend/.nvmrc` is set to `24`, `package.json` `engines.node` is `^22.12.0 || >=24.0.0`, and `vite` requires `^6.4.0` (`6.4.6` locked).
+- Do not use floating CDN scripts, unapproved libraries (`ADR-074`), `npm audit fix --force`, or silent npm `overrides`.
+- Upgrade major dependencies only via explicit owner approval and ADR documentation (`ADR-078`, `ADR-079`).
 
-Do not install every proposed library automatically. If the first implementation can remain simpler without a dependency, prefer the simpler option.
+### 3.4 Stack decisions & governance record
+
+- `ADR-074` (`ACCEPTED`): Core React/TypeScript/Vite/Tailwind/ECharts stack, React Router, TanStack Query, React Hook Form + Zod, Native Fetch, `openapi-typescript`, Radix UI, Lucide React, Vitest/RTL/MSW/Playwright, npm lockfile; rejects Axios/Redux/Zustand for MVP.
+- `ADR-078` (`ACCEPTED`): Zod `3.25.76` → `4.6.7` upgrade (remediates production high advisory `1243066`).
+- `ADR-079` (`ACCEPTED`): Vitest `3.2.7` → `5.1.0` upgrade & Node `24` alignment (remediates critical `tinypool`/`@vitest/mocker` dev advisories).
+- `ADR-080` (`PENDING OWNER APPROVAL`): Temporary dev-only exception for `typescript-eslint@8.72.2` → `minimatch@10.2.6` (`GHSA-g3hv-75wg-m249`).
+
+*(Original baseline policy note: React, TypeScript, Vite, Tailwind CSS, and Apache ECharts originated in main `TRD.md`; ECharts installation remains intentionally deferred until Phase F3 analytics implementation.)*
 
 ## 4. Runtime and Browser Support
 
@@ -139,7 +155,7 @@ These are test viewports, not minimum device requirements.
 - Handle timestamps as timezone-aware instants and preserve the original API value where required for round-tripping.
 - Use discriminated unions for known API states where the contract supports them.
 
-Recommended compiler constraints include:
+Implemented compiler constraints (`frontend/tsconfig.app.json`):
 
 ```json
 {
@@ -148,12 +164,20 @@ Recommended compiler constraints include:
     "noImplicitOverride": true,
     "noFallthroughCasesInSwitch": true,
     "noUncheckedIndexedAccess": true,
-    "exactOptionalPropertyTypes": true
+    "exactOptionalPropertyTypes": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "moduleResolution": "bundler",
+    "types": ["vitest/globals", "@testing-library/jest-dom"]
   }
 }
 ```
 
-The final compiler configuration may need limited compatibility adjustments based on generated API types and selected library versions. Any relaxation must be deliberate and documented.
+- **ESLint (`frontend/eslint.config.js`):** Enforces `@eslint/js` recommended, `typescript-eslint` recommended, `eslint-plugin-react-hooks`, `eslint-plugin-react-refresh`, and `@typescript-eslint/no-explicit-any: "error"`.
+- **Prettier (`frontend/.prettierrc.json`):** Enforces `semi: true`, `singleQuote: false`, `tabWidth: 2`, `trailingComma: "es5"`, `printWidth: 100`.
+- **Testing & MSW integration:** Configured in `frontend/vite.config.ts` (`environment: "jsdom"`, `globals: true`, `setupFiles: ["./tests/setup.ts"]`, `exclude: ["tests/e2e/**"]`) and `frontend/tests/mocks/server.ts` (`onUnhandledRequest: "error"`).
+
+`tsconfig.node.json` covers `vite.config.ts` and `playwright.config.ts` with `strict: true` and `moduleResolution: "bundler"`. Any future relaxation must be deliberate and documented.
 
 ## 6. Application Structure
 
@@ -584,7 +608,7 @@ Rules:
 
 ## 16. Build and Development Scripts
 
-Proposed scripts (exact names can be adjusted to repository convention):
+Actual scripts implemented in `frontend/package.json`:
 
 ```json
 {
@@ -598,13 +622,14 @@ Proposed scripts (exact names can be adjusted to repository convention):
     "typecheck": "tsc -b --pretty",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test",
-    "api:types": "openapi-typescript <verified-openapi-url-or-file> -o src/lib/api/generated.ts"
+    "api:types": "openapi-typescript openapi.json -o src/api/generated/schema.ts",
+    "check:types-drift": "node scripts/check-types-drift.mjs"
   }
 }
 ```
 
-The API type-generation command is illustrative. The final command must use the repository's verified OpenAPI export workflow and should not assume the backend is running at a fixed URL in CI.
+- OpenAPI types are generated from `frontend/openapi.json` into `frontend/src/api/generated/schema.ts` and verified for zero drift in CI via `npm run check:types-drift`.
+- **Deferred script:** A `test:e2e` Playwright runner script (`playwright test`) and `frontend/tests/e2e/` test suite are not yet wired in Phase F1 and remain deferred to Phase F2 (`F1-AUD-006`).
 
 ### 16.1 Local development
 

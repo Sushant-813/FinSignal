@@ -1,1 +1,48 @@
 @import "tailwindcss";
+@import "./styles/tokens.css";
+
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+    border-color: var(--fs-border);
+  }
+
+  html {
+    font-family: var(--fs-font-sans);
+    color: var(--fs-text-primary);
+    background-color: var(--fs-canvas);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background-color: var(--fs-canvas);
+    color: var(--fs-text-primary);
+    font-size: 14px;
+    line-height: 21px;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--fs-focus);
+    outline-offset: 2px;
+  }
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

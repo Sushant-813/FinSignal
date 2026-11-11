@@ -2,8 +2,8 @@
 
 **Document:** `FRONTEND_ROADMAP.md`  
 **Product:** FinSignal — Financial Transaction Intelligence & Investigation Platform  
-**Version:** 1.1  
-**Status:** Phase F0 Complete — Ready for F1 (Application Foundation & Design System)  
+**Version:** 1.2  
+**Status:** Phase F0 Completed; Phase F1 CONDITIONALLY READY (Audit Remediation & Local Verification Complete; Formal Acceptance Pending)  
 **Scope:** Frontend planning and implementation following Backend + ML v1.0.0
 
 ---
@@ -166,41 +166,68 @@ Remove the major unknowns that could force expensive rework during implementatio
 
 ## 7. F1 — Application Foundation & Design System
 
+> [!IMPORTANT]
+> **Phase Status: CONDITIONALLY READY (2026-11-11)** — Implementation remediation and local verification are complete; formal acceptance is pending owner approval of the dev-only `minimatch@10.2.6` security exception (`ADR-080`) and remote GitHub Actions CI verification.
+
 ### Objective
 
 Create a reproducible frontend project with a stable application foundation and shared visual primitives.
 
 ### Key tasks
 
-- Initialize the React + TypeScript + Vite application.
-- Configure strict TypeScript.
-- Configure Tailwind CSS and approved design tokens.
-- Add approved routing, query, form, validation, and UI dependencies only.
-- Configure linting, formatting, scripts, and lockfile.
-- Establish feature-oriented source structure.
-- Establish environment configuration and API base URL handling.
-- Add global typography, spacing, color, border, and focus tokens.
-- Implement foundational components: buttons, inputs, selects, badges, cards, dialogs, tables, skeletons, alerts, and empty states.
-- Establish accessible component patterns.
-- Add error boundary and not-found route.
-- Configure unit/component test environment and MSW.
-- Add CI for lint, type-check, tests, and production build.
+- [x] Preserve React 19, TypeScript 5.8 (`^5.8.3`, locked `5.9.3`), Vite 6 (`6.4.6`), and Tailwind CSS 4 (`4.3.5`) foundation.
+- [x] Maintain strict TypeScript configuration (`strict`, `noImplicitOverride`, `noFallthroughCasesInSwitch`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, zero `any`).
+- [x] Establish feature-oriented / application structure (`src/app/{providers,router,errors}`, `src/components/ui/`, `src/lib/{api,auth,utils}`, `src/styles/`) and minimal `/` + `*` routing foundation (`AppProviders`, `QueryProvider`, `FoundationPage`).
+- [x] Implement global design tokens (`--fs-*` mapped cleanly to `@theme inline` without circular references) and base accessibility/motion rules (`:focus-visible`, `.tabular-nums`, `prefers-reduced-motion`).
+- [x] Implement 10 domain-agnostic foundational UI components in `src/components/ui/`: `Button`, `Badge`, `Card`, `Input`, `Select`, `Table`, `Dialog`, `Alert`, `Skeleton`/`TableSkeleton`, and `EmptyState`.
+- [x] Establish accessible component patterns, `RootErrorBoundary` (non-leaky fallback), and `NotFoundPage` route.
+- [x] Configure Vitest (`5.1.0`), React Testing Library, `user-event`, and MSW (`2.15.0`, `onUnhandledRequest: "error"`) test infrastructure plus shared API error fixtures.
+- [x] Add frontend CI workflow job in `.github/workflows/ci.yml` (`npm ci`, `format:check`, `lint`, `typecheck`, `test`, `build`, `check:types-drift`).
+- [x] **Audit Remediation Completed (2026-11-11):**
+  - **Prettier (`F1-AUD-001`):** Formatted 17 affected F1 files; `npm run format:check` passes cleanly.
+  - **CSS Cascade Remediation (`F1-AUD-003`):** Made state utilities mutually exclusive in `Input` (`text-text-disabled` vs `text-text-primary`) and added `Skeleton` `"text-sm"` (`h-3.5`) for `TableSkeleton` header cells to eliminate `.h-4` override.
+  - **Dependency Upgrades & Alignment (`F1-AUD-002`):** Upgraded `zod` (`3.25.76` → `4.6.7`, `ADR-078`) and `vitest` (`3.2.7` → `5.1.0`, `ADR-079`), aligned `frontend/.nvmrc` to `24`, `engines.node` to `^22.12.0 || >=24.0.0`, and `vite` floor to `^6.4.0`.
+  - **AbortSignal Test-Environment Remediation (`F1-AUD-004`):** Upgraded `PatchedRequest` in `tests/setup.ts` to bridge un-aborted cross-realm `AbortSignal` instances to a native `AbortController` with `{ once: true }` listener cleanup.
+  - **Button `asChild` Hardening (`F1-AUD-008`):** Explicitly stripped `disabled` and `isLoading` before spreading props onto Radix `<Slot>` in non-dev builds.
+  - **Regression Tests & Targeted Browser Verification:** Added unit/component regression suites (`zod-rhf.test.tsx`, `api-client.test.ts` in-flight abort, `input.test.tsx`, `skeleton.test.tsx`, `button.test.tsx`) and verified rendered/computed CSS, responsive viewports (`1440`/`1024`/`768`/`360`), and `Dialog` portal/focus trap using system Chrome.
 
 ### Deliverables
 
-- Running frontend development application.
-- Approved design tokens and foundational components.
-- Source structure aligned with `FRONTEND_ARCHITECTURE.md`.
-- CI baseline.
-- Component and utility test examples.
+- Running frontend foundation (`FoundationPage`), `NotFoundPage`, and `RootErrorBoundary` (`AppProviders`, `QueryProvider`, `createAppRouter`).
+- Centralized design tokens (`frontend/src/styles/tokens.css`) and 10 shared UI primitives (`frontend/src/components/ui/index.ts`).
+- CI baseline in `.github/workflows/ci.yml`.
+- Component, unit, MSW, and Zod 4 + React Hook Form integration tests (`15` files, `47` passing tests).
 
-### Exit criteria
+### Verification Summary (2026-11-11 Post-Remediation)
 
-- Clean install from lockfile succeeds.
-- Development server and production build work.
-- Type-check, lint, and initial tests pass.
-- Shared components follow design and accessibility requirements.
-- No backend credentials or secrets are present in frontend configuration.
+| Verification | Result |
+|---|---|
+| Prettier (`npm run format:check`) | **PASS** |
+| ESLint (`npm run lint`) | **PASS** |
+| TypeScript (`npm run typecheck`) | **PASS** |
+| Vitest (`npm run test`, v5.1.0) | **47/47 PASS** (`15` test files) |
+| Production build (`npm run build`) | **PASS** (`vite v6.4.6`) |
+| OpenAPI drift check (`npm run check:types-drift`) | **PASS** |
+| Production dependency audit (`npm audit --omit=dev`) | **0 vulnerabilities** |
+| Full dependency audit (`npm audit`) | **7 moderate advisories remain** (`typescript-eslint@8.72.2` → `minimatch@10.2.6`, `GHSA-g3hv-75wg-m249`; dev-only) |
+| Browser verification (system Chrome + Vite preview / built CSS harness) | **PASS** (ad-hoc Chrome harness; not a committed Playwright E2E suite) |
+| Remote GitHub Actions (`.github/workflows/ci.yml`) | **PENDING** |
+
+### Explicitly Deferred Findings from Phase F1 Audit
+
+| Finding | Description | Follow-up |
+|---|---|---|
+| `F1-AUD-005` | API client and base URL edge-case hardening (`fetch` network `TypeError` normalization, non-JSON `2xx` guard, `/api/v1` dedup, scheme validation) | Phase F2 API integration milestone |
+| `F1-AUD-006` | Committed Playwright E2E suite (`frontend/tests/e2e/`) and `playwright.config.ts` `webServer` configuration | Phase F2 testing milestone |
+| `F1-AUD-009` | `Button` `size="icon"` loading layout and `Alert` `data-*`/attribute passthrough ergonomics | Future UI refinement |
+
+### Exit criteria & Open Acceptance Conditions
+
+- [x] Clean install compatibility, strict TypeScript, lint, formatting, build, and `47/47` automated tests pass locally.
+- [x] Shared components conform to design tokens, CSS computed-style checks, and accessibility requirements.
+- [x] No backend credentials, secrets, or browser-storage token persistence exist in frontend code (`npm audit --omit=dev` = `0` vulnerabilities).
+- [ ] **Owner security-exception approval (`ADR-080`):** Formal owner sign-off pending for the 7 moderate dev-only advisories (`typescript-eslint@8.72.2` → `minimatch@10.2.6`, `GHSA-g3hv-75wg-m249`).
+- [ ] **Remote CI verification:** First remote GitHub Actions execution of `.github/workflows/ci.yml` (`frontend` job on `ubuntu-latest` with Node `24` via `.nvmrc`) is pending push/PR.
 
 ---
 
@@ -571,8 +598,8 @@ Use this table during implementation. Status values should be controlled and evi
 | Phase | Status | Completion evidence | Open blockers |
 |---|---|---|---|
 | F0 — Decisions & contract verification | COMPLETED | ADR-074–077 accepted; 3 F0 read endpoints & shared `MoneyStr` types implemented (`593` backend tests); `frontend/` scaffolded with `openapi.json`, `schema.ts`, drift check, API client, in-memory token store, and `4` Vitest smoke tests; documentation reconciled | None |
-| F1 — Foundation & design system | NOT STARTED | Build, CI, component tests | |
-| F2 — Auth & application shell | NOT STARTED | Auth E2E and role checks | |
+| F1 — Foundation & design system | CONDITIONALLY READY | Tokens, 10 UI primitives, providers/routing/error boundary, CI workflow, Zod `4.6.7` & Vitest `5.1.0` upgrades, CSS/AbortSignal/Button remediations complete; Prettier/ESLint/TS/`47` tests/build/drift/prod-audit (`0` vulns)/Chrome checks pass locally | Pending owner approval of dev-only `minimatch@10.2.6` exception (`ADR-080`); remote GitHub Actions CI run pending |
+| F2 — Auth & application shell | NOT STARTED (BLOCKED UNTIL F1 ACCEPTANCE) | Auth E2E and role checks | Phase F1 formal acceptance |
 | F3 — Analytics, transactions & risk | NOT STARTED | API-backed workflow tests | |
 | F4 — Dataset import | NOT STARTED | Upload/import E2E | |
 | F5 — Investigation workflow | NOT STARTED | Role-specific investigation E2E | |
