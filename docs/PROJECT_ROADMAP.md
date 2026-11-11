@@ -3,8 +3,8 @@
 **Project:** FinSignal — Financial Transaction Intelligence & Investigation Platform  
 **Document:** Project Roadmap  
 **Scope:** Backend + ML v1.0.0 (Completed) & Frontend Implementation Track (Phases F0–F8)
-**Status:** Backend + ML v1.0.0 Released / Phase F0 Complete / Phase F1 CONDITIONALLY READY (Pending Formal Acceptance)
-**Version:** 1.2.1
+**Status:** Backend + ML v1.0.0 Released / Phase F0 & F1 Accepted / Phase F2 Implemented & Locally Verified (Remote F2 CI & Live-Backend E2E Pending)
+**Version:** 1.3.0
 **Last Updated:** 2026-11-11
 
 ---
@@ -1452,31 +1452,35 @@ F8 — Deployment, Acceptance & Frontend Release
   - Implemented 10 domain-agnostic UI primitives (`Button`, `Badge`, `Card`, `Input`, `Select`, `Table`, `Dialog`, `Alert`, `Skeleton`/`TableSkeleton`, `EmptyState`), `QueryProvider`/`AppProviders`, `RootErrorBoundary`, `FoundationPage`, and `NotFoundPage`.
   - Configured Vitest `5.1.0`, React Testing Library, MSW `2.15.0` (`onUnhandledRequest: "error"`), and `.github/workflows/ci.yml` (`frontend` job).
   - Remediated all blocking F1 audit findings: Prettier formatting across 17 files (`F1-AUD-001`), mutually exclusive `Input` state utilities & `TableSkeleton` `text-sm` height (`F1-AUD-003`), cross-realm `AbortSignal` listener bridge in `tests/setup.ts` (`F1-AUD-004`), `Button` `asChild` prop stripping (`F1-AUD-008`), and approved upgrades to `zod@4.6.7` (`ADR-078`) and `vitest@5.1.0` with Node `24` alignment (`ADR-079`).
-- **Verification Snapshot:** Prettier (`PASS`), ESLint (`PASS`), TypeScript (`PASS`), Vitest (`47/47 PASS` across 15 files), Vite production build (`PASS`), OpenAPI drift check (`PASS`), `npm audit --omit=dev` (`0` vulnerabilities), full `npm audit` (`7 moderate` dev-only `minimatch@10.2.6` advisories), system-Chrome computed-style/responsive/Dialog verification (`PASS`), remote GitHub Actions CI (`PENDING`).
-- **Explicitly Deferred Findings:** `F1-AUD-005` (API client/env edge-case hardening → F2 API milestone), `F1-AUD-006` (committed Playwright `tests/e2e/` suite & `webServer` → F2 testing milestone), `F1-AUD-009` (`Button` `size="icon"` loading & `Alert` attribute passthrough → future UI refinement).
+- **Verification Snapshot:** Prettier (`PASS`), ESLint (`PASS`), TypeScript (`PASS`), Vitest (`47/47 PASS` across 15 files), Vite production build (`PASS`), OpenAPI drift check (`PASS`), `npm audit --omit=dev` (`0` vulnerabilities), full `npm audit` (`7 moderate` dev-only `minimatch@10.2.6` advisories accepted under `ADR-080`), system-Chrome computed-style/responsive/Dialog verification (`PASS`), remote GitHub Actions CI run `43036181121` on `ad02a4e` (`PASS`).
+- **Audit Findings Disposition:** `F1-AUD-005` and `F1-AUD-006` resolved in Phase F2; `F1-AUD-009` (`Button` `size="icon"` loading & `Alert` attribute passthrough) remains deferred.
 - **Exit Criteria:**
   - [x] Shared UI component library passes automated rendering, keyboard focus, accessibility, and Chrome computed-style checks (`47/47` Vitest tests).
   - [x] Zero hard-coded color classes in `frontend/src/`; styles derive from centralized tokens.
   - [x] Zero production dependency vulnerabilities (`npm audit --omit=dev` = `0`).
-  - [ ] Formal owner acceptance of temporary dev-only `minimatch@10.2.6` security exception (`ADR-080`, `PENDING OWNER APPROVAL`) and first remote GitHub Actions CI run.
-- **Status:** `CONDITIONALLY READY (2026-11-11) — implementation remediation and local verification complete; formal acceptance pending security-exception approval (ADR-080) and remote CI verification`
+  - [x] Formal owner acceptance of temporary dev-only `minimatch@10.2.6` security exception (`ADR-080`, `ACCEPTED 2026-11-11`) and remote GitHub Actions CI run `43036181121` (`PASS`).
+- **Status:** `COMPLETED & ACCEPTED (2026-11-11) — formal acceptance granted; F1 baseline pushed (ad02a4e) and remote CI green`
 
 ---
 
 ## Phase F2 — Authentication, Session & Application Shell
 
 - **Objective:** Deliver secure login, authenticated session state, role-aware routing, and main application layout (including Collapsible Sidebar, Header, Breadcrumbs, and User Profile indicator).
-- **Key Tasks:**
-  - Build Login page with client-side format validation (Argon2id password requirements, normalized email).
-  - Implement in-memory JWT authentication adapter per approved ADR-075.
-  - Implement current-user context (`GET /api/v1/auth/me`) and permission-aware navigation helpers.
-  - Implement protected route wrappers with unauthorized/forbidden fallback screens.
-  - Implement clean logout flow (discard token, clear query cache, redirect).
+- **Implemented Tasks (`F2.1`–`F2.6`):**
+  - Built Login page (`LoginPage.tsx`, `login-schema.ts`) with React Hook Form + Zod 4 validation aligned to `LoginRequest` (password `1..128` characters, trimmed/lowercased email, no registration UI).
+  - Hardened centralized API client (`client.ts`, `env.ts`, `errors.ts`, `session-events.ts`; resolving `F1-AUD-005`) and implemented OpenAPI-typed auth functions (`login`, `getCurrentUser`, `logout`).
+  - Implemented in-memory JWT storage with `sessionEpoch` (`token-store.ts`) and `AuthProvider` (`authAttemptId` + `sessionEpoch` race protection, `expires_in` timer, single-flight `401` handling, `403` preservation) per approved ADR-075.
+  - Implemented current-user validation (`GET /api/v1/auth/me` runtime narrowed via `isUserRole`/`parseAuthUser`) and F2 capability helpers (`canViewDatasetImports` for all 3 roles vs `canManageDatasets` for `ADMIN | ANALYST` only).
+  - Implemented protected & public-only routing (`ProtectedRoute`, `PublicOnlyRoute`, `RoleGate`, `sanitizeRedirectPath`), light-first shell (`AppLayout`, `AuthLayout`, `Sidebar`, `TopBar`, `UserMenu`), `WorkspaceHomePage`, and honest F3–F5 placeholders (retiring `FoundationPage.tsx`).
+  - Implemented local-only logout (`Option B`: immediate token clear, `QueryClient` cancel + synchronous clear, clean `/login` redirect without claiming backend JWT revocation).
+  - Configured Playwright Chromium E2E against fresh production `vite preview` (`reuseExistingServer: false`, resolving `F1-AUD-006`).
+- **Verification Snapshot (Local):** Prettier (`PASS`), ESLint (`PASS`), TypeScript (`PASS`), Vitest (`87/87 PASS` across `22` files), Vite production build (`PASS`), OpenAPI drift check (`PASS`), `npm audit --omit=dev` (`0` vulnerabilities; `7` moderate dev-only `minimatch` advisories covered by `ADR-080`), Playwright Chromium mocked E2E (`5/5 PASS`, `0` skipped). Live-backend E2E (`E2E_API_MODE=live`) was not executed; remote GitHub Actions CI for F2 has not yet been triggered.
 - **Exit Criteria:**
-  - Successful login transitions to dashboard with verified role context (`ADMIN`, `ANALYST`, `INVESTIGATOR`).
-  - Access token is strictly held in memory and never written to `localStorage` or `sessionStorage`.
-  - Expired tokens or 401 responses trigger clean re-authentication.
-- **Status:** `NEXT / BLOCKED UNTIL F1 ACCEPTANCE`
+  - [x] Successful login authenticates via `/auth/login` -> `/auth/me` with verified runtime role context (`ADMIN`, `ANALYST`, `INVESTIGATOR`).
+  - [x] Access token is strictly held in memory and never written to `localStorage`, `sessionStorage`, or cookies.
+  - [x] Expired tokens (`expires_in`) or `401` responses trigger clean re-authentication while `403` preserves session.
+  - [ ] Remote F2 CI run and optional live-backend E2E verification completed, followed by formal Phase F2 owner acceptance.
+- **Status:** `IMPLEMENTED & LOCALLY VERIFIED (2026-11-11) — Remote F2 CI & Live-Backend E2E Pending; Formal Acceptance Pending`
 
 ---
 

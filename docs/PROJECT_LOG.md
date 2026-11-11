@@ -1813,7 +1813,68 @@ Following Phase F0 completion, Phase F1 (Application Foundation & Design System)
 
 ---
 
-# 37. Log Maintenance Rules
+# 37. 2026-11-11 — Phase F1 Formal Acceptance, ADR-080 Approval & Phase F2 Implementation
+
+## Context
+
+Following push of the Phase F1 baseline (`ad02a4e`), remote GitHub Actions CI workflow run `43036181121` succeeded across both backend (`Lint, Type Check, Migrate & Test`) and frontend (`Frontend Format, Lint, Type Check, Test, Build & Drift Check`) jobs. On `2026-11-11`, the project owner explicitly approved `ADR-080` (temporary risk acceptance for 7 moderate dev-only `minimatch@10.2.6` advisories under `typescript-eslint@8.72.2`), granted formal acceptance of Frontend Phase F1, and authorized implementation of Frontend Phase F2 (`F2.1`–`F2.6`), deferring documentation updates to a dedicated reconciliation run.
+
+## What Changed (Phase F2 Implementation)
+
+- **F2.1 API Hardening & Auth API (`F1-AUD-005` Resolved):**
+  - Updated `frontend/src/lib/api/env.ts` (`resolveApiBaseUrl`) to reject empty strings, control characters/whitespace, query strings (`?`), fragments (`#`), embedded credentials, protocol-relative (`//`) paths, non-HTTP(S) schemes, and non-HTTPS absolute URLs in production.
+  - Updated `frontend/src/lib/api/client.ts` (`apiRequest`, `buildUrl`) to validate relative paths before `fetch`, prevent `/api/v1` prefix duplication, normalize `TypeError` network failures to `NETWORK_ERROR` (preserving `AbortError`), guard `204`/`205`/empty and non-JSON `2xx` responses (`INVALID_RESPONSE`), normalize FinSignal error envelopes plus defensive FastAPI `422` `{ detail: [...] }` arrays, fall back to `error.details.retry_after_seconds` on `429`, support explicit `authMode` (`"bearer" | "none"`), and trigger `notifyUnauthorized(requestEpoch)` unless `skipUnauthorizedHandler` is set.
+  - Added `frontend/src/lib/api/errors.ts`, `frontend/src/lib/auth/session-events.ts`, and `frontend/src/features/auth/api/auth-api.ts` (`login`, `getCurrentUser`, `logout` typed from `src/api/generated/schema.ts`).
+- **F2.2 In-Memory Authentication & Session Lifecycle (`ADR-075`):**
+  - Extended `frontend/src/lib/auth/token-store.ts` with monotonic `sessionEpoch` alongside module-scoped `accessToken`.
+  - Created `auth.types.ts` (`isUserRole`, `parseAuthUser`), `AuthContext.ts`, `AuthProvider.tsx`, and `useAuth.ts`, and mounted `AuthProvider` inside `QueryProvider` in `AppProviders.tsx`.
+  - Implemented 8-step `signIn` (`authAttemptId` -> `/auth/login` -> `setAccessToken` -> post-write `sessionEpoch` capture -> `/auth/me` -> dual attempt/epoch verification -> state commit), backend `expires_in` timer, single-flight `401` expiration, `403` session preservation, local-only logout (`Option B`: no `/auth/logout` call or JWT revocation claim), and `QueryClient` cancellation + synchronous cache clearing.
+- **F2.3 Routing Guards & Capability Matrix:**
+  - Added `redirect.ts` (`sanitizeRedirectPath`, `buildLoginRedirectPath`) rejecting external URLs, `//`, `\`, schemes, control chars, `/login` loops, and sensitive query keys.
+  - Added `capabilities.ts` scoped strictly to F2 workspace/navigation capabilities, failing closed on inactive/unknown roles and separating `canViewDatasetImports` (`ADMIN | ANALYST | INVESTIGATOR` read-only import history) from `canManageDatasets` (`ADMIN | ANALYST` upload/recovery).
+  - Added `SessionLoadingView.tsx`, `ProtectedRoute.tsx`, `PublicOnlyRoute.tsx`, and `RoleGate.tsx`.
+- **F2.4–F2.5 Application Shell, Login Page & Route Cutover:**
+  - Created `AuthLayout.tsx`, `AppLayout.tsx` (skip link to `#main-content`), `nav-config.ts`, `Sidebar.tsx` (collapsible desktop nav + `Escape`-dismissible mobile drawer), `TopBar.tsx`, `UserMenu.tsx`, `WorkspaceHomePage.tsx`, and honest F3–F5 `PhasePlaceholderPage.tsx` views (omitting uncontracted `Accounts`, `Audit`, and `Admin Users` and introducing zero fake metrics).
+  - Created Zod 4 `login-schema.ts` (`1..128` password matching `LoginRequest`) and React Hook Form `LoginPage.tsx` (single-submit lock, `401`/`422`/`429`/`5xx`/network/expired-session alerts, no registration link).
+  - Cut over `routes.tsx` and retired `FoundationPage.tsx`; updated `smoke.test.tsx` and `resilience.test.tsx`.
+- **F2.6 Testing & Playwright E2E (`F1-AUD-006` Resolved):**
+  - Added Vitest/MSW test suites (`auth-api.test.ts`, `session-lifecycle.test.tsx`, `redirect.test.ts`, `capabilities.test.ts`, `protected-routes.test.tsx`, `app-shell.test.tsx`, `login-page.test.tsx`, expanded `api-client.test.ts`, plus `tests/fixtures/auth.ts`).
+  - Configured `frontend/playwright.config.ts` and `"test:e2e": "playwright test"` in `frontend/package.json` to build a fresh production bundle and serve via `vite preview` (`reuseExistingServer: false`) for mocked Chromium E2E (`tests/e2e/{auth,shell}.spec.ts` + `tests/e2e/helpers/auth-mock.ts`), explicitly separated from `E2E_API_MODE=live` dev-proxy mode.
+
+## Implementation Deviations from Plan
+
+- **Deliberate Logout Navigation Fix:** Added `preserveRedirectOnUnauthenticated` in `AuthContext.ts`/`AuthProvider.tsx`/`ProtectedRoute.tsx` after Playwright caught a race where manual `signOut()` from `/datasets` previously produced `/login?redirect=%2Fdatasets` instead of `/login`.
+- **Structural Extractions:** Extracted `AuthContext.ts` (avoiding `react-refresh/only-export-components` warnings in `AuthProvider.tsx`), `SessionLoadingView.tsx`, and `tests/e2e/helpers/auth-mock.ts` to keep shared logic DRY.
+- **Explicit Policy Implementations:** Implemented local-only logout (`Option B`) and `INVESTIGATOR` read-only dataset import access (`canViewDatasetImports` vs `canManageDatasets`) per owner confirmation; left `/datasets` inside `ProtectedRoute` without gating read access away from investigators.
+
+## Verification Results (Local, After Final Edit)
+
+- **Prettier (`npm run format:check`):** `PASS` (`0` issues).
+- **ESLint (`npm run lint`):** `PASS` (`0` errors, `0` warnings).
+- **TypeScript (`npm run typecheck`):** `PASS` (`strict: true`).
+- **Vitest (`npm run test`):** **`87/87` PASS** across `22` files (`msw/node`, `0` failed, `0` skipped).
+- **Production build (`npm run build`):** `PASS` (`dist/index.html` `0.39 kB`, CSS `28.09 kB`, JS `522.78 kB`).
+- **OpenAPI drift (`npm run check:types-drift`):** `PASS` (`0` drift).
+- **Playwright E2E (`npm run test:e2e`):** **`5/5` PASS** in Chromium against fresh production `vite preview` (`0` failed, `0` skipped, mocked `page.route` API).
+- **Production dependency audit (`npm audit --omit=dev`):** `PASS` (`0` vulnerabilities).
+- **Full dependency audit (`npm audit`):** `7 moderate` dev-only `minimatch@10.2.6` advisories remain (not remediated; covered by owner-approved `ADR-080`).
+
+## Outstanding Verification & Deferred Items
+
+- **Live-Backend E2E (`E2E_API_MODE=live`):** Not executed locally (requires running FastAPI + PostgreSQL + `E2E_LIVE_EMAIL`/`E2E_LIVE_PASSWORD`).
+- **Remote GitHub Actions CI for F2:** Not yet triggered on F2 changes.
+- **Deferred F1 Item:** `F1-AUD-009` (`Button` `size="icon"` loading layout & `Alert` attribute passthrough) remains deferred.
+
+## Current Status & Next Milestone
+
+- **Backend + ML v1.0.0:** Released & Stable.
+- **Phase F0 & Phase F1:** Completed & Formally Accepted (`ad02a4e`, CI run `43036181121`, `ADR-080` accepted `2026-11-11`).
+- **Phase F2:** Implemented & Locally Verified (Remote F2 CI & Live-Backend E2E Pending; Formal Acceptance Pending).
+- **Next Milestone:** Verify remote F2 CI and optional live-backend login/session check for Phase F2 acceptance, then proceed to **Phase F3 — Analytics, Transaction Exploration & Risk**.
+
+---
+
+# 38. Log Maintenance Rules
 
 The project log should be updated when:
 

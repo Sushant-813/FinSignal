@@ -2496,7 +2496,7 @@ The Phase F1 post-implementation audit identified 2 critical development-tooling
 
 # ADR-080 — Temporary Development Dependency Security Exception for `minimatch@10.2.6`
 
-**Status:** PENDING OWNER APPROVAL (Proposed 2026-11-11)
+**Status:** ACCEPTED (Owner approved 2026-11-11)
 
 **Related decisions:** ADR-074, ADR-079
 
@@ -2512,12 +2512,12 @@ The verified dependency path is dev-only ESLint CLI tooling:
 
 ## Technical Finding vs. Risk Acceptance Governance
 
-- **Technical finding (Verified):** No production bundle (`dist/`) exposure exists; `npm audit --omit=dev` passes with `0` vulnerabilities. No compatible non-forcing upstream upgrade exists without adding an unvetted npm `overrides` rule or running `npm audit fix --force`.
-- **Owner risk acceptance decision:** **`PENDING OWNER APPROVAL`** — this exception is **not** accepted until explicitly approved by the project owner.
+- **Technical finding (Verified):** No production bundle (`dist/`) exposure exists; `npm audit --omit=dev` passes with `0` vulnerabilities (re-verified during Phase F2 checks). No compatible non-forcing upstream upgrade exists without adding an unvetted npm `overrides` rule or running `npm audit fix --force`.
+- **Owner risk acceptance decision:** **`ACCEPTED (2026-11-11)`** — Explicitly approved by the project owner as a temporary development-tooling risk acceptance (not a vulnerability fix) alongside formal Phase F1 acceptance.
 
-## Proposed Decision (Awaiting Owner Approval)
+## Decision
 
-Approve a temporary, scoped development-only exception allowing `minimatch@10.2.6` under `@typescript-eslint/typescript-estree@8.72.2` during Phase F1 without adding manual npm `overrides` or running `npm audit fix --force`, subject to mandatory re-evaluation before Phase F7/F8 release or immediately when upstream `typescript-eslint` adopts `minimatch@^11.0.1`.
+Accept a temporary, scoped development-only exception allowing `minimatch@10.2.6` under `typescript-eslint@8.72.2` / `@typescript-eslint/typescript-estree@8.72.2` without adding manual npm `overrides` or running `npm audit fix --force`, subject to mandatory re-evaluation before Phase F7/F8 release or when upstream `typescript-eslint` adopts `minimatch@^11.0.1`.
 
 ## Alternatives Considered
 
@@ -2525,10 +2525,11 @@ Approve a temporary, scoped development-only exception allowing `minimatch@10.2.
 2. **Run `npm audit fix --force`:** Risks breaking/downgrading ESLint packages across incompatible major versions.
 3. **Wait in Phase F1 until upstream releases a patched `@typescript-eslint`:** Blocks F1 formal sign-off despite zero production exposure.
 
-## Consequences (If Approved)
+## Consequences
 
-- Permits Phase F1 formal acceptance with `npm audit --omit=dev` (`0` vulnerabilities) enforced strictly while tracking the 7 moderate dev-only advisories until upstream remediation.
-- Requires revisiting this exception in CI/dependency checks prior to Phase F7 hardening and upgrading `typescript-eslint` as soon as a compatible patch releases.
+- Grants formal Phase F1 acceptance with `npm audit --omit=dev` (`0` vulnerabilities) enforced strictly while tracking the 7 moderate dev-only advisories (`GHSA-g3hv-75wg-m249`) until upstream remediation.
+- Does not remediate or hide the underlying `minimatch@10.2.6` advisories; full `npm audit` continues to report them transparently.
+- Requires revisiting this exception prior to Phase F7/F8 release and upgrading `typescript-eslint` once a compatible upstream release adopts `minimatch@^11.0.1`.
 
 # 4. Decision Dependency Map
 
@@ -2611,7 +2612,7 @@ The following decisions remain intentionally open until implementation provides 
 10. Exact rate-limiting implementation defaults.
 11. Exact background-job strategy if batch processing becomes slow.
 12. Exact frontend architecture after Backend + ML completion — Resolved via ADR-074 (Frontend Stack: ACCEPTED), ADR-075 (Authentication & Token Storage Strategy: ACCEPTED), ADR-076 (OpenAPI Type Generation: ACCEPTED), ADR-077 (Transaction & Dataset Import Read APIs: ACCEPTED), ADR-078 (Zod 4.6.7 Migration: ACCEPTED), and ADR-079 (Vitest 5.1.0 & Node 24 Alignment: ACCEPTED).
-13. Temporary development dependency security exception for `minimatch@10.2.6` (`GHSA-g3hv-75wg-m249`, `typescript-eslint@8.72.2`) — Documented in ADR-080. (Status: PENDING OWNER APPROVAL).
+13. Temporary development dependency security exception for `minimatch@10.2.6` (`GHSA-g3hv-75wg-m249`, `typescript-eslint@8.72.2`) — Documented in ADR-080. (Status: ACCEPTED on 2026-11-11 — temporary dev-only risk acceptance for 7 moderate advisories; revisit prior to Phase F7/F8 release or upstream `typescript-eslint` update.)
 14. Exact retention window for completed-file re-upload deduplication — Resolved via ADR-065 (Perpetual retention for byte-identical files with separately authorized administrative reprocessing).
 15. Policy for differing contextual metadata on canonical match — Resolved via ADR-065 (Candidate 1: Immutable canonical preservation with row-hash provenance).
 16. Account external identifier uniqueness and namespace resolution contract — Policy selected via proposed ADR-065 Decision D (Namespace-Scoped Account Identity `(source_namespace, external_account_id)`); schema migration and existing data backfill pending implementation authorization.

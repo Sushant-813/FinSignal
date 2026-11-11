@@ -3,7 +3,7 @@
 **Document:** `FRONTEND_API_INTEGRATION.md`  
 **Product:** FinSignal — Financial Transaction Intelligence & Investigation Platform  
 **Version:** 1.1  
-**Status:** Reconciled with Phase F0 OpenAPI Contract (`frontend/openapi.json`)  
+**Status:** Reconciled with Phase F2 Implementation & OpenAPI Contract (`frontend/openapi.json`; Phase F2 Auth & Client Implemented Locally)
 **Scope:** Integration between the browser frontend and FastAPI `/api/v1` API  
 **Prerequisites:** `FRONTEND_PRD.md`, `FRONTEND_TRD.md`, `FRONTEND_ARCHITECTURE.md`
 
@@ -83,7 +83,7 @@ The frontend workspace (`frontend/vite.config.ts`) uses a **same-origin Vite dev
 | POST | `/auth/register` | Register a user |
 | POST | `/auth/login` | Authenticate credentials |
 | GET | `/auth/me` | Retrieve current user |
-| POST | `/auth/logout` | Documented in endpoint summary; semantics require verification |
+| POST | `/auth/logout` | Verified implemented in backend (`200 OK` `LogoutResponse`; stateless, no JWT revocation) |
 
 ### 4.2 Login
 
@@ -127,11 +127,12 @@ Documented response:
   "id": "uuid",
   "email": "analyst@example.com",
   "role": "ANALYST",
-  "is_active": true
+  "is_active": true,
+  "created_at": "2026-11-10T10:00:00Z"
 }
 ```
 
-Use this endpoint as the current identity context after session establishment. Do not rely only on locally decoded JWT claims for role-aware presentation.
+Use this endpoint as the current identity context after session establishment. Because OpenAPI exposes `UserResponse.role` as `string`, Phase F2 validates it at runtime (`isUserRole` / `parseAuthUser`) and fails closed when `is_active !== true` or the role is unrecognized. Do not rely on locally decoded JWT claims.
 
 ### 4.4 Registration
 
@@ -163,13 +164,12 @@ The product decision to expose public registration versus administratively provi
 
 ### 4.5 Logout and token lifecycle
 
-The API guidelines explicitly state that JWT access tokens are stateless by default and list three possible strategies:
+Verified backend contract (`POST /api/v1/auth/logout`): implemented and requires Bearer authentication (`200 OK`, `LogoutResponse`: `{ "message": "Successfully logged out." }`), performs **no** server-side JWT revocation, and emits no logout audit event.
 
-- Short-lived access token with client-side removal.
-- Server-side token revocation.
-- Refresh-token architecture.
+Under approved `ADR-075` and Phase F2 **local-only logout (`Option B`)**:
 
-The frontend must not claim that calling logout invalidates a token unless the backend implements revocation. The exact `/auth/logout` request/response behavior and token/session storage are unresolved and must be finalized in `FRONTEND_SECURITY.md` and `DECISIONS.md`.
+- `signOut()` synchronously clears expiration timers, in-memory `access_token` (`token-store.ts`), authentication state, cancels active queries (`void queryClient.cancelQueries()`), clears `QueryClient` cache synchronously, and navigates cleanly to `/login` without calling `/api/v1/auth/logout` (while typed `logout()` remains implemented and contract-tested in `auth-api.ts` for any future revocation/auditing change).
+- The frontend never claims server-side JWT invalidation.
 
 ### 4.6 Protected request behavior
 
@@ -199,7 +199,7 @@ The following matrix reflects endpoint-specific rules explicitly documented in `
 | Resolve investigation | Yes | No | Assigned case only |
 | List associated transactions | Yes | Yes | Yes |
 | Link related transaction | Yes | No | Assigned case only |
-| List evidence | Yes | Yes | Yes, subject to object scope |
+| List evidence | Yes | Yes | Yes (backend checks role without assignment check in `list_evidence`) |
 | Attach evidence | Yes | No | Assigned case only |
 | Generate AI summary | Yes | No | Assigned case only |
 | Read latest AI summary/history | Yes | Yes | Assigned case only |
@@ -565,42 +565,39 @@ GET /api/v1/ready
 
 The API guidelines describe health and readiness as distinct concepts. These are primarily operational endpoints; do not expose internal readiness diagnostics to ordinary users unless the backend response and product requirements explicitly support a user-facing status view.
 
-## 8. Central API Client Contract
+## 8. Central API Client Contract (Implemented & Hardened in F2.1)
 
-All feature API functions must use one centralized client.
-
-Conceptual responsibilities:
+Implemented across `frontend/src/lib/api/{client,env,errors}.ts` and `frontend/src/lib/auth/session-events.ts`:
 
 ```ts
-type ApiError = {
-  status: number;
-  code?: string;
-  message: string;
-  details?: unknown;
-  requestId?: string;
-  retryAfterSeconds?: number;
-};
+export type ApiAuthMode = "bearer" | "none";
 
-type RequestOptions = {
-  signal?: AbortSignal;
-};
+export interface ApiErrorData {
+  readonly status: number;
+  readonly code: string;
+  readonly message: string;
+  readonly details?: unknown;
+  readonly requestId?: string | undefined;
+  readonly retryAfterSeconds?: number | undefined;
+}
+
+export interface ApiRequestOptions {
+  method?: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
+  body?: unknown;
+  headers?: Record<string, string> | undefined;
+  signal?: AbortSignal | undefined;
+  baseUrl?: string | undefined;
+  authMode?: ApiAuthMode | undefined;
+  skipUnauthorizedHandler?: boolean | undefined;
+}
 ```
 
-The actual implementation should:
+Implemented behavior:
 
-- Resolve the configured base URL.
-- Apply the approved session/authentication mechanism.
-- Set `Accept: application/json` for JSON requests.
-- Set `Content-Type: application/json` only for JSON bodies.
-- Allow the browser to set multipart boundaries for `FormData`.
-- Parse JSON responses safely.
-- Handle `204 No Content` without attempting JSON parsing.
-- Preserve backend error codes and safe messages.
-- Capture request IDs when returned.
-- Pass through `AbortSignal`.
-- Avoid logging sensitive headers or payloads.
-
-Do not assume every backend response is JSON in every failure case. The client should handle malformed or empty error bodies safely.
+- `resolveApiBaseUrl` (`env.ts`): validates non-empty string, rejects control characters/whitespace, query strings (`?`), fragments (`#`), embedded credentials, protocol-relative (`//`) paths, non-HTTP(S) schemes, and non-HTTPS absolute URLs in production.
+- `buildUrl` (`client.ts`): rejects scheme/`//` request paths before `fetch` and strips redundant `/api/v1` prefixes when `baseUrl` already ends with `/api/v1`.
+- `authMode`: `"bearer"` (default) attaches `Authorization: Bearer <token>` from `token-store` when present and preserves explicit caller `Authorization` headers; `"none"` never reads `token-store` and strips `Authorization`.
+- Normalized failures & responses: converts `fetch` `TypeError` failures into `ApiClientError(status=0, code="NETWORK_ERROR")` while rethrowing `AbortError`; safely handles `204`/`205`/empty bodies and non-JSON `2xx` responses (`INVALID_RESPONSE`); parses FinSignal `{ error: { code, message, details, request_id } }` envelopes and defensive FastAPI `422` `{ detail: [...] }` arrays (`extractFieldErrors` in `errors.ts`); treats `5xx` statuses generically; extracts `429` retry timing from `Retry-After` header with `error.details.retry_after_seconds` body fallback; captures `requestId` (`body.request_id ?? X-Request-ID`); invokes `notifyUnauthorized(requestEpoch)` on non-skipped authenticated `401` responses.
 
 ## 9. Feature API Module Boundaries
 
@@ -906,9 +903,9 @@ The following items require verification rather than frontend assumptions.
 
 | Issue | What documentation says | Required action |
 |---|---|---|
-| Logout | `/auth/logout` appears in endpoint summary, while section 9.4 describes logout strategy options and says JWT is stateless by default. | Verify whether route is implemented, its method/body/response, and whether it revokes anything. |
-| Authentication expiration | Login response includes `expires_in`; exact expiration and refresh strategy remain open. | Confirm runtime token policy and document it in `FRONTEND_SECURITY.md`. |
-| Role matrix | Section 10 is conceptual and differs from endpoint-specific rules in dataset, investigation, evidence, and AI sections. | Use endpoint-specific rules; reconcile source docs and ADRs. |
+| Logout | `/auth/logout` appears in endpoint summary, while section 9.4 describes logout strategy options and says JWT is stateless by default. | **Resolved (F2):** Verified `POST /api/v1/auth/logout` (`200 OK` `LogoutResponse`, stateless); F2 implements local-only client logout (`Option B`) without server revocation claim (§4.5). |
+| Authentication expiration | Login response includes `expires_in`; exact expiration and refresh strategy remain open. | **Resolved (F0/F2):** `ADR-075` in-memory session using backend `TokenResponse.expires_in` timeout; no silent refresh. |
+| Role matrix | Section 10 is conceptual and differs from endpoint-specific rules in dataset, investigation, evidence, and AI sections. | Use endpoint-specific rules (F2 separates `canViewDatasetImports` for all 3 roles vs `canManageDatasets` for `ADMIN`/`ANALYST`); reconcile remaining F3–F6 endpoint docs before implementation. |
 | Transaction filters | Phase F0 verified exact query parameters in `frontend/openapi.json` (`source_namespace`, `sort_by`, `sort_order`, `from_time`, `to_time`, `min_amount`, `max_amount`, `risk_level`, relational UUIDs). | Reconciled in `BACKEND_API_READINESS.md` and §6.4–§6.5; consume generated OpenAPI types directly. |
 | Pagination | Phase F0 established exact per-endpoint defaults (`/transactions` = 50, `/datasets/imports` = 20, `/investigations` = 25; max = 100); cursor pagination is unimplemented. | Use exact per-endpoint schema and defaults from OpenAPI. |
 | Analytics filters/responses | Endpoint sections define detailed examples, but exact live schemas must be checked. | Generate types from running OpenAPI and compare examples. |

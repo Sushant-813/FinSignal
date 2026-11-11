@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
 import App from "../src/App.tsx";
@@ -7,15 +7,30 @@ import { ApiClientError, apiRequest } from "../src/lib/api/client.ts";
 import { resolveApiBaseUrl } from "../src/lib/api/env.ts";
 import { clearAccessToken, getAccessToken, setAccessToken } from "../src/lib/auth/token-store.ts";
 import { apiErrorFixtures } from "./fixtures/api-errors.ts";
+import { buildAuthUser } from "./fixtures/auth.ts";
 import { server } from "./mocks/server.ts";
 
 type TransactionListResponse = components["schemas"]["TransactionListResponse"];
 
-describe("Phase F1 application foundation baseline", () => {
-  it("renders themed FinSignal foundation view at /", () => {
+describe("Phase F2 authenticated workspace smoke baseline", () => {
+  it("redirects unauthenticated visits at / to the FinSignal Sign in view", async () => {
+    window.history.replaceState({}, "", "/");
     render(<App />);
-    expect(screen.getByRole("heading", { name: "FinSignal" })).toBeInTheDocument();
-    expect(screen.getByText("Phase F1 Foundation")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+    });
+  });
+
+  it("renders Workspace Overview when an authenticated session is active", async () => {
+    window.history.replaceState({}, "", "/");
+    setAccessToken("smoke-valid-jwt");
+    server.use(http.get("/api/v1/auth/me", () => HttpResponse.json(buildAuthUser("ANALYST"))));
+
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "Workspace Overview" })).toBeInTheDocument();
+    });
+    expect(screen.getAllByText("analyst@finsignal.test").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("/api/v1")).toBeInTheDocument();
   });
 

@@ -3,7 +3,7 @@
 **Document:** `FRONTEND_ARCHITECTURE.md`  
 **Product:** FinSignal — Financial Transaction Intelligence & Investigation Platform  
 **Version:** 1.1  
-**Status:** Synchronized with Phase F0/F1 Foundation Baseline (Feature Modules Pending Phase F2+)  
+**Status:** Synchronized with Phase F2 Implementation Baseline (F2 Auth & Shell Implemented and Locally Verified; Feature Modules Pending Phase F3+)
 **Scope:** Browser frontend architecture  
 **Prerequisites:** `FRONTEND_PRD.md`, `FRONTEND_TRD.md`, and `FRONTEND_DESIGN.md`
 
@@ -345,6 +345,47 @@ Implemented Phase F1 architectural boundaries:
 - **API, Env & Token Boundaries (`src/lib/`):** `frontendEnv` exposes only public `VITE_*` configuration; `token-store.ts` holds access tokens strictly in memory (`ADR-075`); `apiRequest()` handles JSON/multipart serialization, Bearer injection, and backend error-envelope normalization (`F1-AUD-005` edge-case hardening deferred to Phase F2).
 - **Testing & MSW Boundary (`tests/`):** Global `beforeAll` starts `msw/node` with `onUnhandledRequest: "error"`; `afterEach` runs RTL `cleanup()`, `server.resetHandlers()`, and `clearAccessToken()`. Committed `tests/e2e/` Playwright tests remain deferred to Phase F2 (`F1-AUD-006`).
 
+### 6.2 Implemented Phase F2 Directory Baseline (2026-11-11)
+
+Following completion of Phase F2 (`F2.1`–`F2.6`), the actual implemented frontend structure adds authentication, protected routing, role capabilities, and the application shell while retiring `FoundationPage.tsx`:
+
+```text
+frontend/
+├── playwright.config.ts                       # Fresh-build preview webServer (reuseExistingServer: false) & live mode
+├── package.json                               # Includes "test:e2e": "playwright test"
+├── src/
+│   ├── app/
+│   │   ├── errors/{RootErrorBoundary.tsx,NotFoundPage.tsx}
+│   │   ├── layouts/{AuthLayout.tsx,AppLayout.tsx}
+│   │   ├── providers/{AppProviders.tsx,QueryProvider.tsx}
+│   │   ├── router/{ProtectedRoute.tsx,PublicOnlyRoute.tsx,RoleGate.tsx,SessionLoadingView.tsx,WorkspaceHomePage.tsx,PhasePlaceholderPage.tsx,routes.tsx}
+│   │   └── shell/{Sidebar.tsx,TopBar.tsx,UserMenu.tsx,nav-config.ts}
+│   ├── features/auth/
+│   │   ├── api/auth-api.ts                    # login, getCurrentUser, logout (OpenAPI-typed)
+│   │   ├── context/{AuthContext.ts,AuthProvider.tsx}
+│   │   ├── hooks/useAuth.ts
+│   │   ├── pages/LoginPage.tsx
+│   │   ├── schemas/login-schema.ts            # Zod 4 LoginRequest schema (password 1..128)
+│   │   └── types/auth.types.ts                # isUserRole, parseAuthUser, AuthUser, AuthStatus, SessionNotice
+│   └── lib/
+│       ├── api/{client.ts,env.ts,errors.ts}
+│       ├── auth/{redirect.ts,session-events.ts,token-store.ts}
+│       └── permissions/capabilities.ts        # F2 capabilities: canViewDatasetImports vs canManageDatasets
+└── tests/
+    ├── fixtures/{api-errors.ts,auth.ts}
+    ├── smoke.test.tsx
+    ├── components/{...,app-shell.test.tsx,login-page.test.tsx,protected-routes.test.tsx,resilience.test.tsx}
+    ├── unit/{api-client.test.ts,auth-api.test.ts,capabilities.test.ts,cn.test.ts,redirect.test.ts,session-lifecycle.test.tsx,zod-rhf.test.tsx}
+    └── e2e/{helpers/auth-mock.ts,auth.spec.ts,shell.spec.ts}
+```
+
+Implemented Phase F2 architectural boundaries:
+- **Provider Composition (`src/app/providers/`):** `AppProviders` composes `RootErrorBoundary` -> `QueryProvider` -> `AuthProvider`, wrapping `RouterProvider` in `App.tsx`.
+- **Auth State vs. Token Boundary (`src/lib/auth/`, `src/features/auth/`):** `token-store.ts` holds only module-scoped `accessToken` and monotonic `sessionEpoch`; `session-events.ts` bridges `401` detection in `client.ts` to `AuthProvider` without circular imports; `AuthContext.ts` stays separated from `AuthProvider.tsx` (`react-refresh/only-export-components`).
+- **Routing & Navigation (`src/app/router/`, `src/app/shell/`):** `routes.tsx` serves `/login` inside `PublicOnlyRoute` -> `AuthLayout`, protected routes (`/`, `/transactions`, `/analytics`, `/investigations`, `/datasets`) inside `ProtectedRoute` -> `AppLayout`, and `*` -> `NotFoundPage`. Future F3–F5 modules render `PhasePlaceholderPage` with zero fabricated data; `/accounts`, `/audit`, and `/admin/users` are omitted.
+- **API & Errors (`src/lib/api/`):** `env.ts` validates base URL schemes, query/fragment rejection, and production HTTPS; `client.ts` normalizes `NETWORK_ERROR`/`INVALID_RESPONSE`/FinSignal + FastAPI error envelopes and enforces `authMode`; `errors.ts` provides pure status guards and `422` field error extraction.
+- **Testing & E2E (`tests/`):** `22` Vitest/MSW test files (`87` tests) plus mocked Chromium Playwright E2E (`5` tests against built `vite preview`).
+
 ## 7. Feature Boundaries and Responsibilities
 
 ### 7.1 Authentication (`features/auth`)
@@ -501,6 +542,8 @@ Root
     └── Not Found
 ```
 
+Implemented Phase F2 route tree mounts `/login` (public-only under `AuthLayout`), `/` (`WorkspaceHomePage` default overview), `/transactions`, `/analytics`, `/investigations`, and `/datasets` (honest `PhasePlaceholderPage`s under `ProtectedRoute` + `AppLayout`), and `*` (`NotFoundPage`). `/accounts`, `/audit`, and `/admin/users` remain omitted until backend contracts exist.
+
 ### 9.1 Protected route behavior
 
 A protected route should:
@@ -511,27 +554,31 @@ A protected route should:
 4. Render authorized route content.
 5. Avoid flashing protected content while authentication is unresolved.
 
-Route protection does not replace backend checks.
+Route protection does not replace backend checks. In Phase F2, `ProtectedRoute` and `PublicOnlyRoute` render neutral `SessionLoadingView` while `status === "initializing"`; deliberate `signOut()` sets `preserveRedirectOnUnauthenticated = false` so signing out from nested routes lands cleanly on `/login` without stale `?redirect=` query strings.
 
 ### 9.2 Role and object gates
 
-A centralized permission helper may control presentation:
+Centralized Phase F2 capability helpers in `src/lib/permissions/capabilities.ts` fail closed when user is missing, `is_active !== true`, or `isUserRole(user.role)` is `false`:
 
 ```text
-canViewDatasetManagement(user)
-canRequestRiskAnalysis(user, modelLifecycle)
-canGenerateAiSummary(user, investigation)
-canAttachEvidence(user, investigation)
-canResolveInvestigation(user, investigation)
+canAccessWorkspace(user)         // ADMIN | ANALYST | INVESTIGATOR
+canViewTransactions(user)        // ADMIN | ANALYST | INVESTIGATOR
+canViewAnalytics(user)           // ADMIN | ANALYST | INVESTIGATOR
+canViewInvestigations(user)      // ADMIN | ANALYST | INVESTIGATOR
+canViewDatasetImports(user)      // ADMIN | ANALYST | INVESTIGATOR (read-only import history)
+canManageDatasets(user)          // ADMIN | ANALYST (upload & recovery)
+getDefaultAuthenticatedRoute(user)
 ```
 
-These helpers are UI policy adapters, not authorization engines. They must be based on documented endpoint policy and available resource context. Backend `403` responses remain authoritative.
+*(Future risk-model, investigation mutation/resolution, evidence, and AI-summary capabilities remain deferred to Phases F3–F6.)*
+
+These helpers are UI policy adapters, not authorization engines. Backend `403` responses remain authoritative.
 
 Do not duplicate the same role comparison in many page components.
 
 ### 9.3 Default route
 
-The default landing page per role is still an open product decision. Route architecture should support a configurable redirect, but must not assume Dashboard or Investigation Queue without approval.
+The default landing page per role (`Dashboard` vs `Investigation Queue`) remains an open product decision. Phase F2 routes authenticated `/` to `WorkspaceHomePage` via `getDefaultAuthenticatedRoute(user)` so Phases F3–F5 can adjust role landing targets in one place.
 
 ## 10. State Ownership Architecture
 
@@ -698,30 +745,27 @@ Do not convert all failures into a generic “Something went wrong” message. P
 
 ## 12. Authentication and Session Architecture
 
-The auth feature exposes a narrow session abstraction to the rest of the application.
-
-Conceptual interface:
+Implemented in `src/features/auth/` and `src/lib/auth/` per `ADR-075` (in-memory Bearer token only):
 
 ```ts
-interface AuthSession {
-  status: "initializing" | "authenticated" | "unauthenticated";
-  user: CurrentUser | null;
-  signIn(credentials: LoginRequest): Promise<void>;
-  signOut(): Promise<void>;
+interface AuthContextValue {
+  readonly status: "initializing" | "authenticated" | "unauthenticated";
+  readonly user: AuthUser | null;
+  readonly sessionNotice: SessionNotice | null;
+  readonly preserveRedirectOnUnauthenticated: boolean;
+  readonly signIn: (credentials: LoginRequest) => Promise<AuthUser>;
+  readonly signOut: () => void;
+  readonly clearSessionNotice: () => void;
 }
 ```
 
-The actual implementation depends on the final decision in `FRONTEND_SECURITY.md`.
+Key implemented behaviors:
 
-Important constraints:
-
-- Do not decide `localStorage`, `sessionStorage`, memory-only, or cookie-based token handling in this architecture document.
-- Do not expose raw token access to unrelated features.
-- Do not treat a decoded token claim as the sole source of current role/permissions.
-- Use the backend current-user endpoint as the identity context.
-- Clear client query state on logout or confirmed session invalidation to prevent one user's data appearing in another session.
-- Avoid logging tokens or credentials.
-- Do not claim server-side logout/revocation if the backend only supports stateless access tokens and client-side removal.
+- Access token lives strictly in `token-store.ts` module memory alongside monotonic `sessionEpoch` (never persisted to `localStorage`, `sessionStorage`, cookies, query keys, props, or URLs; page reloads require re-authentication).
+- `signIn()` executes the 8-step guarded sequence combining `authAttemptId` (`authAttemptRef` + `AbortController`) and post-`setAccessToken` `sessionEpoch` checks before committing `GET /api/v1/auth/me` (`parseAuthUser` runtime validation) into authenticated state.
+- `TokenResponse.expires_in` schedules epoch-checked expiration timeout cleanup.
+- Single-flight `401` handling via `session-events.ts` (`notifyUnauthorized(requestEpoch)`) clears token, auth state, timers, cancels queries (`void queryClient.cancelQueries()`), and clears cache synchronously (`queryClient.clear()`); `403` responses preserve the authenticated session.
+- `signOut()` executes **local-only logout (Option B)**: synchronous local token/state/timer/cache cleanup without calling `/auth/logout` and without claiming server-side JWT revocation.
 
 ## 13. Critical Workflow Data Flows
 

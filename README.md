@@ -40,12 +40,14 @@ FinSignal is built as a clean modular monolith adhering to strict domain separat
 | **Phase 10** | AI Investigation Assistant | Dedicated AI domain (`src/finsignal/ai/`), two-transaction lifecycle, REPEATABLE READ snapshot isolation, CAS token fencing, expired pending recovery with atomic audit logging, dual fingerprinting (`evidence_hash`, `context_hash`), dynamic staleness detection, nonce delimiter defense-in-depth, grounding citation validation, MockAIProvider | **Completed** |
 | **Phase 11** | Testing, Security & Hardening | Configurable CORS middleware, 50 MB bounded streaming upload/recovery (HTTP 413, utf-8-sig BOM support), strict OS environment variable isolation (`FINSIGNAL_DEBUG`), in-memory sliding-window login rate limiting with active reservation safety (HTTP 429), composite counterparty namespace FK, audit events SQL immutability trigger, batched ingestion lookups, deterministic split tie-breaker | **Completed** |
 | **Phase 12** | Backend/ML Release & Finalization | Formal Phase 11 acceptance, ADR-065/067–073 ratification, CORS wildcard-credential validation, release gate verification, v1.0.0 code release | **Completed** |
-| **Frontend Planning** | Specifications & Architecture Audit | 8 frontend specifications completed and audited (`docs/FRONTEND_*.md`), design system established per `FRONTEND_DESIGN.md`, master roadmap integrated (Phases F0–F8) | **Planning Completed (Implementation Not Started)** |
+| **Frontend Planning** | Specifications & Architecture Audit | 8 frontend specifications completed and audited (`docs/FRONTEND_*.md`), design system established per `FRONTEND_DESIGN.md`, master roadmap integrated (Phases F0–F8) | **Completed** |
+| **Frontend F0–F1** | Readiness, Foundation & Design System | F0 OpenAPI types (`check:types-drift`), Tailwind v4 tokens, 10 UI primitives, Vitest + MSW + Chrome checks, CI run `43036181121` passed, `ADR-074`–`ADR-080` accepted | **Accepted** |
+| **Frontend F2** | Auth, Session & Application Shell | Hardened API client (`F1-AUD-005`), in-memory JWT (`ADR-075`), `AuthProvider`, protected routing, capability matrix, light-first shell, RHF + Zod 4 Login, `87/87` Vitest + `5/5` mocked Playwright E2E (`F1-AUD-006`) | **Implemented & Locally Verified (Remote F2 CI & Live E2E Pending)** |
 
 ### Upcoming Phases
 
 - **Phase 13 — Containerization & Production Deployment:** Production Dockerfile, Docker Compose multi-container configuration, cloud deployment procedures, and production orchestration (ADR-073).
-- **Frontend Implementation Track (Phases F0–F8):** Comprehensive documentation suite completed (`docs/FRONTEND_*.md`). Implementation kick-off scheduled with Phase F0 (Decisions, Contract Verification & Repository Readiness). Frontend implementation is not yet started.
+- **Frontend Track (Phases F3–F8):** Following formal acceptance of Phase F2 (remote F2 CI and optional live-backend E2E verification), Phase F3 implements analytics visualizations, transaction exploration tables, and risk scoring views.
 
 ---
 

@@ -3,8 +3,18 @@ import { describe, expect, it, vi } from "vitest";
 import { ApiClientError, apiRequest } from "../../src/lib/api/client.ts";
 import { frontendEnv, resolveApiBaseUrl } from "../../src/lib/api/env.ts";
 import {
+  extractFieldErrors,
+  getUserFriendlyErrorMessage,
+  isApiClientError,
+  isForbiddenError,
+  isNetworkError,
+  isUnauthorizedError,
+} from "../../src/lib/api/errors.ts";
+import { registerUnauthorizedHandler } from "../../src/lib/auth/session-events.ts";
+import {
   clearAccessToken,
   getAccessToken,
+  getSessionEpoch,
   setAccessToken,
 } from "../../src/lib/auth/token-store.ts";
 import { apiErrorFixtures } from "../fixtures/api-errors.ts";
@@ -303,5 +313,241 @@ describe("frontendEnv & token-store (existing F0 behavior)", () => {
     expect(window.sessionStorage.length).toBe(0);
     clearAccessToken();
     expect(getAccessToken()).toBeNull();
+  });
+
+  it("increments sessionEpoch monotonically on setAccessToken and clearAccessToken", () => {
+    const startEpoch = getSessionEpoch();
+    setAccessToken("tok-1");
+    expect(getSessionEpoch()).toBe(startEpoch + 1);
+    setAccessToken("tok-2");
+    expect(getSessionEpoch()).toBe(startEpoch + 2);
+    clearAccessToken();
+    expect(getSessionEpoch()).toBe(startEpoch + 3);
+  });
+});
+
+describe("apiRequest & env hardening (F2.1 / F1-AUD-005)", () => {
+  it("validates schemes, production HTTPS, protocol-relative paths, and rejects query/fragments", () => {
+    expect(resolveApiBaseUrl("https://api.finsignal.test/api/v1/", "production")).toBe(
+      "https://api.finsignal.test/api/v1"
+    );
+    expect(resolveApiBaseUrl("/api/v1/", "production")).toBe("/api/v1");
+    expect(resolveApiBaseUrl("http://localhost:8000/api/v1/", "development")).toBe(
+      "http://localhost:8000/api/v1"
+    );
+
+    expect(() => resolveApiBaseUrl("http://api.finsignal.test/api/v1", "production")).toThrow(
+      /https/i
+    );
+    expect(() => resolveApiBaseUrl("//evil.com/api/v1")).toThrow(/protocol-relative/);
+    expect(() => resolveApiBaseUrl("javascript:alert(1)")).toThrow(/http/i);
+    expect(() => resolveApiBaseUrl("/api/v1?foo=bar")).toThrow(/query/i);
+    expect(() => resolveApiBaseUrl("https://api.finsignal.test/api/v1#frag")).toThrow(
+      /fragment|query/i
+    );
+    expect(() => resolveApiBaseUrl("https://user:pass@api.finsignal.test/api/v1")).toThrow(
+      /credentials/i
+    );
+  });
+
+  it("prevents duplicate /api/v1 prefixes and rejects scheme or protocol-relative request paths", async () => {
+    const requestedUrls: string[] = [];
+    server.use(
+      http.get(`${TEST_BASE_URL}/transactions`, ({ request }) => {
+        requestedUrls.push(request.url);
+        return HttpResponse.json({ items: [] });
+      })
+    );
+
+    await apiRequest("/api/v1/transactions", { baseUrl: TEST_BASE_URL });
+    await apiRequest("/transactions", { baseUrl: TEST_BASE_URL });
+    expect(requestedUrls).toEqual([
+      `${TEST_BASE_URL}/transactions`,
+      `${TEST_BASE_URL}/transactions`,
+    ]);
+
+    await expect(apiRequest("https://evil.com/steal", { baseUrl: TEST_BASE_URL })).rejects.toThrow(
+      /relative API route/
+    );
+    await expect(apiRequest("//evil.com/steal", { baseUrl: TEST_BASE_URL })).rejects.toThrow(
+      /relative API route/
+    );
+  });
+
+  it("normalizes fetch TypeError network failures into NETWORK_ERROR while preserving AbortError", async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"));
+
+    await expect(apiRequest("/transactions", { baseUrl: TEST_BASE_URL })).rejects.toMatchObject({
+      name: "ApiClientError",
+      status: 0,
+      code: "NETWORK_ERROR",
+    } satisfies Partial<ApiClientError>);
+
+    fetchSpy.mockRestore();
+  });
+
+  it("handles 205/empty 2xx safely and rejects malformed or non-JSON 200 responses with INVALID_RESPONSE", async () => {
+    server.use(
+      http.get(`${TEST_BASE_URL}/empty-205`, () => new HttpResponse(null, { status: 205 })),
+      http.get(`${TEST_BASE_URL}/empty-200`, () => new HttpResponse("", { status: 200 })),
+      http.get(
+        `${TEST_BASE_URL}/html-200`,
+        () =>
+          new HttpResponse("<html><body>Proxy</body></html>", {
+            status: 200,
+            headers: { "Content-Type": "text/html", "X-Request-ID": "req-html-200" },
+          })
+      )
+    );
+
+    expect(await apiRequest("/empty-205", { baseUrl: TEST_BASE_URL })).toBeUndefined();
+    expect(await apiRequest("/empty-200", { baseUrl: TEST_BASE_URL })).toBeUndefined();
+    await expect(apiRequest("/html-200", { baseUrl: TEST_BASE_URL })).rejects.toMatchObject({
+      status: 200,
+      code: "INVALID_RESPONSE",
+      requestId: "req-html-200",
+    } satisfies Partial<ApiClientError>);
+  });
+
+  it("falls back to error.details.retry_after_seconds for 429 when Retry-After header is absent", async () => {
+    server.use(
+      http.post(`${TEST_BASE_URL}/auth/login`, () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: "RATE_LIMIT_EXCEEDED",
+              message: "Rate limit exceeded.",
+              details: { retry_after_seconds: 58 },
+              request_id: "req-429-body",
+            },
+          },
+          { status: 429 }
+        )
+      )
+    );
+
+    await expect(
+      apiRequest("/auth/login", {
+        method: "POST",
+        body: { email: "a@b.com", password: "secret" },
+        baseUrl: TEST_BASE_URL,
+      })
+    ).rejects.toMatchObject({
+      status: 429,
+      code: "RATE_LIMIT_EXCEEDED",
+      retryAfterSeconds: 58,
+      requestId: "req-429-body",
+    } satisfies Partial<ApiClientError>);
+  });
+
+  it("enforces authMode 'bearer' vs 'none' and caller Authorization header handling", async () => {
+    const capturedHeaders: Array<string | null> = [];
+    setAccessToken("stored-jwt-token");
+
+    server.use(
+      http.get(`${TEST_BASE_URL}/probe`, ({ request }) => {
+        capturedHeaders.push(request.headers.get("Authorization"));
+        return HttpResponse.json({ ok: true });
+      })
+    );
+
+    await apiRequest("/probe", { baseUrl: TEST_BASE_URL });
+    await apiRequest("/probe", {
+      baseUrl: TEST_BASE_URL,
+      headers: { Authorization: "Bearer caller-supplied-jwt" },
+    });
+    await apiRequest("/probe", {
+      baseUrl: TEST_BASE_URL,
+      authMode: "none",
+      headers: { Authorization: "Bearer should-be-stripped" },
+    });
+
+    expect(capturedHeaders).toEqual([
+      "Bearer stored-jwt-token",
+      "Bearer caller-supplied-jwt",
+      null,
+    ]);
+  });
+
+  it("notifies unauthorized listener with pre-request sessionEpoch unless skipUnauthorizedHandler is true", async () => {
+    const listener = vi.fn();
+    const unsubscribe = registerUnauthorizedHandler(listener);
+    setAccessToken("expiring-token");
+    const expectedEpoch = getSessionEpoch();
+
+    try {
+      server.use(
+        http.get(`${TEST_BASE_URL}/protected-401`, () => apiErrorFixtures.unauthorized()),
+        http.get(`${TEST_BASE_URL}/protected-403`, () => apiErrorFixtures.forbidden())
+      );
+
+      await expect(apiRequest("/protected-401", { baseUrl: TEST_BASE_URL })).rejects.toMatchObject({
+        status: 401,
+      });
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(listener).toHaveBeenCalledWith(expectedEpoch);
+
+      listener.mockClear();
+      await expect(
+        apiRequest("/protected-401", { baseUrl: TEST_BASE_URL, skipUnauthorizedHandler: true })
+      ).rejects.toMatchObject({ status: 401 });
+      expect(listener).not.toHaveBeenCalled();
+
+      await expect(apiRequest("/protected-403", { baseUrl: TEST_BASE_URL })).rejects.toMatchObject({
+        status: 403,
+      });
+      expect(listener).not.toHaveBeenCalled();
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("extracts field errors from FinSignal 422 envelopes and defensive FastAPI detail arrays", async () => {
+    server.use(
+      http.post(`${TEST_BASE_URL}/raw-fastapi-422`, () =>
+        HttpResponse.json(
+          {
+            detail: [{ loc: ["body", "email"], msg: "value is not a valid email address" }],
+          },
+          { status: 422 }
+        )
+      )
+    );
+
+    const envelopeErr = new ApiClientError({
+      status: 422,
+      code: "VALIDATION_ERROR",
+      message: "Request validation failed.",
+      details: { email: ["Invalid format."], password: "Too short." },
+    });
+    expect(extractFieldErrors(envelopeErr)).toEqual({
+      email: ["Invalid format."],
+      password: ["Too short."],
+    });
+    expect(isApiClientError(envelopeErr)).toBe(true);
+    expect(isNetworkError(envelopeErr)).toBe(false);
+    expect(isUnauthorizedError(envelopeErr)).toBe(false);
+    expect(isForbiddenError(envelopeErr)).toBe(false);
+
+    try {
+      await apiRequest("/raw-fastapi-422", {
+        method: "POST",
+        body: {},
+        baseUrl: TEST_BASE_URL,
+      });
+      expect.unreachable("Expected 422");
+    } catch (err) {
+      expect(extractFieldErrors(err)).toEqual({
+        email: ["value is not a valid email address"],
+      });
+    }
+
+    expect(
+      getUserFriendlyErrorMessage(
+        new ApiClientError({ status: 503, code: "DATABASE_ERROR", message: "raw sql trace" })
+      )
+    ).toBe("A server error occurred while processing your request. Please try again later.");
   });
 });

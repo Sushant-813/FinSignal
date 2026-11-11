@@ -16,6 +16,7 @@
     "typecheck": "tsc -b --pretty",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:e2e": "playwright test",
     "api:types": "openapi-typescript openapi.json -o src/api/generated/schema.ts",
     "check:types-drift": "node scripts/check-types-drift.mjs"
   },

@@ -1,44 +1,63 @@
-import { getAccessToken } from "../auth/token-store.ts";
+import { notifyUnauthorized } from "../auth/session-events.ts";
+import { getAccessToken, getSessionEpoch } from "../auth/token-store.ts";
 import { frontendEnv } from "./env.ts";
+import { ApiClientError, type ApiErrorData, extractFastApiValidationArray } from "./errors.ts";
 
-export interface ApiErrorData {
-  readonly status: number;
-  readonly code: string;
-  readonly message: string;
-  readonly details?: unknown;
-  readonly requestId?: string | undefined;
-  readonly retryAfterSeconds?: number | undefined;
-}
+export { ApiClientError, type ApiErrorData };
 
-export class ApiClientError extends Error {
-  readonly status: number;
-  readonly code: string;
-  readonly details?: unknown;
-  readonly requestId?: string | undefined;
-  readonly retryAfterSeconds?: number | undefined;
-
-  constructor(data: ApiErrorData) {
-    super(data.message);
-    this.name = "ApiClientError";
-    this.status = data.status;
-    this.code = data.code;
-    this.details = data.details;
-    this.requestId = data.requestId;
-    this.retryAfterSeconds = data.retryAfterSeconds;
-  }
-}
+export type ApiAuthMode = "bearer" | "none";
 
 export interface ApiRequestOptions {
   method?: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
   body?: unknown;
-  headers?: Record<string, string>;
-  signal?: AbortSignal;
-  baseUrl?: string;
+  headers?: Record<string, string> | undefined;
+  signal?: AbortSignal | undefined;
+  baseUrl?: string | undefined;
+  authMode?: ApiAuthMode | undefined;
+  skipUnauthorizedHandler?: boolean | undefined;
 }
 
+const SCHEME_PREFIX = /^[a-zA-Z][a-zA-Z\d+\-.]*:/;
+
 function buildUrl(baseUrl: string, path: string): string {
-  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-  return `${baseUrl}${normalizedPath}`;
+  const trimmedPath = path.trim();
+  if (!trimmedPath) {
+    throw new Error("API request path must not be empty.");
+  }
+  if (SCHEME_PREFIX.test(trimmedPath) || trimmedPath.startsWith("//")) {
+    throw new Error("API request path must be a relative API route, not an absolute URL.");
+  }
+
+  const cleanBase = baseUrl.replace(/\/+$/, "");
+  let normalizedPath = trimmedPath.startsWith("/") ? trimmedPath : `/${trimmedPath}`;
+
+  if (
+    (cleanBase === "/api/v1" || cleanBase.endsWith("/api/v1")) &&
+    (normalizedPath === "/api/v1" ||
+      normalizedPath.startsWith("/api/v1/") ||
+      normalizedPath.startsWith("/api/v1?"))
+  ) {
+    normalizedPath = normalizedPath.slice("/api/v1".length);
+  }
+
+  return `${cleanBase}${normalizedPath}`;
+}
+
+function isAbortFailure(error: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted) {
+    return true;
+  }
+  return (error instanceof DOMException || error instanceof Error) && error.name === "AbortError";
+}
+
+function parseNonNegativeInt(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isInteger(value) && value >= 0) {
+    return value;
+  }
+  if (typeof value === "string" && /^\d+$/.test(value)) {
+    return Number.parseInt(value, 10);
+  }
+  return undefined;
 }
 
 export async function apiRequest<TResponse>(
@@ -47,14 +66,19 @@ export async function apiRequest<TResponse>(
 ): Promise<TResponse> {
   const baseUrl = options.baseUrl ?? frontendEnv.apiBaseUrl;
   const headers = new Headers(options.headers);
+  const authMode: ApiAuthMode = options.authMode ?? "bearer";
 
   if (!headers.has("Accept")) {
     headers.set("Accept", "application/json");
   }
 
-  const token = getAccessToken();
-  if (token && !headers.has("Authorization")) {
-    headers.set("Authorization", `Bearer ${token}`);
+  if (authMode === "none") {
+    headers.delete("Authorization");
+  } else {
+    const token = getAccessToken();
+    if (token && !headers.has("Authorization")) {
+      headers.set("Authorization", `Bearer ${token}`);
+    }
   }
 
   let requestBody: BodyInit | undefined;
@@ -78,21 +102,36 @@ export async function apiRequest<TResponse>(
     init.signal = options.signal;
   }
 
-  const response = await fetch(buildUrl(baseUrl, path), init);
+  const requestUrl = buildUrl(baseUrl, path);
+  const requestEpoch = getSessionEpoch();
+  const hadAuthHeader = headers.has("Authorization");
+
+  let response: Response;
+  try {
+    response = await fetch(requestUrl, init);
+  } catch (error: unknown) {
+    if (isAbortFailure(error, options.signal)) {
+      throw error;
+    }
+    throw new ApiClientError({
+      status: 0,
+      code: "NETWORK_ERROR",
+      message: "Unable to reach the server. Check your network connection and try again.",
+    });
+  }
 
   const responseRequestId = response.headers.get("X-Request-ID") ?? undefined;
-  const retryAfterRaw = response.headers.get("Retry-After");
-  const retryAfterSeconds =
-    retryAfterRaw !== null && /^\d+$/.test(retryAfterRaw)
-      ? Number.parseInt(retryAfterRaw, 10)
-      : undefined;
+  const headerRetryAfter = parseNonNegativeInt(response.headers.get("Retry-After"));
 
   if (!response.ok) {
     let parsedError: Record<string, unknown> | null = null;
     try {
-      const json: unknown = await response.json();
-      if (typeof json === "object" && json !== null) {
-        parsedError = json as Record<string, unknown>;
+      const errorText = await response.text();
+      if (errorText.trim() !== "") {
+        const json: unknown = JSON.parse(errorText);
+        if (typeof json === "object" && json !== null) {
+          parsedError = json as Record<string, unknown>;
+        }
       }
     } catch {
       parsedError = null;
@@ -103,30 +142,84 @@ export async function apiRequest<TResponse>(
         ? (parsedError.error as Record<string, unknown>)
         : null;
 
+    // Defensive support if raw FastAPI HTTPValidationError `{ detail: [...] }` ever bypasses the custom handler.
+    const fastApiDetailArray =
+      errorObj === null && parsedError && Array.isArray(parsedError.detail)
+        ? parsedError.detail
+        : null;
+
     const code =
-      errorObj && typeof errorObj.code === "string" ? errorObj.code : `HTTP_${response.status}`;
+      errorObj && typeof errorObj.code === "string"
+        ? errorObj.code
+        : fastApiDetailArray !== null
+          ? "VALIDATION_ERROR"
+          : `HTTP_${response.status}`;
+
     const message =
       errorObj && typeof errorObj.message === "string"
         ? errorObj.message
-        : `Request failed with status ${response.status}.`;
+        : fastApiDetailArray !== null
+          ? "Request validation failed."
+          : `Request failed with status ${response.status}.`;
+
+    const details =
+      errorObj !== null
+        ? errorObj.details
+        : fastApiDetailArray !== null
+          ? extractFastApiValidationArray(fastApiDetailArray)
+          : undefined;
+
     const bodyRequestId =
       errorObj && typeof errorObj.request_id === "string" ? errorObj.request_id : undefined;
     const effectiveRequestId = bodyRequestId ?? responseRequestId;
+
+    const detailsRecord =
+      typeof details === "object" && details !== null && !Array.isArray(details)
+        ? (details as Record<string, unknown>)
+        : null;
+    const bodyRetryAfter =
+      response.status === 429 && detailsRecord !== null
+        ? parseNonNegativeInt(detailsRecord.retry_after_seconds)
+        : undefined;
+    const effectiveRetryAfter = headerRetryAfter ?? bodyRetryAfter;
+
+    if (
+      response.status === 401 &&
+      !options.skipUnauthorizedHandler &&
+      authMode !== "none" &&
+      hadAuthHeader
+    ) {
+      notifyUnauthorized(requestEpoch);
+    }
 
     const errData: ApiErrorData = {
       status: response.status,
       code,
       message,
-      details: errorObj?.details,
+      details,
       ...(effectiveRequestId !== undefined ? { requestId: effectiveRequestId } : {}),
-      ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
+      ...(effectiveRetryAfter !== undefined ? { retryAfterSeconds: effectiveRetryAfter } : {}),
     };
     throw new ApiClientError(errData);
   }
 
-  if (response.status === 204) {
+  if (response.status === 204 || response.status === 205) {
     return undefined as TResponse;
   }
 
-  return (await response.json()) as TResponse;
+  const bodyText = await response.text();
+  if (bodyText.trim() === "") {
+    return undefined as TResponse;
+  }
+
+  try {
+    return JSON.parse(bodyText) as TResponse;
+  } catch {
+    throw new ApiClientError({
+      status: response.status,
+      code: "INVALID_RESPONSE",
+      message: "Received an unexpected response format from the server.",
+      ...(responseRequestId !== undefined ? { requestId: responseRequestId } : {}),
+    });
+  }
 }

@@ -3,7 +3,7 @@
 **Document:** `FRONTEND_SECURITY.md`  
 **Product:** FinSignal — Financial Transaction Intelligence & Investigation Platform  
 **Version:** 1.1  
-**Status:** Phase F0/F1 Security Controls Implemented (`ADR-075`, `ADR-078`, `ADR-079`); `ADR-080` Dev-Tooling Exception Pending Owner Approval  
+**Status:** Phase F0/F1 Controls Accepted (`ADR-075`, `ADR-078`–`ADR-080`); Phase F2 Authentication & Session Controls Implemented and Locally Verified (Remote F2 CI & Live-Backend E2E Pending)
 **Scope:** Browser security, authentication/session handling, authorization presentation, sensitive financial data, and secure frontend integration
 
 ---
@@ -172,26 +172,19 @@ While session status is unknown:
 
 ### 5.3 Expiration and `401`
 
-- A confirmed `401` should trigger one centralized session-expiration flow.
-- Clear the token and authenticated user state.
-- Cancel or invalidate authenticated queries.
-- Do not repeatedly retry the same unauthorized request.
-- Avoid showing multiple simultaneous expiration dialogs.
-- Do not treat `403` as an expired session; it means the authenticated user is not permitted to perform the operation.
+- A confirmed `401` on an authenticated (`Bearer`) request notifies `AuthProvider` once per `sessionEpoch` (`session-events.ts`, `authAttemptId` + `sessionEpoch` guards prevent stale races and repeated loops):
+  - Synchronously invalidates the attempt ID, clears the `expires_in` timer, aborts pending auth requests, calls `clearAccessToken()` (`sessionEpoch++`), sets `status = "unauthenticated"`, triggers `void queryClient.cancelQueries()`, and calls `queryClient.clear()` synchronously.
+  - Emits one expiration notice without duplicate dialogs.
+- Do not treat `403` as an expired session; `apiRequest` does not invoke `notifyUnauthorized` on `403`, preserving the authenticated session and surfacing authorization failure cleanly.
 
 ### 5.4 Logout
 
-The backend security documentation explains that stateless JWT access tokens remain valid until expiration unless server-side revocation exists.
+The backend security documentation and verified route `POST /api/v1/auth/logout` confirm that stateless JWT access tokens remain valid until expiration (`auth.py` implements no token blocklist or revocation).
 
-For the approved in-memory MVP (ADR-075):
+As implemented in Phase F2 (`Option B` — local-only client logout):
 
-- Clear the in-memory access token.
-- Clear current-user and authenticated query/cache state.
-- Navigate to the sign-in page.
-- Do not claim the server invalidated the token.
-- If the backend later adds revocation, integrate the documented endpoint and verify its behavior.
-
-The API documentation's mention of `/auth/logout` must be checked against the actual route and implementation before the frontend calls it.
+- `signOut()` synchronizes attempt invalidation, clears expiration timers and in-memory access tokens (`token-store.ts`), sets `status = "unauthenticated"` (`preserveRedirectOnUnauthenticated = false` so deliberate sign-out navigates cleanly to `/login`), initiates `void queryClient.cancelQueries()`, and clears `QueryClient` cache synchronously.
+- Does not call `POST /api/v1/auth/logout` during UI sign-out and never claims server-side JWT revocation (although typed `logout()` exists in `auth-api.ts` for future revocation/audit integration).
 
 ## 6. Authorization and Role-Aware UI
 
@@ -203,10 +196,12 @@ The documented roles are:
 - `ANALYST`
 - `INVESTIGATOR`
 
+In the generated OpenAPI contract, `UserResponse.role` is typed as `string`; Phase F2 validates roles at runtime (`isUserRole` / `parseAuthUser`) and fails closed whenever `is_active !== true` or `role` is unrecognized.
+
 ### 6.2 Authorization rules
 
 - Backend authorization is mandatory for every protected API operation.
-- Frontend permission helpers may hide or disable actions for usability.
+- Frontend permission helpers may hide or disable actions for usability; in Phase F2, `src/lib/permissions/capabilities.ts` separates read-only dataset import history visibility (`canViewDatasetImports`: `ADMIN`, `ANALYST`, `INVESTIGATOR`) from dataset upload/recovery management (`canManageDatasets`: `ADMIN`, `ANALYST` only), omitting speculative F3–F6 rules until their respective phases.
 - Do not scatter role string comparisons across components.
 - Use one centralized capability/presentation layer based on the approved endpoint-specific permission matrix.
 - Include object-level context, such as whether an investigator is assigned to a case, when the API exposes it.
@@ -464,8 +459,12 @@ A dependency scanner is a detection aid, not proof that the application is secur
   - `npm audit` reports **`7 moderate` advisories** (`0 critical`, `0 high`) on advisory **`GHSA-g3hv-75wg-m249`** (*`minimatch` denial of service via globparts amplification*, affected range `7.0.0 - 11.0.0`).
   - **Dependency path:** `typescript-eslint@8.72.2` (direct devDependency, latest upstream release) → `@typescript-eslint/{eslint-plugin,parser,type-utils,utils,typescript-estree}@8.72.2` → `minimatch@10.2.6`.
   - **Exposure & governance:** Exposed strictly in development/CI ESLint static analysis CLI tooling (`devDependencies`); absent from the Vite production bundle (`dist/`). Because `@typescript-eslint/typescript-estree@8.72.2` constrains `"minimatch": "^10.2.2"` and `10.2.6` is the newest `10.x` release (`11.0.1+` is a major bump), `npm audit fix` (without `--force`) performs zero changes.
-  - **Approval status:** **`PENDING OWNER APPROVAL`** (`ADR-080`). This exception is **not** accepted automatically and must be explicitly approved by the project owner and revisited when upstream `@typescript-eslint` adopts `minimatch@^11.0.1` (and before Phase F7/F8 release).
-- **Deferred Security Hardening:** `F1-AUD-005` (`resolveApiBaseUrl` URL-scheme validation and `apiRequest` network/non-JSON response normalization) is deferred to the Phase F2 API integration milestone.
+  - **Approval status:** **`ACCEPTED` (`ADR-080`, owner approved `2026-11-11`)**. This temporary dev-only risk acceptance permits `minimatch@10.2.6` under `typescript-eslint@8.72.2` without npm `overrides` or `npm audit fix --force` (it is a temporary exception, not a vulnerability fix) and must be revisited when upstream `@typescript-eslint` adopts `minimatch@^11.0.1` and prior to Phase F7/F8 release.
+- **Resolved & Implemented Phase F2 Security Controls (`2026-11-11` Local Verification):**
+  - `F1-AUD-005` resolved: `resolveApiBaseUrl` validates schemes, production `https:`, embedded credentials, control chars, and rejects unexpected `?query`/`#hash`; `apiRequest` prevents duplicate `/api/v1` prefixes, rejects scheme/`//` paths before `fetch`, normalizes `NETWORK_ERROR` and `INVALID_RESPONSE`, enforces explicit `authMode: "bearer" | "none"`, and captures `X-Request-ID` + `429` retry timing.
+  - `AuthProvider.tsx` enforces the 8-step `signIn` flow (`/login` -> token store -> `sessionEpoch` -> `/auth/me`) with dual `authAttemptId` + `sessionEpoch` race protection, `expires_in` timeout expiration, single-flight `401` cleanup, `403` session preservation, local-only logout (`Option B`), and `QueryClient` cancel + synchronous cache clearing.
+  - `sanitizeRedirectPath` blocks open redirects (`//`, `\`, schemes, `/login` loops, sensitive query params); `capabilities.ts` narrows `UserResponse.role` via runtime `isUserRole` and fails closed on unknown/inactive roles.
+  - Local verification: `87/87` Vitest tests (`22` files), `5/5` mocked Chromium Playwright E2E tests (fresh production `vite preview`), and `npm audit --omit=dev` (`0` vulnerabilities). Live-backend E2E and remote F2 CI remain pending.
 
 ## 14. Error and Failure Handling
 
@@ -552,21 +551,21 @@ Do not infer implementation from a recommendation in a design document. If runti
 
 The frontend security baseline is acceptable for MVP review when:
 
-- [x] Authentication transport and token storage are explicitly approved in `DECISIONS.md` (ADR-075; in-memory Bearer token verified in F0/F1 tests).
-- [x] Phase F1 production dependencies pass `npm audit --omit=dev` (`0` vulnerabilities); dev-only `minimatch@10.2.6` exception (`ADR-080`) documented and awaiting owner approval.
-- [ ] Logout semantics are accurately represented.
-- [ ] `/auth/me` establishes current-user context.
-- [ ] Protected UI does not render while authentication is unresolved.
-- [ ] Backend remains authoritative for all permissions.
-- [ ] Endpoint and object-level authorization behavior is verified.
-- [ ] Tokens and sensitive payloads are absent from URLs, logs, telemetry, and unapproved persistent storage.
-- [ ] XSS-safe rendering rules are followed.
-- [ ] CORS and HTTPS are configured and verified.
+- [x] Authentication transport and token storage are explicitly approved in `DECISIONS.md` (ADR-075; in-memory Bearer token + `sessionEpoch` verified in F2 unit and Playwright E2E tests).
+- [x] Production dependencies pass `npm audit --omit=dev` (`0` vulnerabilities); dev-only `minimatch@10.2.6` temporary risk acceptance (`ADR-080`) approved by project owner (`2026-11-11`).
+- [x] Logout semantics are accurately represented (local-only Option B clearing in-memory token and `QueryClient` cache synchronously with zero server-side JWT revocation claim).
+- [x] `/auth/me` establishes current-user context and runtime role narrowing (`isUserRole` / `parseAuthUser` fail closed).
+- [x] Protected UI does not render while authentication is unresolved (`ProtectedRoute` / `PublicOnlyRoute` `initializing` loading guard).
+- [x] Backend remains authoritative for all permissions (`canViewDatasetImports` vs `canManageDatasets` documented as UI policy only; backend `403` preserves session).
+- [ ] Endpoint and object-level authorization behavior is verified across remaining F3–F6 workflows (datasets upload/recovery, risk models, investigations, evidence, AI summary).
+- [x] Tokens and sensitive payloads are absent from URLs, logs, telemetry, and browser persistence in F2 tests (`session-lifecycle.test.tsx`, `auth.spec.ts`).
+- [x] XSS-safe rendering and open-redirect rejection (`sanitizeRedirectPath`) are implemented for F2 auth/shell views.
+- [ ] CORS and HTTPS are verified against a live deployed/staging backend (local mocked E2E and `env.ts` production HTTPS validation complete; live-backend E2E pending).
 - [ ] Production security headers are configured at the hosting layer.
-- [ ] Upload and evidence content are handled as untrusted input.
-- [ ] AI output is rendered with provenance and uncertainty preserved.
-- [ ] Authenticated caches are cleared on session end.
-- [ ] Security tests pass and unresolved risks are documented.
+- [ ] Upload and evidence content are handled as untrusted input (Phase F4/F6).
+- [ ] AI output is rendered with provenance and uncertainty preserved (Phase F6).
+- [x] Authenticated caches are cleared on session end (`void queryClient.cancelQueries()` + synchronous `queryClient.clear()`).
+- [x] F2 security unit/integration/mocked-E2E tests pass and unresolved risks/verification items are documented (remote F2 CI & live-backend E2E pending).
 
 ## 19. Final Security Principle
 

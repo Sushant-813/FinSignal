@@ -3,7 +3,7 @@
 **Document:** `FRONTEND_TRD.md`  
 **Product:** FinSignal — Financial Transaction Intelligence & Investigation Platform  
 **Version:** 1.1  
-**Status:** Reconciled with Phase F0/F1 Implementation Baseline (`package-lock.json` Authoritative; Phase F1 Conditionally Ready)  
+**Status:** Reconciled with Phase F2 Implementation Baseline (`package-lock.json` Authoritative; Phase F1 Accepted; Phase F2 Locally Verified)
 **Scope:** Browser-based frontend for the existing Backend + ML v1.0.0 platform  
 **Prerequisite:** `FRONTEND_PRD.md` and `FRONTEND_DESIGN.md`
 
@@ -80,18 +80,18 @@ Per `frontend/package.json`, `frontend/package-lock.json`, and `frontend/.nvmrc`
 | TypeScript | `typescript` | `^5.8.3` | `5.9.3` | **Installed & Active** |
 | Build/dev server | `vite`, `@vitejs/plugin-react` | `^6.4.0`, `^4.5.0` | `6.4.6`, `4.7.0` | **Installed & Active** |
 | Styling | `tailwindcss`, `@tailwindcss/vite` | `^4.1.7` | `4.3.5` | **Installed & Active** |
-| Routing | `react-router` | `^7.6.0` | `7.18.5` | **Installed & Active (`/` + `*` F1 routes)** |
-| Server state | `@tanstack/react-query` | `^5.76.1` | `5.107.1` | **Installed & Provider Wired (`QueryProvider`)** |
-| Forms & validation | `react-hook-form`, `@hookform/resolvers`, `zod` | `^7.56.4`, `^5.0.1`, `^4.6.7` | `7.91.0`, `5.9.2`, `4.6.7` | **Installed & Active (`ADR-078`; tested with forms in F2+)** |
+| Routing | `react-router` | `^7.6.0` | `7.18.5` | **Installed & Active (F2 protected/public/shell routes)** |
+| Server state | `@tanstack/react-query` | `^5.76.1` | `5.107.1` | **Installed & Provider Wired (`QueryProvider`; F2 cancel/clear on session end)** |
+| Forms & validation | `react-hook-form`, `@hookform/resolvers`, `zod` | `^7.56.4`, `^5.0.1`, `^4.6.7` | `7.91.0`, `5.9.2`, `4.6.7` | **Installed & Active (`ADR-078`; F2 Login form active)** |
 | UI primitives & icons | `@radix-ui/react-dialog`, `react-select`, `react-slot`, `lucide-react` | `^1.1.14`, `^2.2.5`, `^1.2.3`, `^0.511.0` | `1.3.1`, `2.4.1`, `1.5.0`, `0.511.0` | **Installed & Active** |
 | Charts | Apache ECharts | — *(not yet in `package.json`)* | Not installed | **Approved (`ADR-074`), Deferred to Phase F3** |
 | Global client store | Zustand / Redux | — | Rejected / Not installed | **Excluded (`ADR-074`)** |
-| HTTP transport | Native `fetch` (`src/lib/api/client.ts`) | Built-in browser/Node | Built-in | **Implemented (F0); F1-AUD-005 hardening deferred to F2** |
+| HTTP transport | Native `fetch` (`src/lib/api/client.ts`) | Built-in browser/Node | Built-in | **Implemented & Hardened (F2.1 / `F1-AUD-005` resolved)** |
 | API contract types | `openapi-typescript` | `^7.8.0` | `7.13.0` | **Installed & Active (`ADR-076`)** |
-| Unit/component tests | `vitest`, `@testing-library/*`, `jsdom` | `^5.1.0`, `^16.3.0`/`^6.6.3`/`^14.6.1`, `^26.1.0` | `5.1.0`, `16.3.3`/`6.9.1`/`14.6.9`, `26.1.0` | **Installed & Active (`ADR-079`)** |
+| Unit/component tests | `vitest`, `@testing-library/*`, `jsdom` | `^5.1.0`, `^16.3.0`/`^6.6.3`/`^14.6.1`, `^26.1.0` | `5.1.0`, `16.3.3`/`6.9.1`/`14.6.9`, `26.1.0` | **Installed & Active (`ADR-079`; `87/87` passing across `22` files)** |
 | Network mocking | `msw` | `^2.8.4` | `2.15.0` | **Installed & Active (`onUnhandledRequest: "error"`)** |
-| End-to-end tests | `@playwright/test` | `^1.52.0` | `1.65.0` | **Installed & configured (`playwright.config.ts`); E2E specs deferred to Phase F2 (`F1-AUD-006`)** |
-| Linting / formatting | `eslint`, `typescript-eslint`, `prettier` | `^9.27.0`, `^8.32.1`, `^3.5.3` | `9.39.5`, `8.72.2`, `3.9.10` | **Installed & Active (`ADR-080` pending for `minimatch@10.2.6`)** |
+| End-to-end tests | `@playwright/test` | `^1.52.0` | `1.65.0` | **Installed & Active (`playwright.config.ts`, `tests/e2e/`, `5/5` mocked Chromium E2E passing; `F1-AUD-006` resolved)** |
+| Linting / formatting | `eslint`, `typescript-eslint`, `prettier` | `^9.27.0`, `^8.32.1`, `^3.5.3` | `9.39.5`, `8.72.2`, `3.9.10` | **Installed & Active (`ADR-080` temporary dev-only exception ACCEPTED `2026-11-11`)** |
 
 ### 3.3 Version policy
 
@@ -105,7 +105,7 @@ Per `frontend/package.json`, `frontend/package-lock.json`, and `frontend/.nvmrc`
 - `ADR-074` (`ACCEPTED`): Core React/TypeScript/Vite/Tailwind/ECharts stack, React Router, TanStack Query, React Hook Form + Zod, Native Fetch, `openapi-typescript`, Radix UI, Lucide React, Vitest/RTL/MSW/Playwright, npm lockfile; rejects Axios/Redux/Zustand for MVP.
 - `ADR-078` (`ACCEPTED`): Zod `3.25.76` → `4.6.7` upgrade (remediates production high advisory `1243066`).
 - `ADR-079` (`ACCEPTED`): Vitest `3.2.7` → `5.1.0` upgrade & Node `24` alignment (remediates critical `tinypool`/`@vitest/mocker` dev advisories).
-- `ADR-080` (`PENDING OWNER APPROVAL`): Temporary dev-only exception for `typescript-eslint@8.72.2` → `minimatch@10.2.6` (`GHSA-g3hv-75wg-m249`).
+- `ADR-080` (`ACCEPTED` 2026-11-11): Temporary dev-only risk acceptance exception for `typescript-eslint@8.72.2` → `minimatch@10.2.6` (`GHSA-g3hv-75wg-m249`).
 
 *(Original baseline policy note: React, TypeScript, Vite, Tailwind CSS, and Apache ECharts originated in main `TRD.md`; ECharts installation remains intentionally deferred until Phase F3 analytics implementation.)*
 
@@ -622,6 +622,7 @@ Actual scripts implemented in `frontend/package.json`:
     "typecheck": "tsc -b --pretty",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:e2e": "playwright test",
     "api:types": "openapi-typescript openapi.json -o src/api/generated/schema.ts",
     "check:types-drift": "node scripts/check-types-drift.mjs"
   }
@@ -629,7 +630,7 @@ Actual scripts implemented in `frontend/package.json`:
 ```
 
 - OpenAPI types are generated from `frontend/openapi.json` into `frontend/src/api/generated/schema.ts` and verified for zero drift in CI via `npm run check:types-drift`.
-- **Deferred script:** A `test:e2e` Playwright runner script (`playwright test`) and `frontend/tests/e2e/` test suite are not yet wired in Phase F1 and remain deferred to Phase F2 (`F1-AUD-006`).
+- Playwright E2E tests (`npm run test:e2e`, `F1-AUD-006` resolved in F2.6) build a fresh production bundle and serve via `vite preview` (`reuseExistingServer: false`) for mocked-API Chromium tests, with an optional `E2E_API_MODE=live` mode targeting Vite dev proxy (`:5173` -> FastAPI).
 
 ### 16.1 Local development
 

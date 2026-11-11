@@ -3,7 +3,7 @@
 **Document:** `FRONTEND_ROADMAP.md`  
 **Product:** FinSignal — Financial Transaction Intelligence & Investigation Platform  
 **Version:** 1.2  
-**Status:** Phase F0 Completed; Phase F1 CONDITIONALLY READY (Audit Remediation & Local Verification Complete; Formal Acceptance Pending)  
+**Status:** Phase F0 & F1 Accepted; Phase F2 Implemented & Locally Verified (Remote F2 CI & Live-Backend E2E Pending; Formal Acceptance Pending)
 **Scope:** Frontend planning and implementation following Backend + ML v1.0.0
 
 ---
@@ -166,8 +166,8 @@ Remove the major unknowns that could force expensive rework during implementatio
 
 ## 7. F1 — Application Foundation & Design System
 
-> [!IMPORTANT]
-> **Phase Status: CONDITIONALLY READY (2026-11-11)** — Implementation remediation and local verification are complete; formal acceptance is pending owner approval of the dev-only `minimatch@10.2.6` security exception (`ADR-080`) and remote GitHub Actions CI verification.
+> [!NOTE]
+> **Phase Status: COMPLETED & FORMALLY ACCEPTED (2026-11-11)** — Baseline pushed to `origin/main` (`ad02a4e`), remote GitHub Actions CI run `43036181121` passed both backend and frontend jobs, `ADR-080` was approved by the project owner, and formal Phase F1 acceptance was granted. (`F1-AUD-005` and `F1-AUD-006` were subsequently resolved in Phase F2; `F1-AUD-009` remains deferred.)
 
 ### Objective
 
@@ -211,63 +211,65 @@ Create a reproducible frontend project with a stable application foundation and 
 | Production dependency audit (`npm audit --omit=dev`) | **0 vulnerabilities** |
 | Full dependency audit (`npm audit`) | **7 moderate advisories remain** (`typescript-eslint@8.72.2` → `minimatch@10.2.6`, `GHSA-g3hv-75wg-m249`; dev-only) |
 | Browser verification (system Chrome + Vite preview / built CSS harness) | **PASS** (ad-hoc Chrome harness; not a committed Playwright E2E suite) |
-| Remote GitHub Actions (`.github/workflows/ci.yml`) | **PENDING** |
+| Remote GitHub Actions (`.github/workflows/ci.yml`) | **PASS** (run `43036181121` on `ad02a4e`: backend & frontend jobs succeeded) |
 
 ### Explicitly Deferred Findings from Phase F1 Audit
 
-| Finding | Description | Follow-up |
+| Finding | Description | Disposition |
 |---|---|---|
-| `F1-AUD-005` | API client and base URL edge-case hardening (`fetch` network `TypeError` normalization, non-JSON `2xx` guard, `/api/v1` dedup, scheme validation) | Phase F2 API integration milestone |
-| `F1-AUD-006` | Committed Playwright E2E suite (`frontend/tests/e2e/`) and `playwright.config.ts` `webServer` configuration | Phase F2 testing milestone |
-| `F1-AUD-009` | `Button` `size="icon"` loading layout and `Alert` `data-*`/attribute passthrough ergonomics | Future UI refinement |
+| `F1-AUD-005` | API client and base URL edge-case hardening (`fetch` network `TypeError` normalization, non-JSON `2xx` guard, `/api/v1` dedup, scheme validation) | **Resolved in Phase F2 (`F2.1`)** |
+| `F1-AUD-006` | Committed Playwright E2E suite (`frontend/tests/e2e/`) and `playwright.config.ts` `webServer` configuration | **Resolved in Phase F2 (`F2.6`)** |
+| `F1-AUD-009` | `Button` `size="icon"` loading layout and `Alert` `data-*`/attribute passthrough ergonomics | **Deferred** (future UI refinement) |
 
-### Exit criteria & Open Acceptance Conditions
+### Exit criteria & Acceptance Resolution (Met)
 
 - [x] Clean install compatibility, strict TypeScript, lint, formatting, build, and `47/47` automated tests pass locally.
 - [x] Shared components conform to design tokens, CSS computed-style checks, and accessibility requirements.
 - [x] No backend credentials, secrets, or browser-storage token persistence exist in frontend code (`npm audit --omit=dev` = `0` vulnerabilities).
-- [ ] **Owner security-exception approval (`ADR-080`):** Formal owner sign-off pending for the 7 moderate dev-only advisories (`typescript-eslint@8.72.2` → `minimatch@10.2.6`, `GHSA-g3hv-75wg-m249`).
-- [ ] **Remote CI verification:** First remote GitHub Actions execution of `.github/workflows/ci.yml` (`frontend` job on `ubuntu-latest` with Node `24` via `.nvmrc`) is pending push/PR.
+- [x] **Owner security-exception approval (`ADR-080`):** Accepted by project owner on `2026-11-11` for the 7 moderate dev-only advisories (`typescript-eslint@8.72.2` → `minimatch@10.2.6`, `GHSA-g3hv-75wg-m249`).
+- [x] **Remote CI verification:** Remote GitHub Actions CI run `43036181121` (`ad02a4e`) passed both backend and frontend jobs (`ubuntu-latest`, Node `24` via `.nvmrc`).
 
 ---
 
 ## 8. F2 — Authentication, Session & Application Shell
 
+> [!IMPORTANT]
+> **Phase Status: IMPLEMENTED & LOCALLY VERIFIED (2026-11-11)** — Milestones `F2.1` through `F2.6` are implemented and verified locally (`87/87` Vitest tests across `22` files; `5/5` mocked Playwright Chromium E2E tests against fresh production `vite preview`; `format:check`, `lint`, `typecheck`, `build`, `check:types-drift`, `npm audit --omit=dev` = `0` vulns). **Formal Phase F2 acceptance remains pending:** remote GitHub Actions CI for F2 commits has not yet been triggered, and live-backend E2E (`E2E_API_MODE=live`) has not been executed.
+
 ### Objective
 
 Deliver a secure sign-in experience and the common application frame.
 
-### Key tasks
+### Key tasks (`F2.1`–`F2.6` Implemented)
 
-- Implement centralized API client and normalized error handling.
-- Implement login and current-user API functions.
-- Implement the approved session/token adapter.
-- Implement session bootstrap and expiration handling.
-- Implement logout behavior that accurately reflects backend semantics.
-- Add protected route handling.
-- Add role-aware navigation and capability presentation.
-- Implement application header, sidebar/navigation, page container, and user menu.
-- Implement safe post-login return navigation.
-- Clear authenticated query/cache state on logout or session expiration.
-- Test direct navigation to protected routes.
+- [x] Harden centralized API client (`src/lib/api/{client,env,errors}.ts`, `F1-AUD-005` resolved), base URL scheme/query/fragment/HTTPS checks, `/api/v1` dedup, network & non-JSON `2xx` normalization, `429` `details.retry_after_seconds` fallback, explicit `authMode`, and `401` session-event bridge.
+- [x] Implement OpenAPI-typed auth API functions (`POST /api/v1/auth/login`, `GET /api/v1/auth/me`, `POST /api/v1/auth/logout` in `src/features/auth/api/auth-api.ts`).
+- [x] Implement ADR-075 in-memory token store with `sessionEpoch` (`token-store.ts`), `AuthProvider` (`authAttemptId` + `sessionEpoch` race protection, 8-step login -> `/auth/me`, `expires_in` timer, single-flight `401` handling, `403` preservation), local-only logout (`Option B`), and `QueryClient` cancellation + synchronous cache clearing.
+- [x] Add protected & public-only routing (`ProtectedRoute`, `PublicOnlyRoute`, `RoleGate`, `SessionLoadingView`, `sanitizeRedirectPath`) cleanly avoiding stale `?redirect=` after manual `signOut`.
+- [x] Add runtime role validation (`isUserRole`, `parseAuthUser` fail-closed) and F2 capability helpers separating read-only dataset import history (`canViewDatasetImports`, all 3 roles) from dataset upload/recovery management (`canManageDatasets`, `ADMIN | ANALYST` only).
+- [x] Implement application shell (`AuthLayout`, `AppLayout`, `Sidebar`, `TopBar`, `UserMenu`, `nav-config.ts`), authenticated `WorkspaceHomePage` at `/`, and honest F3–F5 `PhasePlaceholderPage` routes (omitting uncontracted `Accounts`, `Audit`, `Admin Users` and avoiding fabricated metrics).
+- [x] Implement accessible React Hook Form + Zod 4 `LoginPage` (`1..128` password matching `LoginRequest`, no registration link).
+- [x] Add Vitest + MSW unit/integration suites (`87/87` tests across `22` files) and Playwright Chromium E2E (`F1-AUD-006` resolved: fresh-build `vite preview` server with `reuseExistingServer: false`, `5/5` mocked E2E passing).
 
 ### Deliverables
 
-- Login page.
-- Authenticated application shell.
-- Current-user context.
-- Protected route behavior.
-- Role-aware navigation.
-- Session and error handling.
+- Login page (`LoginPage.tsx`, `login-schema.ts`).
+- Authenticated application shell (`AppLayout`, `AuthLayout`, `Sidebar`, `TopBar`, `UserMenu`, `WorkspaceHomePage`, `PhasePlaceholderPage`).
+- Current-user & session lifecycle provider (`AuthProvider`, `AuthContext`, `useAuth`, `auth.types.ts`).
+- Protected & role-aware routing (`routes.tsx`, `ProtectedRoute`, `PublicOnlyRoute`, `RoleGate`, `redirect.ts`).
+- Hardened API client, normalized error helpers, and F2 capability matrix (`client.ts`, `env.ts`, `errors.ts`, `session-events.ts`, `capabilities.ts`).
+- Vitest/MSW test suites and Playwright E2E suite (`tests/e2e/{auth,shell}.spec.ts`).
 
-### Exit criteria
+### Exit criteria & Verification Status
 
-- Valid users can authenticate and load `/auth/me`.
-- Invalid/expired sessions cannot render protected content.
-- `401` and `403` are handled distinctly.
-- Logout clears frontend session state without overstating server-side revocation.
-- ADMIN, ANALYST, and INVESTIGATOR navigation behavior matches approved permissions.
-- Authentication tests pass.
+- [x] Valid users authenticate via `/auth/login` and establish identity/role context via `/auth/me` (`87/87` Vitest + `5/5` mocked Chromium E2E).
+- [x] Invalid/expired sessions cannot render protected content; full page reload clears in-memory state cleanly (`ADR-075`).
+- [x] `401` (clears session/cache) and `403` (preserves session) are handled distinctly.
+- [x] Local-only logout (`Option B`) clears in-memory token and `QueryClient` cache synchronously without claiming server-side JWT revocation.
+- [x] `ADMIN`, `ANALYST`, and `INVESTIGATOR` navigation and dataset read-only vs management visibility match verified permissions and fail closed on unknown roles.
+- [ ] **Remote CI execution:** Trigger and observe green remote GitHub Actions CI for F2 changes.
+- [ ] **Live-backend verification:** Execute optional `E2E_API_MODE=live` or manual live-stack verification against FastAPI + PostgreSQL (`CORSMiddleware` / `X-Request-ID` / `429` / real Argon2id + HS256 JWT).
+- [ ] **Formal Phase F2 owner acceptance:** Grant sign-off after outstanding CI / live verification items are reviewed.
 
 ---
 
@@ -598,8 +600,8 @@ Use this table during implementation. Status values should be controlled and evi
 | Phase | Status | Completion evidence | Open blockers |
 |---|---|---|---|
 | F0 — Decisions & contract verification | COMPLETED | ADR-074–077 accepted; 3 F0 read endpoints & shared `MoneyStr` types implemented (`593` backend tests); `frontend/` scaffolded with `openapi.json`, `schema.ts`, drift check, API client, in-memory token store, and `4` Vitest smoke tests; documentation reconciled | None |
-| F1 — Foundation & design system | CONDITIONALLY READY | Tokens, 10 UI primitives, providers/routing/error boundary, CI workflow, Zod `4.6.7` & Vitest `5.1.0` upgrades, CSS/AbortSignal/Button remediations complete; Prettier/ESLint/TS/`47` tests/build/drift/prod-audit (`0` vulns)/Chrome checks pass locally | Pending owner approval of dev-only `minimatch@10.2.6` exception (`ADR-080`); remote GitHub Actions CI run pending |
-| F2 — Auth & application shell | NOT STARTED (BLOCKED UNTIL F1 ACCEPTANCE) | Auth E2E and role checks | Phase F1 formal acceptance |
+| F1 — Foundation & design system | COMPLETED & ACCEPTED (2026-11-11) | Tokens, 10 UI primitives, providers/routing/error boundary, CI workflow, Zod `4.6.7` & Vitest `5.1.0` upgrades, Prettier/ESLint/TS/`47` tests/build/drift/`npm audit --omit=dev` (`0` vulns) verified; remote CI run `43036181121` (`ad02a4e`) passed; `ADR-080` approved by owner (`2026-11-11`) | `F1-AUD-009` deferred (non-blocking) |
+| F2 — Auth & application shell | IMPLEMENTED & LOCALLY VERIFIED (Formal Acceptance Pending) | F2.1–F2.6 implemented (`F1-AUD-005` & `F1-AUD-006` resolved); `format:check`/`lint`/`typecheck`/`build`/`check:types-drift`/`npm audit --omit=dev` (`0` prod vulns) pass; `87/87` Vitest tests (`22` files) + `5/5` mocked Playwright Chromium E2E pass | Remote F2 CI run pending; live-backend E2E (`E2E_API_MODE=live`) not executed; formal Phase F2 acceptance pending |
 | F3 — Analytics, transactions & risk | NOT STARTED | API-backed workflow tests | |
 | F4 — Dataset import | NOT STARTED | Upload/import E2E | |
 | F5 — Investigation workflow | NOT STARTED | Role-specific investigation E2E | |

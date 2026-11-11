@@ -3,7 +3,7 @@
 **Document:** `FRONTEND_TESTING_STRATEGY.md`  
 **Product:** FinSignal — Financial Transaction Intelligence & Investigation Platform  
 **Version:** 1.1  
-**Status:** Reconciled with Phase F1 Testing Infrastructure (`Vitest 5.1.0`, `MSW 2.15.0`); Playwright E2E Suite Deferred to Phase F2  
+**Status:** Reconciled with Phase F2 Test Suite & Playwright E2E Baseline (`Vitest 5.1.0`, `MSW 2.15.0`, `Playwright 1.65.0`; Local Verification Passing, Remote F2 CI & Live-Backend E2E Pending)
 **Scope:** Automated and manual testing of the React/TypeScript frontend
 
 ---
@@ -671,5 +671,28 @@ FinSignal's frontend must not merely look correct in a successful demo. It must 
 ### 21.3 Browser Verification Status & Explicit Limitations
 
 - **Ad-Hoc Chrome Verification (`PASS`):** Targeted real-browser checks executed using system Google Chrome (`playwright` `channel: "chrome"`) against `vite preview` (`1440`, `1024`, `768`, `360` viewports, zero horizontal overflow, body canvas `rgb(247, 248, 250)`, `/` and `/nonexistent`) and an external `esbuild` harness (`DEV: false`) loading `dist/assets/index-*.css` (verifying computed `Input` disabled foreground `rgb(156, 163, 175)`, `TableSkeleton` header height `14px` vs body `16px`, `Button` `asChild` attribute omission, and `Dialog` portal/focus trap/Escape restoration).
-- **Important Boundary (`F1-AUD-006` Deferred):** This external verification harness is **not** a committed automated Playwright E2E suite. Although `@playwright/test@1.65.0` and `frontend/playwright.config.ts` exist, `frontend/tests/e2e/` contains no spec files yet, `npm run test:e2e` is not yet wired, and bundled Playwright Chromium binaries are not provisioned in CI. Committed Playwright E2E coverage is scheduled for **Phase F2**.
-- **Deferred API Client Tests (`F1-AUD-005`):** Network `TypeError` normalization, non-JSON `2xx` response handling, `/api/v1` path deduplication, and `resolveApiBaseUrl` scheme checks remain deferred to **Phase F2 API integration**.
+- **Important Boundary (`F1-AUD-006` Historical Note):** In Phase F1, this external Chrome check was not a committed Playwright E2E suite. Both `F1-AUD-005` and `F1-AUD-006` were subsequently resolved in **Phase F2** (§22).
+
+---
+
+## 22. Implemented Phase F2 Test Suite & Browser Verification Baseline (2026-11-11)
+
+### 22.1 Vitest + MSW Unit & Integration Coverage (`22` Files, `87/87` Passing)
+
+In addition to all preserved Phase F1 primitive/smoke/resilience checks (with `smoke.test.tsx` and `resilience.test.tsx` updated for protected `/` -> `/login` routing), Phase F2 adds deterministic unit, integration, and component tests using `msw/node`:
+
+- `tests/unit/api-client.test.ts` (`20` tests): `resolveApiBaseUrl` scheme, production HTTPS, embedded-credential, control-char, and query/fragment rejection; `/api/v1` dedup; `TypeError` -> `NETWORK_ERROR` vs `AbortError`; `205`/empty/non-JSON `2xx` (`INVALID_RESPONSE`); `429` header + `details.retry_after_seconds` fallback; `422` envelope & `detail[]` extraction (`errors.ts`); `authMode: "bearer" | "none"` + caller `Authorization` header rules; `401` epoch hook vs `skipUnauthorizedHandler`; monotonic `sessionEpoch`.
+- `tests/unit/auth-api.test.ts` (`3` tests): OpenAPI contract checks for `/auth/login`, `/auth/me` (5 fields), and `/auth/logout` (`200 OK` `LogoutResponse`, `skipUnauthorizedHandler`).
+- `tests/unit/session-lifecycle.test.tsx` (`8` tests): No-token bootstrap, initializing gate, inactive/unknown role fail-closed, 8-step `signIn` + `/auth/me` cleanup on error, overlapping `signIn` (`authAttemptId` + `sessionEpoch`) race safety, `expires_in` fake timers, single-flight concurrent `401` cleanup, `403` preservation, stale-epoch `401` ignore, and local-only Option B logout (`cancelQueries()` + synchronous `clear()` + cross-user switch isolation + zero storage/cookie leakage).
+- `tests/unit/redirect.test.ts` (`3` tests) & `tests/unit/capabilities.test.ts` (`3` tests): Open-redirect rejection (`//`, `\`, schemes, `/login` loops, sensitive query params), runtime `isUserRole` narrowing, inactive/unknown fail-closed checks, and `canViewDatasetImports` vs `canManageDatasets` separation.
+- `tests/components/protected-routes.test.tsx` (`4` tests), `app-shell.test.tsx` (`3` tests), `login-page.test.tsx` (`6` tests): Init loading guard, `/login?redirect=...`, `RoleGate` policy, shell landmarks/collapse/`Escape` drawer/`UserMenu` sign-out, Zod 4 `1..128` login validation, single-submit lock, `401`/`429`/`422`/`500`/network feedback, and `401` expired session banner.
+
+### 22.2 Committed Playwright E2E Suite (`5/5` Passing in Mocked Mode)
+
+- **Configuration (`frontend/playwright.config.ts` & `"test:e2e"` script):** Runs Chromium (`Desktop Chrome`) with `reuseExistingServer: false`. Default mode runs `"npm run build && npm run preview -- --host 127.0.0.1 --port 4173 --strictPort"` so stale `dist/` artifacts are never reused; setting `E2E_API_MODE=live` switches cleanly to Vite dev server (`:5173`) so Vite's `/api` proxy routes to FastAPI (`vite preview` does not proxy `/api`).
+- **Verified Browser Specs (`tests/e2e/auth.spec.ts`, `tests/e2e/shell.spec.ts`):** Verify unauthenticated redirect restoration, invalid login `401` alert, external redirect neutralization, `429` `retry_after_seconds` feedback, zero `localStorage`/`sessionStorage`/`document.cookie`/URL token leakage, `page.reload()` re-authentication (`ADR-075`), automatic `expires_in` expiration redirect, `ADMIN` vs `INVESTIGATOR` dataset policy, responsive overflow (`1440`/`1024`/`768`/`360`), mobile drawer `Escape` dismissal, and clean `/datasets` sign-out to `/login` (`5/5` passed, `0` skipped in default mocked `page.route` mode).
+
+### 22.3 Explicit Verification Limitations (Pending)
+
+- **Mocked E2E vs. Live Backend (`E2E_API_MODE=live`):** Browser E2E tests above ran against deterministic Playwright `page.route` mocks; the live-backend test path (`E2E_API_MODE=live` against running FastAPI + PostgreSQL) was **not** executed locally.
+- **Remote F2 CI Execution:** Remote GitHub Actions execution for F2 changes (`.github/workflows/ci.yml` + Chromium E2E decision) has not yet been triggered.
