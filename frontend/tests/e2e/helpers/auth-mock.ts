@@ -111,6 +111,30 @@ export async function installMockAuthRoutes(page: Page, options: MockAuthOptions
       body: JSON.stringify(user),
     });
   });
+
+  await page.route("**/api/v1/analytics/overview*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        source_namespace: "SYNTHETIC",
+        currency: "INR",
+        from_time: "2026-10-12T00:00:00Z",
+        to_time: "2026-11-12T00:00:00Z",
+        total_transaction_count: 142,
+        debit_transaction_count: 108,
+        credit_transaction_count: 34,
+        total_volume_amount: "987654.32",
+        total_debit_amount: "654321.10",
+        total_credit_amount: "333333.22",
+        net_cash_flow: "-320987.88",
+        average_transaction_amount: "6955.31",
+        median_transaction_amount: "2450.00",
+        debit_average_amount: "6058.53",
+        debit_median_amount: "2100.00",
+      }),
+    });
+  });
 }
 
 export async function signInViaUi(page: Page, email: string, password: string) {

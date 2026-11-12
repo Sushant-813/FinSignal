@@ -15,7 +15,7 @@ test.describe("FinSignal Application Shell & Role Navigation E2E (F2.6)", () => 
     await installMockAuthRoutes(page, { role: "ADMIN" });
     await page.goto("/login");
     await signInViaUi(page, E2E_USERS.ADMIN.email, "valid-password");
-    await expect(page.getByRole("heading", { name: "Workspace Overview" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Dashboard Overview" })).toBeVisible();
 
     // Responsive overflow check at desktop, tablet, and mobile viewports
     for (const viewport of [
@@ -65,8 +65,10 @@ test.describe("FinSignal Application Shell & Role Navigation E2E (F2.6)", () => 
     await installMockAuthRoutes(page, { role: "INVESTIGATOR" });
     await page.goto("/login");
     await signInViaUi(page, E2E_USERS.INVESTIGATOR.email, "valid-password");
-    await expect(page.getByRole("heading", { name: "Workspace Overview" })).toBeVisible();
-    await expect(page.getByText("Not available for Investigator")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Dashboard Overview" })).toBeVisible();
+    await expect(
+      page.getByText(/Read-only import history visibility for Investigator/i)
+    ).toBeVisible();
 
     await page.getByRole("link", { name: "Datasets" }).click();
     await expect(page).toHaveURL(/\/datasets$/);

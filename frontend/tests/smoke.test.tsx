@@ -8,6 +8,7 @@ import { resolveApiBaseUrl } from "../src/lib/api/env.ts";
 import { clearAccessToken, getAccessToken, setAccessToken } from "../src/lib/auth/token-store.ts";
 import { apiErrorFixtures } from "./fixtures/api-errors.ts";
 import { buildAuthUser } from "./fixtures/auth.ts";
+import { buildOverviewFixture } from "./fixtures/f3-data.ts";
 import { server } from "./mocks/server.ts";
 
 type TransactionListResponse = components["schemas"]["TransactionListResponse"];
@@ -21,17 +22,20 @@ describe("Phase F2 authenticated workspace smoke baseline", () => {
     });
   });
 
-  it("renders Workspace Overview when an authenticated session is active", async () => {
+  it("renders Dashboard Overview when an authenticated session is active", async () => {
     window.history.replaceState({}, "", "/");
     setAccessToken("smoke-valid-jwt");
-    server.use(http.get("/api/v1/auth/me", () => HttpResponse.json(buildAuthUser("ANALYST"))));
+    server.use(
+      http.get("/api/v1/auth/me", () => HttpResponse.json(buildAuthUser("ANALYST"))),
+      http.get("/api/v1/analytics/overview", () => HttpResponse.json(buildOverviewFixture()))
+    );
 
     render(<App />);
     await waitFor(() => {
-      expect(screen.getByRole("heading", { name: "Workspace Overview" })).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Dashboard Overview" })).toBeInTheDocument();
+      expect(screen.getByText("142")).toBeInTheDocument();
     });
     expect(screen.getAllByText("analyst@finsignal.test").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText("/api/v1")).toBeInTheDocument();
   });
 
   it("normalizes VITE_API_BASE_URL safely", () => {

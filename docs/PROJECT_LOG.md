@@ -5,7 +5,7 @@
 **Scope:** Backend + ML  
 **Status:** Active Development Log  
 **Version:** 1.0.0  
-**Last Updated:** 2026-10-25
+**Last Updated:** 2026-11-12
 
 ---
 
@@ -1870,49 +1870,67 @@ Following push of the Phase F1 baseline (`ad02a4e`), remote GitHub Actions CI wo
 - **Backend + ML v1.0.0:** Released & Stable.
 - **Phase F0 & Phase F1:** Completed & Formally Accepted (`ad02a4e`, CI run `43036181121`, `ADR-080` accepted `2026-11-11`).
 - **Phase F2:** Implemented & Locally Verified (Remote F2 CI & Live-Backend E2E Pending; Formal Acceptance Pending).
-- **Next Milestone:** Verify remote F2 CI and optional live-backend login/session check for Phase F2 acceptance, then proceed to **Phase F3 — Analytics, Transaction Exploration & Risk**.
+- **Phase F3:** Implemented & Locally Verified (Remote F3 CI & Live-Backend E2E Pending; Formal Acceptance Pending).
+- **Next Milestone:** Verify remote CI and optional live-backend checks for Phase F2 & F3 acceptance, then proceed to **Phase F4 — Dataset Import & Processing Visibility**.
 
 ---
 
-# 38. Log Maintenance Rules
+# 38. Phase F3 — Analytics, Transaction Exploration & Risk Implementation
 
-The project log should be updated when:
+**Date:** 2026-11-12  
+**Role:** Senior Frontend Engineer & Architect  
+**Objective:** Implement complete Frontend Phase F3 scope including operational dashboard overview, financial analytics visualizations, transaction exploration table, transaction detail, and hybrid risk scoring with on-demand evaluation.
 
-- a phase starts;
-- a phase completes;
-- an important architectural decision changes;
-- a significant test milestone is reached;
-- a major bug changes the design;
-- a release is created;
-- a major scope change occurs.
+## Key Changes & Components Added
 
-Do not record every trivial coding action.
+1. **Dashboard Overview (`frontend/src/features/dashboard/`):**
+   - Replaced landing placeholder at `/` with `DashboardPage` displaying high-level operational metrics from `GET /api/v1/analytics/overview`.
+   - Built `OverviewKpiGrid` rendering total transactions, debit/credit transaction counts, total debit volume, total credit volume, and continuous median transaction amounts.
+   - Built `ReportingScopeBar` providing client-side namespace filtering (default `"SYNTHETIC"`), currency display, and half-open time-range scoping (`[from_time, to_time)`).
 
-The log should answer:
+2. **Financial Analytics Views (`frontend/src/features/analytics/`):**
+   - Implemented `AnalyticsPage` mounted at `/analytics` with tabbed view navigation (Volume Trends, Category Spending, Top Merchants).
+   - Built `TrendsChartPanel` with dynamically imported Apache ECharts (`React.lazy` in `TrendEChart`), rendering dual-axis bar and line charts for daily/monthly debit vs credit trends.
+   - Built `CategoryDistributionPanel` rendering categorical pie charts and accessible tabular breakdowns with exact percentage distributions.
+   - Built `MerchantAnalyticsPanel` displaying top merchants ranked by debit volume or transaction frequency with dual-metric percentages (percentage of total debit volume and percentage of merchant spend).
+   - Ensured all chart configurations adhere to enterprise guidelines: restrained color palette, HTML-escaped tooltip formatters preventing XSS, and `prefers-reduced-motion` animation disabling.
 
-```text
-What changed?
-Why did it change?
-How was it validated?
-What is the current state?
-What happens next?
-```
+3. **Transaction Exploration & Detail (`frontend/src/features/transactions/`):**
+   - Implemented `TransactionsListPage` at `/transactions` with server-side pagination (`page_size=50`), column sorting (`occurred_at`, `amount`), and multi-field filtering (namespace, amount range, risk level, half-open time bounds).
+   - Synchronized all filter and pagination state with URL search parameters (`useSearchParams`) following ADR-074 (zero Redux/Zustand stores).
+   - Implemented `TransactionDetailPage` at `/transactions/:transactionId` with `TransactionFactsCard` rendering immutable transaction facts (exact `MoneyStr` amounts, UTC timestamps, account IDs, counterparty references, execution metadata).
+   - Integrated `RiskAnalysisPanel` within transaction detail, embedding latest risk scores and model version metadata.
 
----
+4. **Risk Scoring & Explainability (`frontend/src/features/risk/`):**
+   - Implemented `RiskAnalysisPanel` consuming `GET /api/v1/transactions/{id}/risk`.
+   - Distinctly mapped HTTP 404 responses to an explicit `"not_analyzed"` state, preventing unanalyzed transactions from being erroneously presented as low risk or zero risk.
+   - Rendered hybrid risk score ([0.00, 100.00]), categorical risk tier badges (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL`), score breakdown (ML score vs Rule score), and structured `RiskFactorList`.
+   - Implemented on-demand risk analysis action (`POST /api/v1/transactions/{id}/risk/analyze`) using the default `ACTIVE` model with fail-closed capability gates (`canAnalyzeActiveRisk`).
 
-# 38. Final Principle
+5. **Shared Components & Utilities:**
+   - Implemented domain-agnostic `Pagination` component (`frontend/src/components/ui/Pagination.tsx`) supporting first, previous, page numbers, next, and last controls.
+   - Built string-safe formatting utilities: `formatMoney`, `formatMoneyParts`, `MoneyValue` component (`frontend/src/components/data-display/MoneyValue.tsx`) guaranteeing zero floating-point arithmetic.
+   - Built timezone-aware UTC datetime formatters (`formatUtcDateTime`, `formatUtcDate`, `toUtcIsoString`) enforcing calendar limits (366 daily / 120 monthly buckets).
+   - Built centralized query keys (`frontend/src/lib/api/query-keys.ts`) for `analytics`, `transactions`, and `risk`.
 
-The project log is a record of **engineering evolution**, not a diary of every command executed.
+6. **Local Development User Creation Findings:**
+   - Identified that default development credentials (`testuser@example.com`) do not exist in the local database.
+   - Documented that developers can create an active `ANALYST` user via `POST /api/v1/auth/register` (minimum 12-character password).
+   - Documented that `ADMIN` and `INVESTIGATOR` roles currently require direct Python repository instantiation.
 
-FinSignal should maintain enough history that a future developer can understand:
+## Verification Results (Local)
 
-- why the architecture looks the way it does;
-- why technologies were selected or deferred;
-- how the ML system evolved;
-- how correctness was validated;
-- when major milestones were reached;
-- why important trade-offs were made.
+- **Prettier (`npm run format:check`):** `PASS` (`0` formatting issues).
+- **ESLint (`npm run lint`):** `PASS` (`0` errors, `0` warnings).
+- **TypeScript (`npm run typecheck`):** `PASS` (`strict: true`, zero type errors).
+- **OpenAPI Drift (`npm run check:types-drift`):** `PASS` (generated types in sync with backend contract).
+- **Vitest Unit & Component Tests (`npm run test`):** **`121/121` PASS** across `36` test files (`0` failed, `0` skipped).
+- **Production Build (`npm run build`):** `PASS` (Vite bundle with isolated `echarts-chunk-*.js` dynamic chunk).
+- **Playwright E2E (`npm run test:e2e`):** **`7/7` PASS** in Chromium against production build (`auth.spec.ts`, `shell.spec.ts`, `analytics.spec.ts`, `transactions.spec.ts`).
+- **Production Dependency Audit (`npm audit --omit=dev`):** `PASS` (`0` vulnerabilities).
 
-The Backend + ML release is the primary milestone for the current development track.
+## Outstanding Verification & Deferred Items
 
-Frontend work begins only after that milestone is complete.
+- **Live-Backend E2E (`E2E_API_MODE=live`):** Not executed locally (requires live running FastAPI + PostgreSQL backend with populated test transactions).
+- **Remote GitHub Actions CI:** Remote CI workflow execution for Phase F3 commits remains pending.
+- **Account-Level Analytics:** `/analytics/accounts/{account_id}` and `/unusual-spending` remain intentionally excluded from F3 per approved scope.

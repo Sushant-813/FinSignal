@@ -26,7 +26,7 @@ export interface NavItem {
 export const NAV_ITEMS: readonly NavItem[] = [
   {
     to: "/",
-    label: "Workspace Overview",
+    label: "Dashboard Overview",
     end: true,
     icon: LayoutDashboard,
     isVisible: canAccessWorkspace,
@@ -62,7 +62,7 @@ export function getVisibleNavItems(user: AuthUser | null): readonly NavItem[] {
 }
 
 const ROUTE_TITLES: Readonly<Record<string, string>> = {
-  "/": "Workspace Overview",
+  "/": "Dashboard Overview",
   "/transactions": "Transactions",
   "/analytics": "Analytics",
   "/investigations": "Investigations",
@@ -73,6 +73,9 @@ export function getRouteBreadcrumbLabel(pathname: string): string {
   const direct = ROUTE_TITLES[pathname];
   if (direct) {
     return direct;
+  }
+  if (pathname.startsWith("/transactions/")) {
+    return "Transaction Detail";
   }
   const matched = NAV_ITEMS.find((item) => item.to !== "/" && pathname.startsWith(item.to));
   return matched ? matched.label : "Workspace";

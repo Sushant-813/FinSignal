@@ -3,9 +3,9 @@
 **Project:** FinSignal — Financial Transaction Intelligence & Investigation Platform  
 **Document:** Project Roadmap  
 **Scope:** Backend + ML v1.0.0 (Completed) & Frontend Implementation Track (Phases F0–F8)
-**Status:** Backend + ML v1.0.0 Released / Phase F0 & F1 Accepted / Phase F2 Implemented & Locally Verified (Remote F2 CI & Live-Backend E2E Pending)
-**Version:** 1.3.0
-**Last Updated:** 2026-11-11
+**Status:** Backend + ML v1.0.0 Released / Phase F0 & F1 Accepted / Phases F2 & F3 Implemented & Locally Verified (Remote CI & Live-Backend E2E Pending; Formal Acceptance Pending)
+**Version:** 1.4.0
+**Last Updated:** 2026-11-12
 
 ---
 
@@ -1487,17 +1487,21 @@ F8 — Deployment, Acceptance & Frontend Release
 ## Phase F3 — Analytics, Transaction Exploration & Risk
 
 - **Objective:** Deliver the operational dashboard, transaction exploration table, and risk explainability workflows.
-- **Key Tasks:**
-  - Implement Analytics Overview page with Apache ECharts visualizations (volume trends, category spending, top merchants).
-  - Build Transaction Exploration table with server-side pagination, sorting, and multi-field filtering.
-  - Implement Transaction Detail view preserving exact decimal precision (`MoneyStr`) and UTC timestamps.
-  - Implement Risk Result panel displaying hybrid score, risk tier badge, ML vs Rule score breakdown, and structured factor list.
-  - Implement on-demand risk analysis action (`POST /transactions/{id}/risk/analyze`) with model version awareness.
-- **Exit Criteria:**
-  - Analytics and transaction queries execute cleanly against backend endpoints.
-  - Decimal values render with zero floating-point corruption.
-  - Risk factors clearly distinguish between facts, heuristics, and model-derived signals.
-- **Status:** `NOT STARTED`
+- **Completed Tasks & Implementation (2026-11-12):**
+  - Replaced landing placeholder with authenticated Dashboard Overview (`/`) integrating `GET /api/v1/analytics/overview` with KPI summary grid, volume metrics, and reporting scope bar.
+  - Implemented Financial Analytics page (`/analytics`) integrating `GET /api/v1/analytics/trends`, `GET /api/v1/analytics/categories`, and `GET /api/v1/analytics/merchants` using dynamically loaded Apache ECharts (`React.lazy`), reduced-motion fallbacks, HTML-escaped tooltips, and tabbed view switching.
+  - Implemented Transaction Explorer (`/transactions`) integrating `GET /api/v1/transactions` with server-side pagination (`page_size=50`), sorting, bidirectional amount and date filters, and URL query parameter synchronization.
+  - Implemented Transaction Detail view (`/transactions/:transactionId`) integrating `GET /api/v1/transactions/{id}` with exact two-decimal string formatting (`MoneyStr`), UTC timestamps, immutable facts card, and related entities.
+  - Implemented Hybrid Risk analysis view integrating `GET /api/v1/transactions/{id}/risk` (mapping 404 to explicit not-analyzed state) and on-demand risk scoring action (`POST /api/v1/transactions/{id}/risk/analyze`, restricted to default ACTIVE model and permitted roles).
+  - Verified with 36 Vitest test files (121 passing tests), zero OpenAPI drift, production Vite bundle with dedicated dynamic `echarts` chunk (`dist/assets/echarts-chunk-*.js`), and 7 mocked Chromium Playwright E2E tests.
+- **Exit Criteria & Verification Status:**
+  - [x] Dashboard and analytics values match backend responses with zero browser recalculation.
+  - [x] Transaction filters, sorting, and pagination strictly mirror OpenAPI specifications.
+  - [x] Unanalyzed transactions are explicitly marked as "Not Analyzed" rather than low/zero risk.
+  - [x] Hybrid risk score is explicitly marked as investigation triage prioritization, not a fraud verdict.
+  - [x] Exact string-safe decimal rendering (`MoneyStr`) prevents IEEE 754 floating-point corruption.
+  - [ ] Remote CI verification and optional live-backend E2E testing against running FastAPI + PostgreSQL pending formal Phase F3 acceptance.
+- **Status:** `IMPLEMENTED & LOCALLY VERIFIED (2026-11-12) — Remote F3 CI & Live-Backend E2E Pending; Formal Acceptance Pending`
 
 ---
 

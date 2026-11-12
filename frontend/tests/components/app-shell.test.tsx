@@ -76,7 +76,7 @@ describe("Application Shell & Layouts (F2.4)", () => {
     expect(skipLink).toHaveAttribute("href", "#main-content");
     expect(document.getElementById("main-content")).toBeInTheDocument();
 
-    const overviewLink = screen.getByRole("link", { name: "Workspace Overview" });
+    const overviewLink = screen.getByRole("link", { name: "Dashboard Overview" });
     expect(overviewLink).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("link", { name: "Transactions" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Analytics" })).toBeInTheDocument();

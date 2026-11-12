@@ -3,7 +3,7 @@
 **Document:** `FRONTEND_TESTING_STRATEGY.md`  
 **Product:** FinSignal — Financial Transaction Intelligence & Investigation Platform  
 **Version:** 1.1  
-**Status:** Reconciled with Phase F2 Test Suite & Playwright E2E Baseline (`Vitest 5.1.0`, `MSW 2.15.0`, `Playwright 1.65.0`; Local Verification Passing, Remote F2 CI & Live-Backend E2E Pending)
+**Status:** Reconciled with Phase F3 Test Suite & Playwright E2E Baseline (`Vitest 5.1.0`, `MSW 2.15.0`, `Playwright 1.65.0`; 121 Vitest tests, 7 mocked Chromium E2E passing, Remote CI & Live-Backend E2E Pending)
 **Scope:** Automated and manual testing of the React/TypeScript frontend
 
 ---
@@ -676,6 +676,35 @@ FinSignal's frontend must not merely look correct in a successful demo. It must 
 ---
 
 ## 22. Implemented Phase F2 Test Suite & Browser Verification Baseline (2026-11-11)
+
+### 22.3 Phase F3 Test Suite Inventory (`36` Files, `121/121` Passing; `7/7` Mocked Chromium E2E)
+
+Phase F3 adds 14 Vitest/MSW test files and 2 Playwright E2E spec files:
+
+- **Unit & Formatting Tests:**
+  - `tests/unit/money.test.ts`: Decimal-safe formatting, currency prefixing, negative sign handling, exact parts decomposition.
+  - `tests/unit/datetime.test.ts`: UTC date-time formatting, half-open interval boundaries, calendar limit validation (366 daily / 120 monthly buckets).
+  - `tests/unit/chart-options.test.ts`: Apache ECharts option builders, color palette conformance, reduced-motion animation disabling, tooltip HTML escaping.
+  - `tests/unit/query-keys.test.ts`: Centralized cache key serialization for analytics, transactions, and risk.
+  - `tests/unit/capabilities.test.ts`: Capability helpers for `canAnalyzeActiveRisk` and `canAnalyzeValidatedRisk` with fail-closed checks.
+- **API Client & Mutation Integration Tests:**
+  - `tests/unit/analytics-api.test.ts`: Typed client handling for overview, trends, categories, and merchants with MSW network interception.
+  - `tests/unit/transactions-api.test.ts`: Typed client handling for transaction listing, pagination, and detail queries.
+  - `tests/unit/risk-api.test.ts`: Pure query handling for `GET /transactions/{id}/risk`.
+  - `tests/unit/risk-analyze-mutation.test.tsx`: Mutation lifecycle, optimistic handling, cache invalidation, and 403 error boundaries.
+- **Component & Page Integration Tests:**
+  - `tests/components/data-display.test.tsx`: `MoneyValue`, `TimestampDisplay`, `RiskBadge`, and `Pagination` user interactions.
+  - `tests/components/dashboard-page.test.tsx`: `DashboardPage` loading, KPI rendering, reporting scope changes, error boundaries.
+  - `tests/components/analytics-panels.test.tsx`: `TrendsChartPanel`, `CategoryDistributionPanel`, and `MerchantAnalyticsPanel` rendering and tab switching.
+  - `tests/components/transactions-list-page.test.tsx`: Server pagination, URL search parameter binding, column sorting, filter submission.
+  - `tests/components/transaction-detail-page.test.tsx`: `TransactionDetailPage` facts rendering, related entities, embedded risk status.
+  - `tests/components/risk-analysis-panel.test.tsx`: Risk score display, factor list breakdown, explicit unanalyzed state, on-demand analysis action.
+- **Committed Playwright E2E Specs (`7/7` Passing in Chromium):**
+  - `tests/e2e/auth.spec.ts` (3 tests): Authentication, session preservation, token isolation.
+  - `tests/e2e/shell.spec.ts` (2 tests): Shell layout, navigation, role visibility.
+  - `tests/e2e/analytics.spec.ts` (1 test): Analytics dashboard, scope changes, tab switching, chart rendering.
+  - `tests/e2e/transactions.spec.ts` (1 test): Transaction list browsing, URL filter persistence, navigation to detail, and on-demand risk analysis.
+
 
 ### 22.1 Vitest + MSW Unit & Integration Coverage (`22` Files, `87/87` Passing)
 

@@ -388,6 +388,66 @@ Implemented Phase F2 architectural boundaries:
 
 ## 7. Feature Boundaries and Responsibilities
 
+### 6.3 Implemented Phase F3 Directory Baseline
+
+```text
+frontend/src/
+├── app/
+│   ├── layouts/
+│   │   ├── AppLayout.tsx               # Main application shell with TopBar and Sidebar
+│   │   └── AuthLayout.tsx              # Unauthenticated card container
+│   ├── router/
+│   │   ├── routes.tsx                  # Full router with /, /analytics, /transactions, /transactions/:id
+│   │   ├── ProtectedRoute.tsx          # Session authentication & authorization boundary
+│   │   └── PhasePlaceholderPage.tsx    # Honest placeholder for future phases (F4, F5)
+│   └── shell/
+│       ├── Sidebar.tsx                 # Navigation with active state & role visibility
+│       ├── TopBar.tsx                  # Header with user menu & session status
+│       └── nav-config.ts               # Primary navigation items
+├── components/
+│   ├── data-display/
+│   │   ├── MoneyValue.tsx              # Exact string-safe MoneyStr decimal rendering
+│   │   ├── TimestampDisplay.tsx        # Timezone-aware UTC timestamp presentation
+│   │   └── RiskBadge.tsx               # Categorical tier badges (LOW, MEDIUM, HIGH, CRITICAL, NOT_ANALYZED)
+│   └── ui/
+│       └── Pagination.tsx              # Server-side pagination controls (first/prev/pages/next/last)
+├── features/
+│   ├── dashboard/
+│   │   ├── pages/DashboardPage.tsx     # Operational overview landing page (/)
+│   │   ├── components/OverviewKpiGrid.tsx
+│   │   └── components/ReportingScopeBar.tsx
+│   ├── analytics/
+│   │   ├── api/analytics-api.ts        # Typed client for trends, categories, and merchants
+│   │   ├── pages/AnalyticsPage.tsx     # Multi-tab analytics hub (/analytics)
+│   │   ├── components/TrendsChartPanel.tsx
+│   │   ├── components/TrendEChart.tsx  # Dynamically imported Apache ECharts wrapper
+│   │   ├── components/CategoryDistributionPanel.tsx
+│   │   └── components/MerchantAnalyticsPanel.tsx
+│   ├── transactions/
+│   │   ├── api/transactions-api.ts    # Typed client for transaction list and detail
+│   │   ├── pages/TransactionsListPage.tsx # Explorer (/transactions) with URL param state
+│   │   ├── pages/TransactionDetailPage.tsx # Detail (/transactions/:id)
+│   │   ├── components/TransactionFiltersBar.tsx
+│   │   ├── components/TransactionTable.tsx
+│   │   ├── components/TransactionFactsCard.tsx
+│   │   └── components/TransactionRelationsCard.tsx
+│   └── risk/
+│       ├── api/risk-api.ts             # Typed client for risk retrieval and analyze action
+│       ├── components/RiskAnalysisPanel.tsx # Hybrid risk scores, breakdown, analyze trigger
+│       └── components/RiskFactorList.tsx # Structured factor explainability list
+└── lib/
+    ├── api/
+    │   └── query-keys.ts               # Centralized TanStack Query cache keys
+    ├── formatting/
+    │   ├── money.ts                    # formatMoney, formatMoneyParts
+    │   └── datetime.ts                 # formatUtcDateTime, formatUtcDate, toUtcIsoString
+    └── permissions/
+        └── capabilities.ts             # canAnalyzeActiveRisk, canAnalyzeValidatedRisk
+
+```
+
+---
+
 ### 7.1 Authentication (`features/auth`)
 
 Owns:

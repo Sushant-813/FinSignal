@@ -40,6 +40,7 @@ export {
 } from "./Dialog.tsx";
 export { EmptyState, type EmptyStateProps, type EmptyStateVariant } from "./EmptyState.tsx";
 export { Input, type InputProps } from "./Input.tsx";
+export { Pagination, type PaginationProps } from "./Pagination.tsx";
 export { Select, type SelectOption, type SelectProps } from "./Select.tsx";
 export {
   Skeleton,

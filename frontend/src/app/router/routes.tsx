@@ -1,5 +1,9 @@
 import { createBrowserRouter, type RouteObject } from "react-router";
+import { AnalyticsPage } from "../../features/analytics/pages/AnalyticsPage.tsx";
 import { LoginPage } from "../../features/auth/pages/LoginPage.tsx";
+import { DashboardPage } from "../../features/dashboard/pages/DashboardPage.tsx";
+import { TransactionDetailPage } from "../../features/transactions/pages/TransactionDetailPage.tsx";
+import { TransactionsListPage } from "../../features/transactions/pages/TransactionsListPage.tsx";
 import { NotFoundPage } from "../errors/NotFoundPage.tsx";
 import { ErrorFallbackView } from "../errors/RootErrorBoundary.tsx";
 import { AppLayout } from "../layouts/AppLayout.tsx";
@@ -7,7 +11,6 @@ import { AuthLayout } from "../layouts/AuthLayout.tsx";
 import { PhasePlaceholderPage } from "./PhasePlaceholderPage.tsx";
 import { ProtectedRoute } from "./ProtectedRoute.tsx";
 import { PublicOnlyRoute } from "./PublicOnlyRoute.tsx";
-import { WorkspaceHomePage } from "./WorkspaceHomePage.tsx";
 
 export const appRoutes: RouteObject[] = [
   {
@@ -34,27 +37,19 @@ export const appRoutes: RouteObject[] = [
         children: [
           {
             path: "/",
-            element: <WorkspaceHomePage />,
+            element: <DashboardPage />,
           },
           {
             path: "/transactions",
-            element: (
-              <PhasePlaceholderPage
-                title="Transactions"
-                phaseLabel="Phase F3"
-                description="Filterable transaction ledger, detail drawer, and risk scoring integration are scheduled for Phase F3."
-              />
-            ),
+            element: <TransactionsListPage />,
+          },
+          {
+            path: "/transactions/:transactionId",
+            element: <TransactionDetailPage />,
           },
           {
             path: "/analytics",
-            element: (
-              <PhasePlaceholderPage
-                title="Analytics"
-                phaseLabel="Phase F3"
-                description="Backend-authoritative spend trends, category distributions, and merchant rankings are scheduled for Phase F3."
-              />
-            ),
+            element: <AnalyticsPage />,
           },
           {
             path: "/investigations",

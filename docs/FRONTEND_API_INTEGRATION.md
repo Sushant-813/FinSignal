@@ -322,6 +322,18 @@ Keep monetary strings intact at the API boundary. Do not use JavaScript floating
 The tables below summarize routes documented in `API_GUIDELINES.md`. They are an integration inventory, not proof of current runtime availability.
 
 ### 7.1 Authentication
+### 7.1.1 Authentication & Development User Creation
+
+- `POST /api/v1/auth/login`: Form-encoded login returning Bearer access token. Protected by sliding-window rate limiter (5 failed attempts per 60s).
+- `GET /api/v1/auth/me`: Current authenticated user context and role.
+- `POST /api/v1/auth/logout`: Server endpoint available; frontend performs clean in-memory token clearing and query cache invalidation.
+- `POST /api/v1/auth/register`: Publicly accessible user registration endpoint.
+  - Payload: `{ email: string, password: string (12..128 chars), full_name?: string }`.
+  - Behavior: Creates an active user with role `ANALYST`.
+  - Architecture note: In local development, where the database starts empty without pre-seeded credentials, developers should create an initial analyst account via this endpoint.
+  - Security finding: Public registration currently lacks rate-limiting and administrative invitation controls. For MVP local development, this provides supported user creation; for production hardening, it should be restricted by feature flags or administrative invitations.
+  - Role note: `ADMIN` and `INVESTIGATOR` users cannot be created via `POST /auth/register` and must be provisioned via backend repository scripts.
+
 
 | Method | Path | Frontend use |
 |---|---|---|
@@ -334,11 +346,11 @@ The tables below summarize routes documented in `API_GUIDELINES.md`. They are an
 
 > [!NOTE]
 > **Endpoint Implementation Status:**
-> - `GET /transactions`: **IMPLEMENTED** (Phase F0, ADR-077).
-> - `GET /transactions/{transaction_id}`: **IMPLEMENTED** (Phase F0, ADR-077).
+> - `GET /transactions`: **IMPLEMENTED & INTEGRATED** (Phase F3 frontend).
+> - `GET /transactions/{transaction_id}`: **IMPLEMENTED & INTEGRATED** (Phase F3 frontend).
 > - `POST /transactions`: Unimplemented / Deferred (Creation occurs via dataset CSV ingestion; individual transaction creation is not an MVP workflow).
-> - `GET /transactions/{transaction_id}/risk`: **IMPLEMENTED** (Phase 8).
-> - `POST /transactions/{transaction_id}/risk/analyze`: **IMPLEMENTED** (Phase 8).
+> - `GET /transactions/{transaction_id}/risk`: **IMPLEMENTED & INTEGRATED** (Phase F3 frontend).
+> - `POST /transactions/{transaction_id}/risk/analyze`: **IMPLEMENTED & INTEGRATED** (Phase F3 frontend; default ACTIVE model).
 
 | Method | Path | Frontend use | Documented access / behavior |
 |---|---|---|---|

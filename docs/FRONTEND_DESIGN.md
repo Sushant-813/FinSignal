@@ -991,7 +991,7 @@ Prefer a small set of reusable primitives:
 - `Dialog` *(Implemented F1 — Radix Dialog portal, backdrop overlay, focus trap, Escape/close restoration; Drawer deferred to F2+)*
 - `Alert` *(Implemented F1 — `status` default, opt-in `alert`/`region`, `requestId`, escaped React children; `F1-AUD-009` attribute passthrough deferred)*
 - `Tooltip` *(Deferred to F2+)*
-- `Pagination` *(Deferred to F3)*
+- `Pagination` *(Implemented F3 — accessible server pagination component with first/prev/page/next/last controls)*
 - `Skeleton` / `TableSkeleton` *(Implemented F1)*
 - `EmptyState` *(Implemented F1 — `"empty"` vs `"no-results"` variants)*
 - `Page header` / `Filter bar` *(Deferred to F2/F3)*

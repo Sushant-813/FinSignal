@@ -43,11 +43,27 @@ FinSignal is built as a clean modular monolith adhering to strict domain separat
 | **Frontend Planning** | Specifications & Architecture Audit | 8 frontend specifications completed and audited (`docs/FRONTEND_*.md`), design system established per `FRONTEND_DESIGN.md`, master roadmap integrated (Phases F0–F8) | **Completed** |
 | **Frontend F0–F1** | Readiness, Foundation & Design System | F0 OpenAPI types (`check:types-drift`), Tailwind v4 tokens, 10 UI primitives, Vitest + MSW + Chrome checks, CI run `43036181121` passed, `ADR-074`–`ADR-080` accepted | **Accepted** |
 | **Frontend F2** | Auth, Session & Application Shell | Hardened API client (`F1-AUD-005`), in-memory JWT (`ADR-075`), `AuthProvider`, protected routing, capability matrix, light-first shell, RHF + Zod 4 Login, `87/87` Vitest + `5/5` mocked Playwright E2E (`F1-AUD-006`) | **Implemented & Locally Verified (Remote F2 CI & Live E2E Pending)** |
+| **Frontend F3** | Analytics, Transaction Exploration & Risk | Overview Dashboard (`/`), Financial Analytics (`/analytics`), Transaction Explorer (`/transactions`), Detail (`/transactions/:id`), Hybrid Risk scoring & on-demand analyze action (ACTIVE model), Apache ECharts dynamic chunking, string-safe `MoneyStr`, `121/121` Vitest + `7/7` mocked Playwright E2E | **Implemented & Locally Verified (Remote F3 CI & Live E2E Pending)** |
 
 ### Upcoming Phases
 
 - **Phase 13 — Containerization & Production Deployment:** Production Dockerfile, Docker Compose multi-container configuration, cloud deployment procedures, and production orchestration (ADR-073).
-- **Frontend Track (Phases F3–F8):** Following formal acceptance of Phase F2 (remote F2 CI and optional live-backend E2E verification), Phase F3 implements analytics visualizations, transaction exploration tables, and risk scoring views.
+- **Frontend Track (Phases F4–F8):** Following formal acceptance of Phases F2 and F3 (remote CI and optional live-backend E2E verification), Phase F4 implements dataset CSV upload, ingestion monitoring, and error recovery views.
+
+---
+
+## Local Development User Authentication
+
+When running the platform locally (backend on `http://127.0.0.1:8000`, frontend on `http://localhost:5173`):
+- The local database does not ship with pre-seeded users.
+- To create a development user for testing, register an `ANALYST` user via `POST /api/v1/auth/register` (password minimum 12 characters):
+  ```bash
+  curl -X POST http://127.0.0.1:8000/api/v1/auth/register \
+    -H "Content-Type: application/json" \
+    -d '{"email":"analyst@example.com","password":"ValidPassword123!","full_name":"Local Analyst"}'
+  ```
+- To create an `ADMIN` or `INVESTIGATOR` user, use direct backend Python instantiation (`UserRepository.create`) because public registration defaults to `ANALYST`.
+- Once created, log in at `http://localhost:5173/login`.
 
 ---
 

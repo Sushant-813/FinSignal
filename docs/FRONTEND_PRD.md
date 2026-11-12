@@ -935,6 +935,7 @@ pass against a real or contract-faithful backend environment.
 -   Namespace, currency, date range, and timezone context are visible
     where applicable.
 -   The browser does not compute replacement totals or risk values.
+-   Account-level analytics (`/analytics/accounts/{account_id}` and `/unusual-spending`) are excluded from MVP Phase F3 and deferred to a dedicated account intelligence phase.
 
 ### AC-005 --- Risk analysis
 

@@ -84,7 +84,7 @@ Per `frontend/package.json`, `frontend/package-lock.json`, and `frontend/.nvmrc`
 | Server state | `@tanstack/react-query` | `^5.76.1` | `5.107.1` | **Installed & Provider Wired (`QueryProvider`; F2 cancel/clear on session end)** |
 | Forms & validation | `react-hook-form`, `@hookform/resolvers`, `zod` | `^7.56.4`, `^5.0.1`, `^4.6.7` | `7.91.0`, `5.9.2`, `4.6.7` | **Installed & Active (`ADR-078`; F2 Login form active)** |
 | UI primitives & icons | `@radix-ui/react-dialog`, `react-select`, `react-slot`, `lucide-react` | `^1.1.14`, `^2.2.5`, `^1.2.3`, `^0.511.0` | `1.3.1`, `2.4.1`, `1.5.0`, `0.511.0` | **Installed & Active** |
-| Charts | Apache ECharts | — *(not yet in `package.json`)* | Not installed | **Approved (`ADR-074`), Deferred to Phase F3** |
+| Charts | Apache ECharts | `^5.6.0` (modular bundle) | Installed | **Implemented (Phase F3)** — Dynamic lazy import via `React.lazy` (`echarts-chunk`), reduced-motion support |
 | Global client store | Zustand / Redux | — | Rejected / Not installed | **Excluded (`ADR-074`)** |
 | HTTP transport | Native `fetch` (`src/lib/api/client.ts`) | Built-in browser/Node | Built-in | **Implemented & Hardened (F2.1 / `F1-AUD-005` resolved)** |
 | API contract types | `openapi-typescript` | `^7.8.0` | `7.13.0` | **Installed & Active (`ADR-076`)** |
@@ -506,13 +506,16 @@ Frontend requirements:
 
 ## 12. Charts and Data Visualization
 
-Apache ECharts is the charting library named by the main TRD.
+Apache ECharts is the charting library named by the main TRD, implemented in Phase F3.
 
-Requirements:
+Requirements & Implemented Architecture:
 
-- Use ECharts for analytical visualizations that materially improve understanding.
-- Prefer clear time-series, category, and comparison charts over decorative visualizations.
-- Use backend-computed series and aggregates.
+- **Modular & Dynamic Bundling:** ECharts is dynamically imported via `React.lazy` in `TrendEChart.tsx` to isolate charting code into a dedicated Vite chunk (`dist/assets/echarts-chunk-*.js`), preventing bundle bloat on non-charting routes.
+- **Enterprise Visual Styling:** Restrained enterprise color palette adhering to `FRONTEND_DESIGN.md` design tokens.
+- **XSS-Safe HTML Tooltips:** Custom tooltip formatters explicitly escape user-controlled categories, merchant names, and values before rendering HTML strings.
+- **Accessibility & Reduced Motion:** Respects `prefers-reduced-motion` media query by disabling chart animations dynamically. Accessible tabular and text alternatives accompany all visualizations.
+- **Lifecycle & Cleanup:** Cleanly handles container resizing via `ResizeObserver` and calls `dispose()` on component unmount to eliminate memory leaks.
+- **Monetary & Temporal Integrity:** Renders string-safe `MoneyStr` and UTC timestamps without floating-point conversion.
 - Do not derive financial totals from the currently loaded transaction page.
 - Include axis labels, units, currency, selected time range, and timezone context.
 - Provide accessible text summaries or equivalent tabular views.

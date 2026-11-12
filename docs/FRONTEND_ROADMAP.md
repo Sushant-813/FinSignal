@@ -3,7 +3,7 @@
 **Document:** `FRONTEND_ROADMAP.md`  
 **Product:** FinSignal — Financial Transaction Intelligence & Investigation Platform  
 **Version:** 1.2  
-**Status:** Phase F0 & F1 Accepted; Phase F2 Implemented & Locally Verified (Remote F2 CI & Live-Backend E2E Pending; Formal Acceptance Pending)
+**Status:** Phase F0 & F1 Accepted; Phases F2 & F3 Implemented & Locally Verified (Remote CI & Live-Backend E2E Pending; Formal Acceptance Pending)
 **Scope:** Frontend planning and implementation following Backend + ML v1.0.0
 
 ---
@@ -275,39 +275,69 @@ Deliver a secure sign-in experience and the common application frame.
 
 ## 9. F3 — Analytics, Transaction Exploration & Risk
 
+> [!IMPORTANT]
+> **Phase Status: IMPLEMENTED & LOCALLY VERIFIED (2026-11-12)** — Phase F3 milestones are implemented and verified locally (`121/121` Vitest tests across `36` files; `7/7` mocked Playwright Chromium E2E tests against fresh production `vite preview`; `format:check`, `lint`, `typecheck`, `build`, `check:types-drift`, `npm audit --omit=dev` = `0` vulns). **Formal Phase F3 acceptance remains pending:** remote GitHub Actions CI execution and live-backend E2E testing (`E2E_API_MODE=live`) against running FastAPI + PostgreSQL backend remain pending.
+
 ### Objective
 
-Give users the core read-only financial intelligence experience.
+Deliver the operational dashboard overview, financial analytics visualizations, transaction exploration table, transaction detail, and hybrid risk scoring with on-demand evaluation.
 
-### Key tasks
+### Implemented Subphases & Key Tasks (Completed 2026-11-12)
 
-- Implement analytics API modules and query keys.
-- Build dashboard overview using backend analytics responses.
-- Build trends, category, and merchant visualizations supported by verified contracts.
-- Implement namespace, currency, date-range, and timezone context.
-- Build transaction list with server pagination, sorting, and supported filters.
-- Build transaction detail view.
-- Implement risk result retrieval.
-- Implement authorized on-demand risk analysis for supported model lifecycle states.
-- Display risk factors and model metadata returned by the API.
-- Handle no-risk-result, stale, loading, and failure states.
-- Preserve decimal strings and timestamp semantics.
+- [x] **F3.1 Foundation & Shared Utilities:**
+  - Implemented string-safe decimal formatters (`formatMoney`, `formatMoneyParts`) and `MoneyValue` component (`frontend/src/components/data-display/MoneyValue.tsx`) guaranteeing zero IEEE 754 precision loss.
+  - Implemented timezone-aware datetime utilities (`formatUtcDateTime`, `formatUtcDate`, `toUtcIsoString`) and `TimestampDisplay` component with native title tooltip.
+  - Implemented shared domain-agnostic `Pagination` component (`frontend/src/components/ui/Pagination.tsx`) supporting page selection, bounds checking, and accessible ARIA attributes.
+  - Centralized TanStack Query keys (`frontend/src/lib/api/query-keys.ts`) for `analytics`, `transactions`, and `risk`.
+- [x] **F3.2 Dashboard Overview (`/`):**
+  - Replaced temporary landing placeholder with `DashboardPage` integrating `GET /api/v1/analytics/overview`.
+  - Implemented `OverviewKpiGrid` rendering total transaction count, debit/credit transaction breakdown, total debit/credit volumes, and continuous median debit/credit amounts.
+  - Implemented `ReportingScopeBar` providing client-side namespace filtering (default `"SYNTHETIC"`), currency indicator, and date range scoping (`[from_time, to_time)`).
+- [x] **F3.3 Financial Analytics (`/analytics`):**
+  - Implemented `AnalyticsPage` with tabbed view navigation (Volume Trends, Category Spending, Top Merchants).
+  - Integrated `GET /api/v1/analytics/trends`, `GET /api/v1/analytics/categories`, and `GET /api/v1/analytics/merchants`.
+  - Built `TrendsChartPanel` with dynamic `React.lazy` Apache ECharts import, rendering dual-axis debit/credit bar and line charts.
+  - Built `CategoryDistributionPanel` with pie chart visualization and accessible tabular distribution breakdown.
+  - Built `MerchantAnalyticsPanel` displaying top merchants ranked by debit volume or frequency with dual percentage calculations (percentage of total debit volume and percentage of merchant spend).
+  - Enforced enterprise chart guidelines: restrained palette, HTML-escaped tooltip formatters, and `prefers-reduced-motion` handling.
+- [x] **F3.4 Transaction Exploration (`/transactions`):**
+  - Implemented `TransactionsListPage` with server-side pagination (`page_size=50`), column sorting (`occurred_at`, `amount`), and multi-field filtering.
+  - Built `TransactionFiltersBar` supporting namespace, amount ranges (`min_amount`, `max_amount`), risk levels (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL`), and time window bounds.
+  - Synchronized filter and pagination state exclusively with URL search parameters (`useSearchParams`) following ADR-074.
+- [x] **F3.5 Transaction Detail (`/transactions/:transactionId`):**
+  - Implemented `TransactionDetailPage` consuming `GET /api/v1/transactions/{id}`.
+  - Built `TransactionFactsCard` rendering immutable transaction facts (exact `MoneyStr` amounts, UTC timestamps, account external references, execution metadata).
+  - Built `TransactionRelationsCard` displaying counterparty account and contextual references.
+- [x] **F3.6 Risk Scoring & Explainability:**
+  - Implemented `RiskAnalysisPanel` consuming `GET /api/v1/transactions/{id}/risk`.
+  - Distinctly mapped HTTP 404 responses to an explicit `"not_analyzed"` state, ensuring unanalyzed transactions are never presented as low or zero risk.
+  - Rendered hybrid risk score ([0.00, 100.00]), categorical risk badges (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL`), ML vs Rule score breakdown, and structured `RiskFactorList`.
+  - Implemented on-demand risk analysis action (`POST /api/v1/transactions/{id}/risk/analyze`) using default `ACTIVE` model, protected by fail-closed `canAnalyzeActiveRisk` capability gate.
+- [x] **F3.7 Testing & Verification:**
+  - Added unit, component, and MSW integration test suites across all new modules (`36` test files, `121/121` passing).
+  - Added dedicated Playwright Chromium E2E specs (`tests/e2e/analytics.spec.ts`, `tests/e2e/transactions.spec.ts`, `7/7` passing against fresh production build).
 
 ### Deliverables
 
-- Dashboard / analytics overview.
-- Analytics views supported by the API.
-- Transaction list and detail.
-- Risk result panel and authorized analysis action.
+- Dashboard Overview (`frontend/src/features/dashboard/`).
+- Financial Analytics with dynamically loaded ECharts (`frontend/src/features/analytics/`).
+- Transaction Exploration & Filtering (`frontend/src/features/transactions/pages/TransactionsListPage.tsx`).
+- Transaction Detail & Facts Card (`frontend/src/features/transactions/pages/TransactionDetailPage.tsx`).
+- Risk Scoring, Factor List & On-Demand Analysis Action (`frontend/src/features/risk/`).
+- Shared `Pagination`, `MoneyValue`, `TimestampDisplay`, and `RiskBadge` components.
+- Centralized query keys (`src/lib/api/query-keys.ts`).
 
-### Exit criteria
+### Exit Criteria & Verification Status
 
-- Dashboard values match backend responses.
-- Transaction filters, sort, and pagination match the API contract.
-- Missing risk analysis is not displayed as low risk or zero risk.
-- Risk score is not presented as a final fraud verdict.
-- No authoritative financial aggregate or risk calculation is performed in the browser.
-- Core analytics and transaction tests pass.
+- [x] Dashboard and analytics values match backend responses with zero browser recalculation.
+- [x] Transaction filters, sort, and pagination strictly adhere to OpenAPI contract.
+- [x] Missing risk analysis is distinctly rendered as "Not Analyzed", never as low risk or zero risk.
+- [x] Hybrid risk score is clearly presented as an investigation prioritization signal, not a fraud verdict.
+- [x] Exact string-safe decimal rendering (`MoneyStr`) prevents floating-point corruption.
+- [x] Core analytics, transaction, and risk tests pass (`121/121` Vitest + `7/7` mocked Playwright E2E).
+- [ ] Remote CI execution for Phase F3 commits completed.
+- [ ] Live-backend E2E verification (`E2E_API_MODE=live`) executed against running FastAPI + PostgreSQL backend.
+- [ ] Formal Phase F3 owner acceptance granted.
 
 ---
 

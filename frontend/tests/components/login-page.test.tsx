@@ -9,6 +9,7 @@ import { apiRequest } from "../../src/lib/api/client.ts";
 import { getAccessToken, setAccessToken } from "../../src/lib/auth/token-store.ts";
 import { apiErrorFixtures } from "../fixtures/api-errors.ts";
 import { buildAuthUser, createAuthHandlers } from "../fixtures/auth.ts";
+import { buildOverviewFixture, buildTransactionListFixture } from "../fixtures/f3-data.ts";
 import { server } from "../mocks/server.ts";
 
 function renderAppAt(initialEntry: string) {
@@ -55,7 +56,10 @@ describe("LoginPage (F2.5)", () => {
   it("allows short valid passwords matching LoginRequest (min 1) and redirects to sanitized target", async () => {
     const user = userEvent.setup();
     const analyst = buildAuthUser("ANALYST");
-    server.use(...createAuthHandlers(analyst, { accessToken: "login-jwt" }));
+    server.use(
+      ...createAuthHandlers(analyst, { accessToken: "login-jwt" }),
+      http.get("/api/v1/transactions", () => HttpResponse.json(buildTransactionListFixture([])))
+    );
 
     renderAppAt("/login?redirect=%2Ftransactions%3Fpage%3D2");
 
@@ -69,9 +73,12 @@ describe("LoginPage (F2.5)", () => {
     expect(getAccessToken()).toBe("login-jwt");
   });
 
-  it("neutralizes unsafe external ?redirect= targets back to Workspace Overview", async () => {
+  it("neutralizes unsafe external ?redirect= targets back to Dashboard Overview", async () => {
     const user = userEvent.setup();
-    server.use(...createAuthHandlers(buildAuthUser("ADMIN")));
+    server.use(
+      ...createAuthHandlers(buildAuthUser("ADMIN")),
+      http.get("/api/v1/analytics/overview", () => HttpResponse.json(buildOverviewFixture()))
+    );
 
     renderAppAt("/login?redirect=https%3A%2F%2Fevil.example%2Fsteal");
 
@@ -80,7 +87,7 @@ describe("LoginPage (F2.5)", () => {
     await user.click(screen.getByRole("button", { name: "Sign in" }));
 
     await waitFor(() => {
-      expect(screen.getByRole("heading", { name: "Workspace Overview" })).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Dashboard Overview" })).toBeInTheDocument();
     });
   });
 
@@ -100,7 +107,8 @@ describe("LoginPage (F2.5)", () => {
           expires_in: 1800,
         });
       }),
-      http.get("/api/v1/auth/me", () => HttpResponse.json(buildAuthUser("ANALYST")))
+      http.get("/api/v1/auth/me", () => HttpResponse.json(buildAuthUser("ANALYST"))),
+      http.get("/api/v1/analytics/overview", () => HttpResponse.json(buildOverviewFixture()))
     );
 
     renderAppAt("/login");
@@ -118,7 +126,7 @@ describe("LoginPage (F2.5)", () => {
 
     releaseLogin();
     await waitFor(() => {
-      expect(screen.getByRole("heading", { name: "Workspace Overview" })).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Dashboard Overview" })).toBeInTheDocument();
     });
   });
 
@@ -177,13 +185,14 @@ describe("LoginPage (F2.5)", () => {
     setAccessToken("expired-jwt");
     server.use(
       http.get("/api/v1/auth/me", () => HttpResponse.json(buildAuthUser("ANALYST"))),
+      http.get("/api/v1/analytics/overview", () => HttpResponse.json(buildOverviewFixture())),
       http.get("/api/v1/sample-ping", () => apiErrorFixtures.unauthorized())
     );
 
     renderAppAt("/");
 
     await waitFor(() => {
-      expect(screen.getByRole("heading", { name: "Workspace Overview" })).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Dashboard Overview" })).toBeInTheDocument();
     });
 
     await act(async () => {

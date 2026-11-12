@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { isUserRole, type AuthUser } from "../../src/features/auth/types/auth.types.ts";
 import {
   canAccessWorkspace,
+  canAnalyzeActiveRisk,
+  canAnalyzeValidatedRisk,
   canManageDatasets,
   canViewAnalytics,
   canViewDatasetImports,
@@ -40,6 +42,13 @@ describe("F2 centralized role capabilities (fail-closed)", () => {
     expect(canManageDatasets(admin)).toBe(true);
     expect(canManageDatasets(analyst)).toBe(true);
     expect(canManageDatasets(investigator)).toBe(false);
+
+    for (const user of [admin, analyst, investigator]) {
+      expect(canAnalyzeActiveRisk(user)).toBe(true);
+    }
+    expect(canAnalyzeValidatedRisk(admin)).toBe(true);
+    expect(canAnalyzeValidatedRisk(analyst)).toBe(false);
+    expect(canAnalyzeValidatedRisk(investigator)).toBe(false);
   });
 
   it("fails closed when user is null, inactive, or carries an unapproved role string", () => {
@@ -56,6 +65,8 @@ describe("F2 centralized role capabilities (fail-closed)", () => {
       expect(canViewInvestigations(candidate)).toBe(false);
       expect(canViewDatasetImports(candidate)).toBe(false);
       expect(canManageDatasets(candidate)).toBe(false);
+      expect(canAnalyzeActiveRisk(candidate)).toBe(false);
+      expect(canAnalyzeValidatedRisk(candidate)).toBe(false);
       expect(getDefaultAuthenticatedRoute(candidate)).toBe("/login");
     }
   });

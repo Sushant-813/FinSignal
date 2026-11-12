@@ -547,7 +547,18 @@ Before implementation, verify the following against backend code and runtime con
 
 Do not infer implementation from a recommendation in a design document. If runtime behavior conflicts with documentation, stop and reconcile it.
 
-## 18. Security Definition of Done
+## 18. Phase F3 Security Controls & Reconciled Audit Baseline (2026-11-12)
+
+- [x] **Fail-Closed Risk Analysis Capabilities:** `canAnalyzeActiveRisk` permits `ADMIN`, `ANALYST`, and `INVESTIGATOR` for active models, while `canAnalyzeValidatedRisk` restricts evaluation of validated models exclusively to `ADMIN`. Unauthenticated or unrecognized roles evaluate to false.
+- [x] **Zero Frontend Financial Calculation:** All sums, counts, continuous medians, trends, and risk scores are computed authoritatively by the FastAPI/PostgreSQL backend. The browser exclusively formats and displays returned values.
+- [x] **Monetary Value Precision:** All amounts are parsed and formatted as strict strings (`MoneyStr`), eliminating IEEE 754 floating-point inaccuracies or client-side tampering.
+- [x] **XSS Defense in Data Visualizations:** Apache ECharts tooltip formatters strictly escape all merchant names, category names, and currency codes before inserting them into HTML string templates.
+- [x] **Public Registration Audit Finding:** `POST /api/v1/auth/register` is publicly open and provisions active `ANALYST` accounts without rate limiting or invite codes. While useful for local development, production hardening requires rate limiting and feature flagging.
+- [x] **In-Memory JWT Integrity:** Access tokens remain strictly isolated in memory (`token-store.ts`); no browser storage (`localStorage`, `sessionStorage`, cookies) is touched during any F3 analytics or transaction flow.
+
+---
+
+## 19. Security Definition of Done
 
 The frontend security baseline is acceptable for MVP review when:
 
@@ -567,7 +578,7 @@ The frontend security baseline is acceptable for MVP review when:
 - [x] Authenticated caches are cleared on session end (`void queryClient.cancelQueries()` + synchronous `queryClient.clear()`).
 - [x] F2 security unit/integration/mocked-E2E tests pass and unresolved risks/verification items are documented (remote F2 CI & live-backend E2E pending).
 
-## 19. Final Security Principle
+## 20. Final Security Principle
 
 FinSignal handles financial transactions, risk intelligence, evidence, and human investigation outcomes. The frontend is a presentation and workflow client—not a trusted authority.
 

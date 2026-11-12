@@ -43,6 +43,16 @@ export function canManageDatasets(user: AuthUser | null | undefined): boolean {
   return hasActiveRole(user, ["ADMIN", "ANALYST"]);
 }
 
+/** On-demand transaction risk scoring using the default ACTIVE model (`POST /api/v1/transactions/{id}/risk/analyze`). */
+export function canAnalyzeActiveRisk(user: AuthUser | null | undefined): boolean {
+  return hasActiveRole(user, ["ADMIN", "ANALYST", "INVESTIGATOR"]);
+}
+
+/** Explicit VALIDATED model risk analysis capability (Admin only). */
+export function canAnalyzeValidatedRisk(user: AuthUser | null | undefined): boolean {
+  return hasActiveRole(user, ["ADMIN"]);
+}
+
 export function getDefaultAuthenticatedRoute(user: AuthUser | null | undefined): string {
   return canAccessWorkspace(user) ? "/" : "/login";
 }
