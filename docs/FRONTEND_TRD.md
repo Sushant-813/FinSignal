@@ -325,6 +325,22 @@ Requirements:
 - Do not retry non-idempotent mutations automatically unless the API provides an explicit idempotency contract.
 - Retry safe read requests only under a bounded policy; do not retry authorization, validation, or conflict failures blindly.
 
+#### 8.1.1 Dataset Import Polling Lifecycle & In-Memory Cutoff
+
+For active dataset ingestion monitoring, TanStack Query refetch intervals are bounded by an in-memory session tracker:
+
+| Property | Behavior |
+|---|---|
+| Active statuses | `PENDING`, `PROCESSING` |
+| Polling interval | 5 seconds (5,000 ms) via query `refetchInterval` |
+| Polling cutoff | 300,000 ms (5 minutes) per individual import ID |
+| Tracking mechanism | In-memory `Map<string, number>` keyed by import ID |
+| Terminal states | `COMPLETED`, `FAILED` (cleanly removed from tracker; polling disabled) |
+| After cutoff | Automatic polling stops; last-known status preserved; manual refresh available |
+| Browser reload | In-memory tracker resets; fresh 5-minute monitoring window begins |
+
+The cutoff safeguard operates independently per import ID. When the query response contains items whose tracking duration exceeds 300,000 ms, `shouldPollImport` evaluates to `false`, disabling automatic background polling. This prevents runaway network traffic if an import remains stuck in backend processing while leaving manual on-demand refetching available.
+
 ### 8.2 Client/UI state
 
 Use component state for local interactions. Use React Context for small cross-cutting state such as theme or application shell state where appropriate.
@@ -537,11 +553,22 @@ If React Hook Form and Zod are approved:
 
 For dataset upload:
 
-- Enforce the documented 50 MB client-side file-size limit for immediate feedback.
-- Check `.csv` extension as a convenience only; backend validation is authoritative.
+- Submit to `POST /api/v1/datasets/imports` using browser native `multipart/form-data`.
+- Enforce the documented 50 MB (`52,428,800` bytes) client-side file-size limit for immediate feedback.
+- Check `.csv` extension as a preflight convenience only; backend validation is authoritative.
 - Submit `multipart/form-data` correctly; do not manually set a multipart boundary header.
 - Display import ID, status, row counts, duplicate status, and available validation errors.
 - Support the documented UTF-8 and UTF-8 BOM behavior without trying to re-encode the uploaded file in the browser.
+- Distinguish duplicate completed uploads (`200 OK`, `is_duplicate: true`) from fresh ingestion runs (`201 Created`, `is_duplicate: false`).
+- Handle in-progress conflicts (`409 Conflict`, `IMPORT_IN_PROGRESS`) without repeated submission.
+
+**HTTP 422 Cache Invalidation Policy:**
+- A `422 Unprocessable Entity` response does not automatically invalidate the dataset import history.
+- Some 422 validation errors occur during pre-insertion schema or header validation before any database record is created; other 422 errors occur during ingestion processing after a `FAILED` import record has been persisted.
+- The mutation layer invalidates `datasetImportKeys.lists()` upon a 422 error *only* if a persisted `import_id` (or `persisted_import_id`) is explicitly returned in `error.details`.
+- If no persisted import ID is present, automatic history invalidation is bypassed to avoid unnecessary refetching.
+- The UI exposes a manual history refresh control when automatic persistence cannot be verified.
+- Failed or invalid uploads must never unnecessarily invalidate transaction or financial analytics query caches.
 
 ## 14. Error Handling and Observability
 

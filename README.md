@@ -44,6 +44,7 @@ FinSignal is built as a clean modular monolith adhering to strict domain separat
 | **Frontend F0–F1** | Readiness, Foundation & Design System | F0 OpenAPI types (`check:types-drift`), Tailwind v4 tokens, 10 UI primitives, Vitest + MSW + Chrome checks, CI run `43036181121` passed, `ADR-074`–`ADR-080` accepted | **Accepted** |
 | **Frontend F2** | Auth, Session & Application Shell | Hardened API client (`F1-AUD-005`), in-memory JWT (`ADR-075`), `AuthProvider`, protected routing, capability matrix, light-first shell, RHF + Zod 4 Login, `87/87` Vitest + `5/5` mocked Playwright E2E (`F1-AUD-006`) | **Implemented & Locally Verified (Remote F2 CI & Live E2E Pending)** |
 | **Frontend F3** | Analytics, Transaction Exploration & Risk | Overview Dashboard (`/`), Financial Analytics (`/analytics`), Transaction Explorer (`/transactions`), Detail (`/transactions/:id`), Hybrid Risk scoring & on-demand analyze action (ACTIVE model), Apache ECharts dynamic chunking, string-safe `MoneyStr`, `121/121` Vitest + `7/7` mocked Playwright E2E | **Implemented & Locally Verified (Remote F3 CI & Live E2E Pending)** |
+| **Frontend F4** | Dataset Import & Processing Visibility | Dataset Ledger (`/datasets`), 50 MB CSV upload with client preflight, 5m polling cutoff safeguard, Import Detail (`/datasets/imports/:id`), quarantined error logs, recovery dialog (`FAILED` only), `150/150` Vitest + `9/9` mocked Playwright E2E | **Implemented & Locally Verified (Remote F4 CI & Live E2E Pending)** |
 
 ### Upcoming Phases
 

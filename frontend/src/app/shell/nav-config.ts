@@ -77,6 +77,9 @@ export function getRouteBreadcrumbLabel(pathname: string): string {
   if (pathname.startsWith("/transactions/")) {
     return "Transaction Detail";
   }
+  if (pathname.startsWith("/datasets/imports/")) {
+    return "Dataset Import Details";
+  }
   const matched = NAV_ITEMS.find((item) => item.to !== "/" && pathname.startsWith(item.to));
   return matched ? matched.label : "Workspace";
 }

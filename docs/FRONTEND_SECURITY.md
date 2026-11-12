@@ -407,16 +407,17 @@ The frontend must preserve the backend's meaning and provenance.
 
 Dataset import is a sensitive operation.
 
-- Use the documented multipart field names and backend contract.
-- Enforce the documented 50 MB client-side limit for user feedback; backend validation remains authoritative.
+- Use the documented multipart field names and backend contract (`POST /api/v1/datasets/imports`).
+- Enforce the documented 50 MB (`52,428,800` bytes) client-side limit for user feedback; backend validation remains authoritative.
 - Do not trust filename extensions or browser-provided MIME type as proof of file contents.
 - Do not parse or execute uploaded file content in the browser.
+- **Zero Web Storage Persistence:** Uploaded CSV file contents, raw byte arrays, and raw quarantine error dumps must **never** be persisted in `localStorage`, `sessionStorage`, or `IndexedDB`. File payloads are handled transiently in JavaScript heap memory and transferred directly as binary via browser `FormData`.
 - Do not render raw CSV cells as HTML.
-- Display backend validation errors as escaped text.
+- Display backend validation errors as escaped text; React's JSX string interpolation ensures safe DOM text-node escaping.
 - Do not expose internal file paths or storage locations.
 - Do not retry a potentially completed import blindly after a timeout; retrieve import state first.
 - Recovery must use the original file and the backend's documented hash verification.
-- Restrict upload/recovery controls by role for usability, while relying on backend authorization.
+- Restrict upload/recovery controls by role for usability (`canManageDatasets` gate for `ADMIN` and `ANALYST`; read-only view for `INVESTIGATOR`), while relying on backend authorization.
 
 ## 12. AI Output and External Provider Boundaries
 

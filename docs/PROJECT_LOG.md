@@ -1871,7 +1871,75 @@ Following push of the Phase F1 baseline (`ad02a4e`), remote GitHub Actions CI wo
 - **Phase F0 & Phase F1:** Completed & Formally Accepted (`ad02a4e`, CI run `43036181121`, `ADR-080` accepted `2026-11-11`).
 - **Phase F2:** Implemented & Locally Verified (Remote F2 CI & Live-Backend E2E Pending; Formal Acceptance Pending).
 - **Phase F3:** Implemented & Locally Verified (Remote F3 CI & Live-Backend E2E Pending; Formal Acceptance Pending).
-- **Next Milestone:** Verify remote CI and optional live-backend checks for Phase F2 & F3 acceptance, then proceed to **Phase F4 — Dataset Import & Processing Visibility**.
+- **Next Milestone:** Verify remote CI and optional live-backend checks for Phase F2, F3 & F4 acceptance, then proceed to **Phase F5 — Investigation Queue, Workspace & Lifecycle**.
+
+---
+
+# 39. Phase F4 — Dataset Import & Processing Visibility Implementation
+
+**Date:** 2026-11-13  
+**Role:** Senior Frontend Engineer, Architect & QA Reviewer  
+**Objective:** Implement complete Frontend Phase F4 scope including dataset CSV upload, client-side preflight validation, import history ledger with status filtering and UTC boundaries, status monitoring with 5-minute polling cutoff, import detail with validation error logs, failed import recovery, and safe cache invalidation.
+
+## Key Changes & Components Added
+
+1. **Dataset Ingestion & Preflight Validation (`frontend/src/features/datasets/`):**
+   - Implemented `DatasetUploadCard` mounted on `/datasets` enabling `ADMIN` and `ANALYST` roles to upload CSV files with target namespace and source type.
+   - Built client-side preflight validation schema (`dataset-upload-schema.ts`) strictly enforcing the authoritative 50 MB limit (`52,428,800` bytes) and `.csv` extension check before initiating network requests.
+   - Dispatched multipart uploads to backend route `POST /api/v1/datasets/imports`.
+   - Handled duplicate upload detection cleanly: distinguishing `200 OK` (byte-identical completed re-upload) and `201 Created` (fresh ingestion job).
+
+2. **Dataset Ledger & History Presentation:**
+   - Implemented `DatasetsPage` mounted at `/datasets` with server-side pagination, namespace filter, status filter (`PENDING`, `PROCESSING`, `COMPLETED`, `FAILED`), and UTC date-range controls (`DatasetFiltersBar.tsx`).
+   - Built `DatasetImportTable` rendering deterministic start-time ordering, row-level metrics (total rows, valid rows, invalid rows), duplicate indicators, and status badges.
+   - Implemented role-based capability gating: `INVESTIGATOR` role receives clear read-only notice while upload forms and recovery buttons are hidden.
+
+3. **Status Polling & Abandoned Import Safeguard:**
+   - Implemented `importPollingTracker` (`polling-tracker.ts`): tracks elapsed active polling duration per import in the current SPA session.
+   - Configured 5-second polling interval via TanStack Query (`refetchInterval`), automatically halting after 5 minutes (300,000 ms) for active imports (`PENDING`, `PROCESSING`).
+   - Preserves last known status upon polling cutoff and surfaces a clear visual indicator offering manual refresh without triggering automated recovery.
+
+4. **Import Detail & Validation Error Visibility:**
+   - Implemented `DatasetImportDetailPage` mounted at `/datasets/imports/:importId` consuming `GET /api/v1/datasets/imports/{id}`.
+   - Built fact cards displaying immutable import metadata: filename, SHA-256 hash, execution duration, and total/valid/invalid row counters.
+   - Built `DatasetImportErrorTable` rendering quarantined rows, error codes (`INVALID_DECIMAL`, `REQUIRED_FIELD_MISSING`, etc.), row numbers, and field pointers with HTML-escaped text rendering.
+
+5. **Failed Import Recovery Workflow:**
+   - Implemented `DatasetRecoveryDialog` consuming `POST /api/v1/datasets/imports/{id}/recover`.
+   - Restricted recovery button strictly to imports in `FAILED` status and permitted roles (`ADMIN`, `ANALYST`).
+   - Verified that the recovery state machine forbids `PROCESSING -> PROCESSING` transitions, preventing premature recovery while ingestion is active.
+
+6. **UTC Date-Filter Boundaries:**
+   - Built `mapDateRangeToUtcIsoBoundaries` and `toDateBoundaryParam` (`dataset-filter-schema.ts`):
+     - `from_time`: serialized to start-of-day UTC ISO string (`YYYY-MM-DDT00:00:00.000Z`, inclusive `>=`).
+     - `to_time`: serialized to start of next-day UTC ISO string (`+ 24h`, exclusive `<`).
+     - Tested across month boundaries, year boundaries, and leap years (`2024-02-28` -> `2024-02-29T00:00:00.000Z` and `2024-02-29` -> `2024-03-01T00:00:00.000Z`).
+
+7. **Safe Cache Invalidation Policy:**
+   - Conditioned `422` cache invalidation in `useUploadDatasetMutation` on the presence of a persisted `import_id` in error details.
+   - Pre-insertion 422 validation errors do not prematurely invalidate import history or pollute transaction/analytics caches.
+
+8. **Audit Findings & Test Suite Remediation:**
+   - Corrected 3 heading assertions in `tests/components/datasets-page.test.tsx` targeting `{ name: "Datasets", level: 1 }`, bringing the Vitest suite to 100% pass rate (150/150).
+   - Removed ambient `"node"` types from `tsconfig.app.json`, eliminating Node.js global pollution (`process`, `Buffer`) from browser client application code.
+   - Replaced Playwright spec Buffer dependencies with runtime-isolated `globalThis.Buffer` resolution.
+
+## Verification Results (Local)
+
+- **Prettier (`npm run format:check`):** `PASS` (`0` formatting issues).
+- **ESLint (`npm run lint`):** `PASS` (`0` errors, `0` warnings).
+- **TypeScript (`npm run typecheck`):** `PASS` (`strict: true`, zero type errors).
+- **OpenAPI Drift (`npm run check:types-drift`):** `PASS` (generated types in sync with backend contract).
+- **Vitest Unit & Component Tests (`npm run test`):** **`150/150` PASS** across `43` test files (`0` failed, `0` skipped).
+- **Production Build (`npm run build`):** `PASS` (Vite production bundle built cleanly in 8.25s).
+- **Playwright E2E (`npm run test:e2e`):** **`9/9` PASS** in Chromium against production build (including new `tests/e2e/dataset-import.spec.ts`).
+- **Production Dependency Audit (`npm audit --omit=dev`):** `PASS` (`0` vulnerabilities).
+
+## Outstanding Verification & Deferred Items
+
+- **Live-Backend E2E (`E2E_API_MODE=live`):** Not executed locally (requires live running FastAPI + PostgreSQL backend with valid authentication).
+- **Remote GitHub Actions CI:** Remote CI workflow execution for Phase F4 commits remains pending.
+- **Account-Level Analytics:** Retains deferred status per approved F3 scope.
 
 ---
 

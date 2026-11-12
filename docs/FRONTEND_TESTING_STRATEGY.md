@@ -705,6 +705,38 @@ Phase F3 adds 14 Vitest/MSW test files and 2 Playwright E2E spec files:
   - `tests/e2e/analytics.spec.ts` (1 test): Analytics dashboard, scope changes, tab switching, chart rendering.
   - `tests/e2e/transactions.spec.ts` (1 test): Transaction list browsing, URL filter persistence, navigation to detail, and on-demand risk analysis.
 
+---
+
+## 23. Implemented Phase F4 Test Suite & Verification Snapshot (2026-11-13)
+
+Phase F4 adds 7 Vitest/MSW test files and 1 Playwright E2E spec file, expanding the test baseline to 43 Vitest files (150 tests) and 9 Playwright E2E tests:
+
+### 23.1 Phase F4 Test Suite Inventory
+
+- **Unit & Schema Tests:**
+  - `tests/unit/dataset-upload-schema.test.ts` (4 tests): Client preflight validation, 50 MB boundary (`50 * 1024 * 1024` accepted vs `+ 1` byte rejected), 0-byte empty file rejection, and case-insensitive `.csv` extension verification.
+  - `tests/unit/dataset-filter-params.test.ts` (5 tests): UTC calendar day serialization, inclusive `from_time` (`00:00:00.000Z`) vs exclusive next-day `to_time` (`+24h`), month rollover (`2026-11-30` -> `2026-12-01`), leap-year rollover (`2024-02-28` -> `2024-02-29`), invalid calendar date rejection (`2026-02-31`), and URL search parameter roundtripping.
+  - `tests/unit/datasets-api.test.ts` (4 tests): Network client serialization for `uploadDataset` (native `FormData` multipart boundary preservation), `listDatasetImports` (query string encoding), `getDatasetImportDetail`, and `recoverDatasetImport`.
+- **Component & Integration Tests:**
+  - `tests/components/datasets-page.test.tsx` (4 tests): Role gating (`ANALYST` upload form vs `INVESTIGATOR` read-only notice), server-side pagination, status filtering, and 404 namespace reset handling.
+  - `tests/components/dataset-upload-card.test.tsx` (5 tests): Form rendering, preflight client feedback, successful 201 ingestion mutation, 200 duplicate handling, and 422 error display.
+  - `tests/components/dataset-import-detail-page.test.tsx` (4 tests): Immutable fact cards (SHA-256, duration, row counters), duration formatting, quarantined error table display, and 404 not-found handling.
+  - `tests/components/dataset-recovery-dialog.test.tsx` (3 tests): Recovery dialog display, matching file selection, 200 OK recovery dispatch, and 422 hash mismatch error feedback.
+- **Committed Playwright E2E Specs (`tests/e2e/dataset-import.spec.ts`):**
+  - ANALYST journey (upload CSV -> verify ledger row -> view detail drawer & quarantine errors -> dispatch recovery -> verify terminal completion).
+  - INVESTIGATOR journey (verify read-only view; assert upload card and recovery buttons are hidden).
+
+### 23.2 Current Verification Baseline (Phase F4 Snapshot — 2026-11-13)
+
+| Check | Tool / Runner | Result | Scope / Notes |
+|---|---|---|---|
+| Vitest Unit & Integration | Vitest 5.1.0 (`npm test`) | **150 / 150 PASS** | 43 test files across all F1–F4 modules |
+| End-to-End Browser | Playwright 1.52.0 (`npm run test:e2e`) | **9 / 9 PASS** | Chromium mocked suites (`auth`, `shell`, `analytics`, `transactions`, `dataset-import`) |
+| TypeScript Typecheck | `tsc -b --pretty` | **PASS (0 errors)** | `strict: true`, clean browser typing (Node ambient types isolated) |
+| ESLint Code Quality | `eslint .` | **PASS (0 errors, 0 warnings)** | Flat config, zero rule bypasses |
+| OpenAPI Schema Drift | `node scripts/check-types-drift.mjs` | **PASS (zero drift)** | Generated `schema.ts` strictly in sync with `openapi.json` |
+| Production Build | `vite build` | **PASS (built in 8.25s)** | Dedicated chunks: `echarts-chunk`, `index` CSS/JS |
+
 
 ### 22.1 Vitest + MSW Unit & Integration Coverage (`22` Files, `87/87` Passing)
 

@@ -695,17 +695,22 @@ Include namespace, currency, date range, timezone, filters, sort, and pagination
 
 Mutation invalidation expectations:
 
-| Mutation | Queries to refresh/invalidate |
-|---|---|
-| Create dataset import | Import detail/status if available; analytics/transaction queries only when ingestion completion is confirmed and relevant |
-| Recover import | Import detail |
-| Request risk analysis | Transaction risk; transaction detail if it embeds risk; relevant investigation workspace |
-| Create investigation | Investigation queue; new investigation detail |
-| Update assignment/status | Investigation queue; investigation detail |
-| Resolve investigation | Investigation queue; investigation detail |
-| Link related transaction | Investigation detail; associated transaction list |
-| Attach evidence | Evidence list; investigation workspace; latest AI summary state if it is displayed there |
-| Generate AI summary | Latest summary; summary history; investigation workspace |
+| Mutation / Outcome | Dataset history (`datasetImportKeys`) | Import detail | Transactions / Analytics |
+|---|---|---|---|
+| **New upload (HTTP 201)** | Invalidate `lists()` | N/A (list refetch displays row) | Invalidate `transactionKeys.lists()` and `analyticsKeys.all` (new transactions ingested) |
+| **Duplicate upload (HTTP 200)** | Invalidate `lists()` (records duplicate execution) | N/A | No invalidation (`is_duplicate: true`; zero new transaction rows ingested) |
+| **In-progress conflict (HTTP 409)** | No automatic invalidation | No invalidation | No invalidation |
+| **Oversized upload (HTTP 413)** | No automatic invalidation | No invalidation | No invalidation |
+| **Validation failure (HTTP 422)** | Invalidate `lists()` **ONLY** if persisted `import_id` or `persisted_import_id` is present in `error.details`; otherwise no invalidation | No invalidation | No invalidation |
+| **Successful recovery (HTTP 200)** | Invalidate `lists()` | Invalidate `detail(importId)` & optimistically update existing summary fact fields | Invalidate `transactionKeys.lists()` and `analyticsKeys.all` (uncommitted rows now ingested) |
+| **Failed recovery (HTTP 400 / 409 / 422)** | No invalidation | Preserve authoritative existing detail state; render error | No invalidation |
+| **Request risk analysis** | N/A | N/A | Transaction risk; transaction detail if it embeds risk; relevant investigation workspace |
+| **Create investigation** | N/A | N/A | Investigation queue; new investigation detail |
+| **Update assignment/status** | N/A | N/A | Investigation queue; investigation detail |
+| **Resolve investigation** | N/A | N/A | Investigation queue; investigation detail |
+| **Link related transaction** | N/A | N/A | Investigation detail; associated transaction list |
+| **Attach evidence** | N/A | N/A | Evidence list; investigation workspace; latest AI summary state if it is displayed there |
+| **Generate AI summary** | N/A | N/A | Latest summary; summary history; investigation workspace |
 
 Avoid invalidating all queries after every mutation. Do not optimistically mark a case resolved before the backend confirms it.
 

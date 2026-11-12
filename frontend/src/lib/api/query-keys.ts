@@ -4,6 +4,7 @@ import type {
   AnalyticsOverviewParams,
   AnalyticsTrendParams,
 } from "../../features/analytics/types/analytics.types.ts";
+import type { DatasetImportListParams } from "../../features/datasets/types/datasets.types.ts";
 import type { TransactionListFilters } from "../../features/transactions/types/transactions.types.ts";
 
 function normalizeNullableString(value: string | null | undefined): string | null {
@@ -111,4 +112,24 @@ export const riskKeys = {
   all: ["risk"] as const,
   byTransaction: (transactionId: string) =>
     [...riskKeys.all, "transaction", transactionId] as const,
+};
+
+export const datasetImportKeys = {
+  all: ["datasets", "imports"] as const,
+  lists: () => [...datasetImportKeys.all, "list"] as const,
+  list: (params: DatasetImportListParams) =>
+    [
+      ...datasetImportKeys.lists(),
+      {
+        page: params.page,
+        page_size: params.page_size,
+        source_namespace: params.source_namespace,
+        status: params.status ?? null,
+        source_type: normalizeNullableString(params.source_type),
+        from_time: normalizeNullableString(params.from_time),
+        to_time: normalizeNullableString(params.to_time),
+      },
+    ] as const,
+  details: () => [...datasetImportKeys.all, "detail"] as const,
+  detail: (importId: string) => [...datasetImportKeys.details(), importId] as const,
 };

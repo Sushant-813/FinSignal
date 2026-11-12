@@ -3,7 +3,7 @@
 **Project:** FinSignal — Financial Transaction Intelligence & Investigation Platform  
 **Document:** Project Roadmap  
 **Scope:** Backend + ML v1.0.0 (Completed) & Frontend Implementation Track (Phases F0–F8)
-**Status:** Backend + ML v1.0.0 Released / Phase F0 & F1 Accepted / Phases F2 & F3 Implemented & Locally Verified (Remote CI & Live-Backend E2E Pending; Formal Acceptance Pending)
+**Status:** Backend + ML v1.0.0 Released / Phase F0 & F1 Accepted / Phases F2, F3 & F4 Implemented & Locally Verified (Remote CI & Live-Backend E2E Pending; Formal Acceptance Pending)
 **Version:** 1.4.0
 **Last Updated:** 2026-11-12
 
@@ -1507,16 +1507,26 @@ F8 — Deployment, Acceptance & Frontend Release
 
 ## Phase F4 — Dataset Import & Processing Visibility
 
-- **Objective:** Enable authorized analysts and administrators to upload CSV datasets, monitor progress, and review data quality results.
-- **Key Tasks:**
-  - Build multipart CSV file uploader with bounded client preflight (50 MB limit, `.csv` validation).
-  - Implement import submission (`POST /api/v1/datasets/imports`) with duplicate detection handling (`200 OK` vs `201 Created`).
-  - Build Import History & Detail view showing row counts (`INSERTED`, `MATCHED_EXISTING`, `QUARANTINED`, `REJECTED`).
-  - Implement recovery workflow (`POST /api/v1/datasets/imports/{id}/recover`) for interrupted imports.
-- **Exit Criteria:**
-  - 50 MB streaming uploads and recovery operate cleanly without browser crashes.
-  - Ingestion outcomes and validation errors render accurately with row-level provenance.
-- **Status:** `NOT STARTED`
+- **Objective:** Enable authorized analysts and administrators to upload CSV datasets, monitor progress, and review data quality results with full row-level provenance.
+- **Completed Tasks & Implementation (2026-11-13):**
+  - Built multipart CSV file uploader (`DatasetUploadCard.tsx`) with bounded client preflight validation (50 MB limit, `.csv` validation) and namespace selection.
+  - Implemented import submission (`POST /api/v1/datasets/imports`) handling duplicate detection (`200 OK` vs `201 Created`), payload size limits (`413`), and validation failures (`422`).
+  - Built Dataset Management & Ledger Page (`DatasetsPage.tsx`, `DatasetImportTable.tsx`) with server-side pagination, namespace/status/UTC-date filtering, and status badges (`PENDING`, `PROCESSING`, `COMPLETED`, `FAILED`).
+  - Implemented Import Detail & Error View (`DatasetImportDetailPage.tsx`, `DatasetImportErrorTable.tsx`) showing fact cards, processing metrics, duration, and quarantine error logs.
+  - Implemented recovery workflow (`POST /api/v1/datasets/imports/{id}/recover`) via `DatasetRecoveryDialog.tsx`, restricted strictly to `FAILED` imports and authorized roles (`ADMIN`, `ANALYST`).
+  - Enforced 5-minute polling cutoff safeguard (`polling-tracker.ts`): polls active imports every 5 seconds, ceasing after 5 minutes per import while preserving last-known status and offering manual refresh.
+  - Implemented safe query cache invalidation on `422` responses, invalidating import history only when a persisted `import_id` is present in error details.
+  - Verified with 43 Vitest test files (150 passing tests), zero OpenAPI drift, clean TypeScript compilation without Node global leakage, and 9 mocked Chromium Playwright E2E tests (`tests/e2e/dataset-import.spec.ts`).
+- **Exit Criteria & Verification Status:**
+  - [x] 50 MB streaming uploads and recovery operate cleanly without browser crashes or memory leaks.
+  - [x] Ingestion outcomes and validation errors render accurately with row-level provenance.
+  - [x] Investigator role is restricted to read-only visibility (upload and recovery controls hidden).
+  - [x] Active import polling automatically terminates after 5 minutes per import in the current SPA session.
+  - [x] UTC date filtering enforces inclusive `from_time` and exclusive next-day `to_time`.
+  - [ ] Remote CI execution for Phase F4 commits completed.
+  - [ ] Live-backend E2E verification (`E2E_API_MODE=live`) executed against running FastAPI + PostgreSQL backend.
+  - [ ] Formal Phase F4 owner acceptance granted.
+- **Status:** `IMPLEMENTED & LOCALLY VERIFIED (2026-11-13) — Remote F4 CI & Live-Backend E2E Pending; Formal Acceptance Pending`
 
 ---
 

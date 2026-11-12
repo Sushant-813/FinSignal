@@ -509,15 +509,35 @@ Owns account list and any account detail UI supported by a confirmed API contrac
 
 ### 7.6 Datasets (`features/datasets`)
 
-Owns:
+Owns dataset CSV selection, client-side preflight validation, multipart upload ingestion, import history ledger, status polling lifecycle, execution metrics, validation error inspection, and failed import recovery.
 
-- CSV selection and upload form.
-- Client-side convenience validation.
-- Import request lifecycle.
-- Import summary and error presentation.
-- Recovery workflow if the implemented API supports it.
+The browser does not parse and reimplement the complete backend ingestion pipeline. It sends the file through native `FormData` and presents backend-authoritative ingestion results.
 
-The browser does not parse and reimplement the complete backend ingestion pipeline. It sends the file and presents backend results.
+#### Module Organization
+
+The dataset feature follows the standardized domain layer structure:
+
+```text
+features/datasets/
+├── api/              # OpenAPI-typed network fetchers (uploadDataset, listDatasetImports, getDatasetImportDetail, recoverDatasetImport)
+├── components/       # Presentation & interaction: DatasetImportTable, DatasetFiltersBar, DatasetUploadCard, DatasetRecoveryDialog, DatasetImportErrorTable, DatasetImportStatusBadge
+├── hooks/            # TanStack Query hooks and lifecycle tracker: useDatasetImportsListQuery, useDatasetImportDetailQuery, useUploadDatasetMutation, useRecoverDatasetMutation, useDatasetFilterParams, polling-tracker
+├── pages/            # View composition: DatasetsPage (/datasets), DatasetImportDetailPage (/datasets/imports/:importId)
+├── schemas/          # Zod validation: datasetUploadSchema (50 MB limit, .csv check) & datasetFilterSchema (UTC calendar day boundaries)
+└── types/            # Domain interfaces: DatasetImportSummary, DatasetImportDetail, filter state, and status enums
+```
+
+#### Polling Architecture & Abandoned Import Safeguard
+
+To track ingestion progress without overloading the backend or running runaway background timers, the polling lifecycle is managed by an in-memory session tracker (`polling-tracker.ts`):
+
+- **Mechanism:** Maintains an in-memory `Map<string, number>` mapping active `import_id` strings to their first observed polling epoch timestamp (`Date.now()`).
+- **Interval:** When any visible import row is in an active state (`PENDING` or `PROCESSING`), TanStack Query executes a `refetchInterval` of **5 seconds** (5,000 ms).
+- **Cutoff:** Polling automatically ceases when `Date.now() - firstObserved >= 300,000 ms` (5 minutes). This safeguard prevents browser sessions from polling indefinitely if a backend worker is killed or an import remains permanently stalled in `PROCESSING`.
+- **Terminal Cleanup:** When an import transitions to a terminal state (`COMPLETED` or `FAILED`), its entry is removed from the tracker and `refetchInterval` is automatically disabled.
+- **Session Lifecycle:** The in-memory tracker survives React component remounts and client-side SPA route navigation within the active window tab. A hard browser reload (F5) resets the memory map, allowing a fresh 5-minute monitoring window.
+- **Manual Control:** Once the cutoff threshold is reached, automatic polling stops cleanly, the last known status is preserved, and a prominent manual refresh button is surfaced. Automated recovery is never triggered as a side-effect of polling expiration.
+- **Storage Independence:** The tracker strictly operates in transient JavaScript memory and does not write to `localStorage` or `sessionStorage`.
 
 ### 7.7 Risk (`features/risk`)
 

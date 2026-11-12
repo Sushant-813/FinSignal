@@ -3,7 +3,7 @@
 **Document:** `FRONTEND_ROADMAP.md`  
 **Product:** FinSignal — Financial Transaction Intelligence & Investigation Platform  
 **Version:** 1.2  
-**Status:** Phase F0 & F1 Accepted; Phases F2 & F3 Implemented & Locally Verified (Remote CI & Live-Backend E2E Pending; Formal Acceptance Pending)
+**Status:** Phase F0 & F1 Accepted; Phases F2, F3 & F4 Implemented & Locally Verified (Remote CI & Live-Backend E2E Pending; Formal Acceptance Pending)
 **Scope:** Frontend planning and implementation following Backend + ML v1.0.0
 
 ---
@@ -345,35 +345,43 @@ Deliver the operational dashboard overview, financial analytics visualizations, 
 
 ### Objective
 
-Enable authorized users to import supported CSV datasets and understand backend processing outcomes.
+Enable authorized users to import supported CSV datasets, track real-time processing outcomes, and review ingestion error logs with full provenance visibility.
 
 ### Key tasks
 
-- Build dataset import form and file selection UX.
-- Implement multipart upload using the exact backend contract.
-- Validate file size client-side for user feedback.
-- Display import ID, status, row counters, duplicate status, and timestamps.
-- Build import detail and validation-error view.
-- Handle `409 IMPORT_IN_PROGRESS`, `413`, `422`, and network failures.
-- Implement recovery using the original file only if the verified contract supports it.
-- Reconcile server import state after ambiguous upload timeouts.
-- Restrict controls by approved role capabilities.
+- [x] Build dataset import form and file selection UX (`DatasetUploadCard.tsx`).
+- [x] Implement multipart upload using the exact backend contract (`POST /api/v1/datasets/imports`).
+- [x] Validate file size (50 MB limit) and `.csv` extension client-side for immediate feedback (`dataset-upload-schema.ts`).
+- [x] Display import ledger with pagination, namespace/status/UTC-date filtering, status badges, and row metrics (`DatasetImportTable.tsx`, `DatasetFiltersBar.tsx`).
+- [x] Build import detail drawer/page displaying fact cards, processing metrics, duration, and error table (`DatasetImportDetailPage.tsx`, `DatasetImportErrorTable.tsx`).
+- [x] Handle duplicate detection (`200 OK` vs `201 Created`), in-progress conflicts (`409`), payload size limits (`413`), and validation failures (`422`).
+- [x] Implement recovery workflow (`POST /api/v1/datasets/imports/{id}/recover`) restricted exclusively to `FAILED` status and authorized roles (`DatasetRecoveryDialog.tsx`).
+- [x] Enforce polling cutoff safeguard: poll active imports (`PENDING`, `PROCESSING`) every 5 seconds, stopping after 5 minutes per import in the SPA session.
+- [x] Restrict controls by approved role capabilities (`canManageDatasets` for `ADMIN` and `ANALYST`; read-only view for `INVESTIGATOR`).
+- [x] Implement safe query cache invalidation: conditionally invalidate import history on `422` only when a persisted `import_id` is available in error details.
 
 ### Deliverables
 
-- Dataset import screen.
-- Import status/detail view.
-- Validation error presentation.
-- Recovery workflow if included in verified MVP contract.
+- Dataset Management & Ledger Page (`frontend/src/features/datasets/pages/DatasetsPage.tsx`).
+- Dataset Import Detail & Error View (`frontend/src/features/datasets/pages/DatasetImportDetailPage.tsx`).
+- Client-side Preflight & Upload Card (`frontend/src/features/datasets/components/DatasetUploadCard.tsx`).
+- Failed Import Recovery Dialog (`frontend/src/features/datasets/components/DatasetRecoveryDialog.tsx`).
+- Polling Lifecycle Tracker (`frontend/src/features/datasets/hooks/polling-tracker.ts`).
+- Filter State & UTC Boundary Serialization (`frontend/src/features/datasets/schemas/dataset-filter-schema.ts`).
+- Centralized Query Keys & Mutation Hooks (`frontend/src/lib/api/query-keys.ts`, `features/datasets/hooks/`).
 
-### Exit criteria
+### Exit criteria & Verification Status
 
-- Admin and Analyst can upload supported files.
-- Investigator cannot invoke import unless backend policy changes.
-- Duplicate and in-progress outcomes are accurately distinguished.
-- Backend validation errors are displayed safely.
-- The frontend does not assume an import completed merely because the request timed out or the browser upload ended.
-- Upload tests pass.
+- [x] Admin and Analyst can upload supported files up to 50 MB; client preflight rejects oversized/non-CSV files.
+- [x] Investigator has read-only access: upload card and recovery dialog are hidden.
+- [x] Duplicate (`200 OK`) and new (`201 Created`) imports are handled accurately.
+- [x] Polling refreshes every 5s and cleanly ceases after 5 minutes per active import, preserving last-known status and offering manual refresh.
+- [x] Recovery is exposed only for imports in `FAILED` state and dispatches matching CSV payload.
+- [x] UTC date filtering applies inclusive start boundary (`00:00:00.000Z`) and exclusive next-day upper boundary (`00:00:00.000Z`).
+- [x] Core dataset unit, component, and E2E tests pass (`150/150` Vitest + `9/9` mocked Playwright E2E).
+- [ ] Remote CI execution for Phase F4 commits completed.
+- [ ] Live-backend E2E verification (`E2E_API_MODE=live`) executed against running FastAPI + PostgreSQL backend.
+- [ ] Formal Phase F4 owner acceptance granted.
 
 ---
 
@@ -632,8 +640,8 @@ Use this table during implementation. Status values should be controlled and evi
 | F0 — Decisions & contract verification | COMPLETED | ADR-074–077 accepted; 3 F0 read endpoints & shared `MoneyStr` types implemented (`593` backend tests); `frontend/` scaffolded with `openapi.json`, `schema.ts`, drift check, API client, in-memory token store, and `4` Vitest smoke tests; documentation reconciled | None |
 | F1 — Foundation & design system | COMPLETED & ACCEPTED (2026-11-11) | Tokens, 10 UI primitives, providers/routing/error boundary, CI workflow, Zod `4.6.7` & Vitest `5.1.0` upgrades, Prettier/ESLint/TS/`47` tests/build/drift/`npm audit --omit=dev` (`0` vulns) verified; remote CI run `43036181121` (`ad02a4e`) passed; `ADR-080` approved by owner (`2026-11-11`) | `F1-AUD-009` deferred (non-blocking) |
 | F2 — Auth & application shell | IMPLEMENTED & LOCALLY VERIFIED (Formal Acceptance Pending) | F2.1–F2.6 implemented (`F1-AUD-005` & `F1-AUD-006` resolved); `format:check`/`lint`/`typecheck`/`build`/`check:types-drift`/`npm audit --omit=dev` (`0` prod vulns) pass; `87/87` Vitest tests (`22` files) + `5/5` mocked Playwright Chromium E2E pass | Remote F2 CI run pending; live-backend E2E (`E2E_API_MODE=live`) not executed; formal Phase F2 acceptance pending |
-| F3 — Analytics, transactions & risk | NOT STARTED | API-backed workflow tests | |
-| F4 — Dataset import | NOT STARTED | Upload/import E2E | |
+| F3 — Analytics, transactions & risk | IMPLEMENTED & LOCALLY VERIFIED (2026-11-12) | Dashboard, analytics, explorer, facts, hybrid risk scoring, ECharts chunking, `121/121` Vitest + `7/7` mocked Playwright E2E pass | Remote F3 CI & live-backend E2E pending; formal acceptance pending |
+| F4 — Dataset import | IMPLEMENTED & LOCALLY VERIFIED (2026-11-13) | Ledger, filters, 50MB CSV upload, 5m polling cutoff, detail view, recovery dialog, `150/150` Vitest + `9/9` mocked Playwright E2E pass | Remote F4 CI & live-backend E2E pending; formal acceptance pending |
 | F5 — Investigation workflow | NOT STARTED | Role-specific investigation E2E | |
 | F6 — Evidence & AI | NOT STARTED | Evidence/AI workflow tests | |
 | F7 — Hardening | NOT STARTED | Security/accessibility/test reports | |

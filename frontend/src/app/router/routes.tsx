@@ -2,6 +2,8 @@ import { createBrowserRouter, type RouteObject } from "react-router";
 import { AnalyticsPage } from "../../features/analytics/pages/AnalyticsPage.tsx";
 import { LoginPage } from "../../features/auth/pages/LoginPage.tsx";
 import { DashboardPage } from "../../features/dashboard/pages/DashboardPage.tsx";
+import { DatasetImportDetailPage } from "../../features/datasets/pages/DatasetImportDetailPage.tsx";
+import { DatasetsPage } from "../../features/datasets/pages/DatasetsPage.tsx";
 import { TransactionDetailPage } from "../../features/transactions/pages/TransactionDetailPage.tsx";
 import { TransactionsListPage } from "../../features/transactions/pages/TransactionsListPage.tsx";
 import { NotFoundPage } from "../errors/NotFoundPage.tsx";
@@ -63,14 +65,11 @@ export const appRoutes: RouteObject[] = [
           },
           {
             path: "/datasets",
-            element: (
-              <PhasePlaceholderPage
-                title="Datasets"
-                phaseLabel="Phase F4"
-                description="Dataset import history and CSV ingestion recovery workflows are scheduled for Phase F4."
-                isDatasetsRoute
-              />
-            ),
+            element: <DatasetsPage />,
+          },
+          {
+            path: "/datasets/imports/:importId",
+            element: <DatasetImportDetailPage />,
           },
         ],
       },
