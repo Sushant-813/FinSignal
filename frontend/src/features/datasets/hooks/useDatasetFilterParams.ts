@@ -1,8 +1,6 @@
 import { useCallback, useMemo } from "react";
 import { useSearchParams } from "react-router";
-import {
-  parseDatasetFiltersFromParams,
-} from "../schemas/dataset-filter-schema.ts";
+import { parseDatasetFiltersFromParams } from "../schemas/dataset-filter-schema.ts";
 import type { DatasetImportListParams, DatasetImportStatus } from "../types/datasets.types.ts";
 
 export function useDatasetFilterParams() {

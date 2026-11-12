@@ -5,7 +5,10 @@ import { Alert } from "../../../components/ui/Alert.tsx";
 import { Badge } from "../../../components/ui/Badge.tsx";
 import { Button } from "../../../components/ui/Button.tsx";
 import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/Card.tsx";
-import type { DatasetImportDetailResponse, DatasetImportResponse } from "../types/datasets.types.ts";
+import type {
+  DatasetImportDetailResponse,
+  DatasetImportResponse,
+} from "../types/datasets.types.ts";
 import { DatasetImportStatusBadge } from "./DatasetImportStatusBadge.tsx";
 
 export interface DatasetImportSummaryCardProps {
@@ -68,7 +71,9 @@ export function DatasetImportSummaryCard({
             ) : undefined
           }
         >
-          Automatic status monitoring has paused after 5 minutes of continuous observation. This import may still be processing on the server or may have been interrupted. Click &ldquo;Refresh Status&rdquo; to query the latest state.
+          Automatic status monitoring has paused after 5 minutes of continuous observation. This
+          import may still be processing on the server or may have been interrupted. Click
+          &ldquo;Refresh Status&rdquo; to query the latest state.
         </Alert>
       ) : null}
 
@@ -82,9 +87,7 @@ export function DatasetImportSummaryCard({
               </CardTitle>
             </div>
             <div className="flex items-center gap-2">
-              {importData.is_duplicate ? (
-                <Badge variant="neutral">Duplicate File</Badge>
-              ) : null}
+              {importData.is_duplicate ? <Badge variant="neutral">Duplicate File</Badge> : null}
               <DatasetImportStatusBadge status={importData.status} />
             </div>
           </div>
@@ -94,7 +97,9 @@ export function DatasetImportSummaryCard({
           {/* Key Metric Facts Grid */}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
             <div className="rounded-lg border border-border-default bg-surface-secondary p-4">
-              <div className="text-[12px] font-medium text-text-secondary">Total Processed Rows</div>
+              <div className="text-[12px] font-medium text-text-secondary">
+                Total Processed Rows
+              </div>
               <div className="mt-1 text-[24px] font-semibold tracking-tight text-text-primary">
                 {importData.total_rows.toLocaleString()}
               </div>
@@ -108,7 +113,9 @@ export function DatasetImportSummaryCard({
             </div>
 
             <div className="rounded-lg border border-border-default bg-surface-secondary p-4">
-              <div className="text-[12px] font-medium text-text-secondary">Invalid / Quarantined Rows</div>
+              <div className="text-[12px] font-medium text-text-secondary">
+                Invalid / Quarantined Rows
+              </div>
               <div
                 className={`mt-1 text-[24px] font-semibold tracking-tight ${
                   importData.invalid_rows > 0 ? "text-accent-danger" : "text-text-muted"
@@ -129,14 +136,20 @@ export function DatasetImportSummaryCard({
             <div className="flex flex-col sm:flex-row sm:items-baseline sm:justify-between border-b border-border-subtle pb-2">
               <span className="text-text-secondary">Import Identifier</span>
               <div className="flex items-center gap-1.5 font-mono text-[12px]">
-                <span title={importData.id}>{`${importData.id.slice(0, 8)}...${importData.id.slice(-4)}`}</span>
+                <span
+                  title={importData.id}
+                >{`${importData.id.slice(0, 8)}...${importData.id.slice(-4)}`}</span>
                 <button
                   type="button"
                   onClick={() => copyToClipboard(importData.id, false)}
                   className="rounded p-1 text-text-muted hover:bg-surface-secondary hover:text-text-primary focus:outline-none"
                   aria-label="Copy full import identifier to clipboard"
                 >
-                  {copiedId ? <Check className="h-3.5 w-3.5 text-accent-success" /> : <Copy className="h-3.5 w-3.5" />}
+                  {copiedId ? (
+                    <Check className="h-3.5 w-3.5 text-accent-success" />
+                  ) : (
+                    <Copy className="h-3.5 w-3.5" />
+                  )}
                 </button>
               </div>
             </div>

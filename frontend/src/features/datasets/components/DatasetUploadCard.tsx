@@ -14,10 +14,7 @@ import {
 import { Input } from "../../../components/ui/Input.tsx";
 import { isApiClientError } from "../../../lib/api/errors.ts";
 import { useUploadDatasetMutation } from "../hooks/useUploadDatasetMutation.ts";
-import {
-  datasetUploadFormSchema,
-  validateCsvFile,
-} from "../schemas/dataset-upload-schema.ts";
+import { datasetUploadFormSchema, validateCsvFile } from "../schemas/dataset-upload-schema.ts";
 import type { DatasetImportResponse } from "../types/datasets.types.ts";
 
 export interface DatasetUploadCardProps {
@@ -136,7 +133,8 @@ export function DatasetUploadCard({ onUploadSuccess, onRefreshHistory }: Dataset
           </CardTitle>
         </div>
         <CardDescription>
-          Upload a UTF-8 or UTF-8 BOM CSV dataset (up to 50 MB). Transactions will be validated, deduplicated, and committed with row-level provenance.
+          Upload a UTF-8 or UTF-8 BOM CSV dataset (up to 50 MB). Transactions will be validated,
+          deduplicated, and committed with row-level provenance.
         </CardDescription>
       </CardHeader>
 
@@ -155,7 +153,9 @@ export function DatasetUploadCard({ onUploadSuccess, onRefreshHistory }: Dataset
                   </Button>
                 }
               >
-                Identical file has already been imported in namespace &ldquo;{uploadResult.source_namespace}&rdquo;. Existing import records and summary were retained without re-ingesting.
+                Identical file has already been imported in namespace &ldquo;
+                {uploadResult.source_namespace}&rdquo;. Existing import records and summary were
+                retained without re-ingesting.
               </Alert>
             ) : (
               <Alert
@@ -168,7 +168,11 @@ export function DatasetUploadCard({ onUploadSuccess, onRefreshHistory }: Dataset
                   </Button>
                 }
               >
-                Successfully ingested dataset &ldquo;{uploadResult.filename}&rdquo; into namespace &ldquo;{uploadResult.source_namespace}&rdquo;. Total rows: {uploadResult.total_rows.toLocaleString()} ({uploadResult.valid_rows.toLocaleString()} valid, {uploadResult.invalid_rows.toLocaleString()} invalid).
+                Successfully ingested dataset &ldquo;{uploadResult.filename}&rdquo; into namespace
+                &ldquo;{uploadResult.source_namespace}&rdquo;. Total rows:{" "}
+                {uploadResult.total_rows.toLocaleString()} (
+                {uploadResult.valid_rows.toLocaleString()} valid,{" "}
+                {uploadResult.invalid_rows.toLocaleString()} invalid).
               </Alert>
             )
           ) : null}
@@ -193,11 +197,13 @@ export function DatasetUploadCard({ onUploadSuccess, onRefreshHistory }: Dataset
                   ) : undefined
                 }
               >
-                An import for this identical file is currently active or processing in namespace &ldquo;{namespace}&rdquo;. Please wait for the active job to finish.
+                An import for this identical file is currently active or processing in namespace
+                &ldquo;{namespace}&rdquo;. Please wait for the active job to finish.
               </Alert>
             ) : error.status === 413 ? (
               <Alert variant="danger" role="alert" aria-label="Payload too large error">
-                File exceeds maximum allowable size of 50 MB. Please partition the dataset and upload smaller batches.
+                File exceeds maximum allowable size of 50 MB. Please partition the dataset and
+                upload smaller batches.
               </Alert>
             ) : error.status === 422 ? (
               <Alert
@@ -212,7 +218,8 @@ export function DatasetUploadCard({ onUploadSuccess, onRefreshHistory }: Dataset
                   ) : undefined
                 }
               >
-                {error.message || "CSV validation or domain verification failed. Check the file structure."}
+                {error.message ||
+                  "CSV validation or domain verification failed. Check the file structure."}
               </Alert>
             ) : error.status === 0 || error.code === "NETWORK_ERROR" ? (
               <Alert
@@ -227,7 +234,9 @@ export function DatasetUploadCard({ onUploadSuccess, onRefreshHistory }: Dataset
                   ) : undefined
                 }
               >
-                The network connection was interrupted or timed out. The server may still be ingesting your dataset in the background. Please inspect the Import History table before attempting to re-upload.
+                The network connection was interrupted or timed out. The server may still be
+                ingesting your dataset in the background. Please inspect the Import History table
+                before attempting to re-upload.
               </Alert>
             ) : (
               <Alert variant="danger" role="alert" aria-label="Upload error">
@@ -313,7 +322,8 @@ export function DatasetUploadCard({ onUploadSuccess, onRefreshHistory }: Dataset
             >
               <Loader2 className="h-5 w-5 animate-spin text-accent-primary" aria-hidden="true" />
               <span>
-                Streaming CSV and ingesting records... Processing large datasets (up to 50 MB) may take up to 30 seconds.
+                Streaming CSV and ingesting records... Processing large datasets (up to 50 MB) may
+                take up to 30 seconds.
               </span>
             </div>
           ) : null}

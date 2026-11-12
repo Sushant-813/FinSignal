@@ -23,7 +23,10 @@ test.describe("FinSignal Dataset Import & Ingestion Visibility E2E (F4.1–F4.6)
       const request = route.request();
       const url = new URL(request.url());
 
-      if (request.method() === "GET" && (url.pathname.endsWith("/datasets/imports") || url.pathname.endsWith("/datasets/imports/"))) {
+      if (
+        request.method() === "GET" &&
+        (url.pathname.endsWith("/datasets/imports") || url.pathname.endsWith("/datasets/imports/"))
+      ) {
         await route.fulfill({
           status: 200,
           contentType: "application/json",
@@ -83,7 +86,10 @@ test.describe("FinSignal Dataset Import & Ingestion Visibility E2E (F4.1–F4.6)
         return;
       }
 
-      if (request.method() === "POST" && url.pathname.endsWith(`/datasets/imports/${IMPORT_ID}/recover`)) {
+      if (
+        request.method() === "POST" &&
+        url.pathname.endsWith(`/datasets/imports/${IMPORT_ID}/recover`)
+      ) {
         currentImportStatus = "COMPLETED";
         await route.fulfill({
           status: 200,
@@ -155,17 +161,22 @@ test.describe("FinSignal Dataset Import & Ingestion Visibility E2E (F4.1–F4.6)
 
     // 6. Verify fact card and quarantine error row
     await expect(page.getByText("INVALID_DECIMAL")).toBeVisible();
-    await expect(page.getByText("Amount could not be parsed to canonical monetary decimal.")).toBeVisible();
+    await expect(
+      page.getByText("Amount could not be parsed to canonical monetary decimal.")
+    ).toBeVisible();
 
     // 7. Click Recover Import and submit file
     const recoverBtn = page.getByRole("button", { name: /Recover Import/i });
     await expect(recoverBtn).toBeVisible();
     await recoverBtn.click();
 
-    await expect(page.getByRole("heading", { name: "Recover Failed Dataset Import" })).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "Recover Failed Dataset Import" })
+    ).toBeVisible();
 
     // Upload matching CSV file in modal
-    const nodeBuffer = (globalThis as { Buffer?: { from: (str: string, enc?: string) => unknown } }).Buffer;
+    const nodeBuffer = (globalThis as { Buffer?: { from: (str: string, enc?: string) => unknown } })
+      .Buffer;
     const fileBuffer = nodeBuffer
       ? (nodeBuffer.from("account_id,amount\nacc1,100.00\n", "utf-8") as unknown as Uint8Array)
       : new TextEncoder().encode("account_id,amount\nacc1,100.00\n");
@@ -233,6 +244,8 @@ test.describe("FinSignal Dataset Import & Ingestion Visibility E2E (F4.1–F4.6)
     await expect(page.getByLabel("Investigator read-only dataset permissions")).toBeVisible();
 
     // Upload Card is strictly hidden
-    await expect(page.getByRole("heading", { name: "Import Transaction Dataset" })).not.toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "Import Transaction Dataset" })
+    ).not.toBeVisible();
   });
 });

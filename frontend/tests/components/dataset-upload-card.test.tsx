@@ -42,7 +42,9 @@ describe("DatasetUploadCard component (F4.4)", () => {
 
     renderUploadCard(onSuccess);
 
-    expect(screen.getByRole("heading", { name: /import transaction dataset/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: /import transaction dataset/i })
+    ).toBeInTheDocument();
     const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
     expect(fileInput).toBeInTheDocument();
 
@@ -116,7 +118,9 @@ describe("DatasetUploadCard component (F4.4)", () => {
     await user.click(screen.getByRole("button", { name: /upload dataset/i }));
 
     await waitFor(() => {
-      expect(screen.getByText(/an import for this identical file is currently active/i)).toBeInTheDocument();
+      expect(
+        screen.getByText(/an import for this identical file is currently active/i)
+      ).toBeInTheDocument();
       expect(screen.getByText(/view in-progress import/i)).toBeInTheDocument();
     });
   });

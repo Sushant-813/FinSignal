@@ -210,7 +210,9 @@ export function parseDatasetSearchParams(searchParams: URLSearchParams): Dataset
   };
 }
 
-export function parseDatasetFiltersFromParams(searchParams: URLSearchParams): DatasetImportListParams {
+export function parseDatasetFiltersFromParams(
+  searchParams: URLSearchParams
+): DatasetImportListParams {
   const raw: Record<string, string> = {};
   searchParams.forEach((val, key) => {
     if (val.trim() !== "") {
@@ -225,7 +227,8 @@ export function parseDatasetFiltersFromParams(searchParams: URLSearchParams): Da
 
     return {
       page: Number.isInteger(pageVal) && pageVal >= 1 ? pageVal : 1,
-      page_size: Number.isInteger(pageSizeVal) && pageSizeVal >= 1 && pageSizeVal <= 100 ? pageSizeVal : 20,
+      page_size:
+        Number.isInteger(pageSizeVal) && pageSizeVal >= 1 && pageSizeVal <= 100 ? pageSizeVal : 20,
       source_namespace:
         raw.source_namespace && NAMESPACE_REGEX.test(raw.source_namespace)
           ? raw.source_namespace

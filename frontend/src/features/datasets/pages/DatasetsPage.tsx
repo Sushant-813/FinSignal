@@ -13,15 +13,8 @@ export function DatasetsPage() {
   const { user } = useAuth();
   const operatorCanManage = canManageDatasets(user);
 
-  const {
-    filters,
-    setPage,
-    setPageSize,
-    setNamespace,
-    setStatus,
-    setDateRange,
-    resetFilters,
-  } = useDatasetFilterParams();
+  const { filters, setPage, setPageSize, setNamespace, setStatus, setDateRange, resetFilters } =
+    useDatasetFilterParams();
 
   const listQuery = useDatasetImportsListQuery(filters);
 
@@ -39,27 +32,23 @@ export function DatasetsPage() {
             Datasets
           </h1>
           <p className="text-[13px] text-text-secondary">
-            Ingest financial transaction datasets, track streaming ingestion state, and inspect data quality outcomes.
+            Ingest financial transaction datasets, track streaming ingestion state, and inspect data
+            quality outcomes.
           </p>
         </div>
       </div>
 
       {/* Role Notice */}
       {operatorCanManage ? (
-        <Alert
-          variant="info"
-          role="region"
-          aria-label="Dataset role permissions"
-        >
-          Your role has full dataset permissions: read-only import history plus CSV upload and recovery workflows (Phase F4).
+        <Alert variant="info" role="region" aria-label="Dataset role permissions">
+          Your role has full dataset permissions: read-only import history plus CSV upload and
+          recovery workflows (Phase F4).
         </Alert>
       ) : (
-        <Alert
-          variant="info"
-          role="region"
-          aria-label="Investigator read-only dataset permissions"
-        >
-          Read-only dataset import history is permitted for Investigator accounts. Dataset upload and import recovery actions require Administrator or Analyst roles and are disabled for your role.
+        <Alert variant="info" role="region" aria-label="Investigator read-only dataset permissions">
+          Read-only dataset import history is permitted for Investigator accounts. Dataset upload
+          and import recovery actions require Administrator or Analyst roles and are disabled for
+          your role.
         </Alert>
       )}
 

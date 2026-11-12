@@ -104,7 +104,8 @@ export function DatasetFiltersBar({
             </Button>
           }
         >
-          Target namespace &ldquo;{filters.source_namespace}&rdquo; does not exist. No import history can be shown for this namespace.
+          Target namespace &ldquo;{filters.source_namespace}&rdquo; does not exist. No import
+          history can be shown for this namespace.
         </Alert>
       ) : null}
 

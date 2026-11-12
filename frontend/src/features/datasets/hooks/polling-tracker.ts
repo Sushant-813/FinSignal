@@ -42,4 +42,3 @@ export function resetImportPolling(id: string): void {
 export function clearAllImportPolling(): void {
   importPollingTracker.clear();
 }
-

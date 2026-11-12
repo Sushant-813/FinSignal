@@ -12,11 +12,7 @@ import {
 } from "../fixtures/f4-data.ts";
 import { server } from "../mocks/server.ts";
 
-function renderRecoveryDialog(
-  open = true,
-  onOpenChange = vi.fn(),
-  onRecoverySuccess = vi.fn()
-) {
+function renderRecoveryDialog(open = true, onOpenChange = vi.fn(), onRecoverySuccess = vi.fn()) {
   setAccessToken("test-analyst-jwt");
   const importData = buildDatasetImportDetailFixture({
     status: "FAILED",
@@ -45,21 +41,20 @@ describe("DatasetRecoveryDialog component (F4.5)", () => {
     const onSuccess = vi.fn();
 
     server.use(
-      http.post(
-        `http://localhost:3000/api/v1/datasets/imports/${SAMPLE_IMPORT_ID}/recover`,
-        () => {
-          return HttpResponse.json(
-            buildDatasetImportSummaryFixture({
-              status: "PROCESSING",
-            })
-          );
-        }
-      )
+      http.post(`http://localhost:3000/api/v1/datasets/imports/${SAMPLE_IMPORT_ID}/recover`, () => {
+        return HttpResponse.json(
+          buildDatasetImportSummaryFixture({
+            status: "PROCESSING",
+          })
+        );
+      })
     );
 
     renderRecoveryDialog(true, vi.fn(), onSuccess);
 
-    expect(screen.getByRole("heading", { name: /recover failed dataset import/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: /recover failed dataset import/i })
+    ).toBeInTheDocument();
 
     const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
     const originalFile = new File(["col1,col2\n1,2"], "original_transactions.csv", {
@@ -81,20 +76,17 @@ describe("DatasetRecoveryDialog component (F4.5)", () => {
     const user = userEvent.setup();
 
     server.use(
-      http.post(
-        `http://localhost:3000/api/v1/datasets/imports/${SAMPLE_IMPORT_ID}/recover`,
-        () => {
-          return HttpResponse.json(
-            {
-              error: {
-                code: "FILE_HASH_MISMATCH",
-                message: "Uploaded file SHA-256 does not match original import record.",
-              },
+      http.post(`http://localhost:3000/api/v1/datasets/imports/${SAMPLE_IMPORT_ID}/recover`, () => {
+        return HttpResponse.json(
+          {
+            error: {
+              code: "FILE_HASH_MISMATCH",
+              message: "Uploaded file SHA-256 does not match original import record.",
             },
-            { status: 422 }
-          );
-        }
-      )
+          },
+          { status: 422 }
+        );
+      })
     );
 
     renderRecoveryDialog();
@@ -115,20 +107,17 @@ describe("DatasetRecoveryDialog component (F4.5)", () => {
     const user = userEvent.setup();
 
     server.use(
-      http.post(
-        `http://localhost:3000/api/v1/datasets/imports/${SAMPLE_IMPORT_ID}/recover`,
-        () => {
-          return HttpResponse.json(
-            {
-              error: {
-                code: "IMPORT_IN_PROGRESS",
-                message: "Another upload or recovery operation is currently active.",
-              },
+      http.post(`http://localhost:3000/api/v1/datasets/imports/${SAMPLE_IMPORT_ID}/recover`, () => {
+        return HttpResponse.json(
+          {
+            error: {
+              code: "IMPORT_IN_PROGRESS",
+              message: "Another upload or recovery operation is currently active.",
             },
-            { status: 409 }
-          );
-        }
-      )
+          },
+          { status: 409 }
+        );
+      })
     );
 
     renderRecoveryDialog();
@@ -144,4 +133,3 @@ describe("DatasetRecoveryDialog component (F4.5)", () => {
     });
   });
 });
-

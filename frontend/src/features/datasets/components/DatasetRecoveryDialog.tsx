@@ -13,7 +13,10 @@ import {
 import { isApiClientError } from "../../../lib/api/errors.ts";
 import { useRecoverDatasetMutation } from "../hooks/useRecoverDatasetMutation.ts";
 import { validateCsvFile } from "../schemas/dataset-upload-schema.ts";
-import type { DatasetImportDetailResponse, DatasetImportResponse } from "../types/datasets.types.ts";
+import type {
+  DatasetImportDetailResponse,
+  DatasetImportResponse,
+} from "../types/datasets.types.ts";
 
 export interface DatasetRecoveryDialogProps {
   importData: DatasetImportResponse | DatasetImportDetailResponse;
@@ -100,15 +103,20 @@ export function DatasetRecoveryDialog({
           <DialogHeader>
             <DialogTitle>Recover Failed Dataset Import</DialogTitle>
             <DialogDescription>
-              Resume ingestion of uncommitted records without skipping rows or duplicating primary transactions.
+              Resume ingestion of uncommitted records without skipping rows or duplicating primary
+              transactions.
             </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-4 py-4">
             <div className="rounded-lg border border-border-default bg-surface-secondary p-3 text-[12px] text-text-secondary space-y-1">
-              <div className="font-semibold text-text-primary">SHA-256 Hash Verification Requirement:</div>
+              <div className="font-semibold text-text-primary">
+                SHA-256 Hash Verification Requirement:
+              </div>
               <p>
-                The backend requires the <strong>original CSV file</strong> ({importData.filename || "identical file"}). It will compute the SHA-256 stream hash and verify that it matches the recorded import hash:
+                The backend requires the <strong>original CSV file</strong> (
+                {importData.filename || "identical file"}). It will compute the SHA-256 stream hash
+                and verify that it matches the recorded import hash:
               </p>
               <div className="font-mono text-[11px] text-text-primary break-all bg-surface-primary p-2 rounded border border-border-subtle">
                 {importData.file_hash || "No recorded file hash"}
@@ -118,11 +126,13 @@ export function DatasetRecoveryDialog({
             {error && isApiClientError(error) ? (
               error.status === 409 ? (
                 <Alert variant="warning" role="alert" aria-label="Advisory lock timeout">
-                  {error.message || "Another upload or recovery operation is currently active. Please try again shortly."}
+                  {error.message ||
+                    "Another upload or recovery operation is currently active. Please try again shortly."}
                 </Alert>
               ) : error.status === 422 ? (
                 <Alert variant="danger" role="alert" aria-label="Recovery hash mismatch">
-                  {error.message || "Uploaded file content does not match the original import SHA-256 hash. Please re-select the exact original CSV file."}
+                  {error.message ||
+                    "Uploaded file content does not match the original import SHA-256 hash. Please re-select the exact original CSV file."}
                 </Alert>
               ) : error.status === 413 ? (
                 <Alert variant="danger" role="alert" aria-label="Payload too large">
@@ -136,7 +146,10 @@ export function DatasetRecoveryDialog({
             ) : null}
 
             <div className="space-y-1.5">
-              <label htmlFor="recovery-file-input" className="text-[12px] font-medium text-text-primary">
+              <label
+                htmlFor="recovery-file-input"
+                className="text-[12px] font-medium text-text-primary"
+              >
                 Select Original CSV File (.csv)
               </label>
               <input

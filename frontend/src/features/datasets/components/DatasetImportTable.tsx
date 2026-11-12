@@ -49,7 +49,9 @@ export function DatasetImportTable({
             ) : undefined
           }
         >
-          Automatic status monitoring has paused after 5 minutes of observation. Some imports may still be processing on the server or may have been interrupted. Click &ldquo;Refresh Now&rdquo; to pull the latest status.
+          Automatic status monitoring has paused after 5 minutes of observation. Some imports may
+          still be processing on the server or may have been interrupted. Click &ldquo;Refresh
+          Now&rdquo; to pull the latest status.
         </Alert>
       ) : null}
 
@@ -105,7 +107,9 @@ export function DatasetImportTable({
                   <TableCell
                     align="right"
                     numeric
-                    className={item.invalid_rows > 0 ? "text-accent-danger font-medium" : "text-text-muted"}
+                    className={
+                      item.invalid_rows > 0 ? "text-accent-danger font-medium" : "text-text-muted"
+                    }
                   >
                     {item.invalid_rows.toLocaleString()}
                   </TableCell>

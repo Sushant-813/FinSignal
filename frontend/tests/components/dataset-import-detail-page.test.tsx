@@ -21,9 +21,7 @@ function renderDetailPage(
 ) {
   setAccessToken("test-role-jwt");
   server.use(
-    http.get("http://localhost:3000/api/v1/auth/me", () =>
-      HttpResponse.json(buildAuthUser(role))
-    )
+    http.get("http://localhost:3000/api/v1/auth/me", () => HttpResponse.json(buildAuthUser(role)))
   );
 
   const router = createMemoryRouter(

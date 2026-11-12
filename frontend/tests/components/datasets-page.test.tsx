@@ -21,11 +21,7 @@ function renderDatasetsPage(
   role: "ADMIN" | "ANALYST" | "INVESTIGATOR" = "ANALYST"
 ) {
   setAccessToken("test-role-jwt");
-  server.use(
-    http.get("/api/v1/auth/me", () =>
-      HttpResponse.json(buildAuthUser(role))
-    )
-  );
+  server.use(http.get("/api/v1/auth/me", () => HttpResponse.json(buildAuthUser(role))));
 
   const router = createMemoryRouter(
     [
@@ -76,7 +72,9 @@ describe("DatasetsPage component (F4.2)", () => {
 
     await waitFor(() => {
       expect(screen.getByRole("heading", { name: "Datasets", level: 1 })).toBeInTheDocument();
-      expect(screen.getByRole("heading", { name: /import transaction dataset/i })).toBeInTheDocument();
+      expect(
+        screen.getByRole("heading", { name: /import transaction dataset/i })
+      ).toBeInTheDocument();
     });
 
     await waitFor(() => {
@@ -140,7 +138,9 @@ describe("DatasetsPage component (F4.2)", () => {
     await user.click(resetBtn);
 
     await waitFor(() => {
-      expect(screen.queryByRole("alert", { name: /namespace not found error/i })).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("alert", { name: /namespace not found error/i })
+      ).not.toBeInTheDocument();
     });
   });
 

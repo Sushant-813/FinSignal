@@ -7,23 +7,13 @@ import {
 
 describe("datasetFilterSchema and helpers (F4.2)", () => {
   it("converts valid YYYY-MM-DD to inclusive start and exclusive end in UTC", () => {
-    expect(toDateBoundaryParam("2026-11-01", "start")).toBe(
-      "2026-11-01T00:00:00.000Z"
-    );
-    expect(toDateBoundaryParam("2026-11-01", "end")).toBe(
-      "2026-11-02T00:00:00.000Z"
-    );
+    expect(toDateBoundaryParam("2026-11-01", "start")).toBe("2026-11-01T00:00:00.000Z");
+    expect(toDateBoundaryParam("2026-11-01", "end")).toBe("2026-11-02T00:00:00.000Z");
     // Month rollover test
-    expect(toDateBoundaryParam("2026-11-30", "end")).toBe(
-      "2026-12-01T00:00:00.000Z"
-    );
+    expect(toDateBoundaryParam("2026-11-30", "end")).toBe("2026-12-01T00:00:00.000Z");
     // Leap year test
-    expect(toDateBoundaryParam("2024-02-28", "end")).toBe(
-      "2024-02-29T00:00:00.000Z"
-    );
-    expect(toDateBoundaryParam("2024-02-29", "end")).toBe(
-      "2024-03-01T00:00:00.000Z"
-    );
+    expect(toDateBoundaryParam("2024-02-28", "end")).toBe("2024-02-29T00:00:00.000Z");
+    expect(toDateBoundaryParam("2024-02-29", "end")).toBe("2024-03-01T00:00:00.000Z");
   });
 
   it("returns null for malformed or non-date strings", () => {
@@ -75,12 +65,11 @@ describe("datasetFilterSchema and helpers (F4.2)", () => {
   });
 
   it("validates namespace uppercase alphanumeric schema", () => {
-    expect(
-      datasetFilterSchema.safeParse({ source_namespace: "SYNTHETIC_DATA_01" }).success
-    ).toBe(true);
-    expect(
-      datasetFilterSchema.safeParse({ source_namespace: "synthetic-lowercase" }).success
-    ).toBe(false);
+    expect(datasetFilterSchema.safeParse({ source_namespace: "SYNTHETIC_DATA_01" }).success).toBe(
+      true
+    );
+    expect(datasetFilterSchema.safeParse({ source_namespace: "synthetic-lowercase" }).success).toBe(
+      false
+    );
   });
 });
-

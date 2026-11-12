@@ -23,7 +23,10 @@ export const datasetUploadFormSchema = z.object({
   source_namespace: z
     .string()
     .trim()
-    .regex(NAMESPACE_REGEX, "Namespace must be 3-64 characters of uppercase letters, digits, or underscores.")
+    .regex(
+      NAMESPACE_REGEX,
+      "Namespace must be 3-64 characters of uppercase letters, digits, or underscores."
+    )
     .default("SYNTHETIC"),
   source_type: z
     .string()
@@ -37,9 +40,14 @@ export type DatasetUploadFormValues = z.infer<typeof datasetUploadFormSchema>;
 
 export const datasetUploadSchema = z.object({
   file: z
-    .custom<File>((val) => val instanceof File || (typeof val === "object" && val !== null && "name" in val && "size" in val), {
-      message: "Please select a file to upload.",
-    })
+    .custom<File>(
+      (val) =>
+        val instanceof File ||
+        (typeof val === "object" && val !== null && "name" in val && "size" in val),
+      {
+        message: "Please select a file to upload.",
+      }
+    )
     .refine((file) => file.name.toLowerCase().endsWith(".csv"), {
       message: "Only CSV files (.csv) are accepted for dataset import.",
     })
@@ -50,4 +58,3 @@ export const datasetUploadSchema = z.object({
       message: "File exceeds maximum allowable size of 50 MB.",
     }),
 });
-

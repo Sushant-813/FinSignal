@@ -1,6 +1,12 @@
 import { AlertTriangle, CheckCircle } from "lucide-react";
 import { Badge } from "../../../components/ui/Badge.tsx";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../../../components/ui/Card.tsx";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "../../../components/ui/Card.tsx";
 import {
   Table,
   TableBody,
@@ -51,7 +57,10 @@ export function DatasetImportErrorTable({ errors }: DatasetImportErrorTableProps
         {!hasErrors ? (
           <div className="flex items-center gap-3 rounded-lg border border-border-default bg-surface-secondary p-4 text-[13px] text-text-secondary">
             <CheckCircle className="h-5 w-5 text-accent-success shrink-0" aria-hidden="true" />
-            <span>No validation, formatting, or quarantine errors were recorded for this import execution.</span>
+            <span>
+              No validation, formatting, or quarantine errors were recorded for this import
+              execution.
+            </span>
           </div>
         ) : (
           <div className="space-y-2">
@@ -69,7 +78,9 @@ export function DatasetImportErrorTable({ errors }: DatasetImportErrorTableProps
                   {errorList.map((err, idx) => (
                     <TableRow key={`${err.row_number ?? "none"}-${err.error_code}-${idx}`}>
                       <TableCell className="font-mono text-[12px] text-text-secondary">
-                        {err.row_number !== null && err.row_number !== undefined ? err.row_number : "—"}
+                        {err.row_number !== null && err.row_number !== undefined
+                          ? err.row_number
+                          : "—"}
                       </TableCell>
                       <TableCell className="font-mono text-[12px] text-text-primary">
                         {err.field_name || "—"}
@@ -79,9 +90,7 @@ export function DatasetImportErrorTable({ errors }: DatasetImportErrorTableProps
                           {err.error_code}
                         </Badge>
                       </TableCell>
-                      <TableCell className="text-[13px] text-text-primary">
-                        {err.message}
-                      </TableCell>
+                      <TableCell className="text-[13px] text-text-primary">{err.message}</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -89,7 +98,8 @@ export function DatasetImportErrorTable({ errors }: DatasetImportErrorTableProps
             </div>
             {errorList.length >= 100 ? (
               <p className="text-[11px] text-text-muted italic">
-                Showing the first 100 recorded errors. Additional row-level quarantine errors are stored in server logs.
+                Showing the first 100 recorded errors. Additional row-level quarantine errors are
+                stored in server logs.
               </p>
             ) : null}
           </div>

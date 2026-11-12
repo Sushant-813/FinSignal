@@ -50,10 +50,13 @@ describe("Datasets API client functions (F4.1)", () => {
     let capturedUrl = "";
 
     server.use(
-      http.get(`http://localhost:3000/api/v1/datasets/imports/${SAMPLE_IMPORT_ID}`, ({ request }) => {
-        capturedUrl = request.url;
-        return HttpResponse.json(buildDatasetImportDetailFixture());
-      })
+      http.get(
+        `http://localhost:3000/api/v1/datasets/imports/${SAMPLE_IMPORT_ID}`,
+        ({ request }) => {
+          capturedUrl = request.url;
+          return HttpResponse.json(buildDatasetImportDetailFixture());
+        }
+      )
     );
 
     const detail = await getDatasetImportDetail(SAMPLE_IMPORT_ID);
@@ -101,12 +104,9 @@ describe("Datasets API client functions (F4.1)", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
 
     server.use(
-      http.post(
-        `http://localhost:3000/api/v1/datasets/imports/${SAMPLE_IMPORT_ID}/recover`,
-        () => {
-          return HttpResponse.json(buildDatasetImportSummaryFixture({ status: "PROCESSING" }));
-        }
-      )
+      http.post(`http://localhost:3000/api/v1/datasets/imports/${SAMPLE_IMPORT_ID}/recover`, () => {
+        return HttpResponse.json(buildDatasetImportSummaryFixture({ status: "PROCESSING" }));
+      })
     );
 
     const recoveryFile = new File(["account,amount\nacc1,500"], "batch_recovered.csv", {

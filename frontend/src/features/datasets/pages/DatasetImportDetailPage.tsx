@@ -59,11 +59,7 @@ export function DatasetImportDetailPage() {
 
             {/* Recover Action: Gated strictly to FAILED status and ADMIN/ANALYST roles */}
             {importData.status === "FAILED" && operatorCanManage ? (
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={() => setRecoveryOpen(true)}
-              >
+              <Button variant="primary" size="sm" onClick={() => setRecoveryOpen(true)}>
                 <RefreshCw className="h-4 w-4" />
                 Recover Import
               </Button>
@@ -107,7 +103,9 @@ export function DatasetImportDetailPage() {
             </Button>
           }
         >
-          {detailQuery.error instanceof Error ? detailQuery.error.message : "Failed to load import execution details."}
+          {detailQuery.error instanceof Error
+            ? detailQuery.error.message
+            : "Failed to load import execution details."}
         </Alert>
       ) : null}
 
