@@ -387,41 +387,32 @@ Enable authorized users to import supported CSV datasets, track real-time proces
 
 ## 11. F5 — Investigation Queue, Workspace & Lifecycle
 
+**Status:** IMPLEMENTED, AUDITED & SYNCHRONIZED (2026-11-13)
+**Audit Record:** `docs/F5_IMPLEMENTATION_AUDIT.md` (Verdict: *APPROVED WITH MINOR ISSUES*)
+
 ### Objective
 
 Deliver the core human investigation workflow.
 
-### Key tasks
+### Completed Milestones & Deliverables
 
-- Build investigation queue with supported filters and pagination.
-- Build manual investigation creation from a primary transaction.
-- Build investigation workspace from verified response contracts.
-- Display primary and related transaction context.
-- Implement assignment and self-assignment actions allowed by the backend.
-- Implement priority and status updates supported by the API.
-- Implement related transaction linking within the documented one-hop rule.
-- Implement human resolution with allowed outcomes and required notes.
-- Render resolved investigations as terminal/read-only.
-- Handle concurrent updates and `409` conflicts by refreshing authoritative state.
+- [x] **F5.1 — Foundation & API Layer:** Pure async client for all 7 endpoints (`list`, `create`, `get`, `patch`, `resolve`, `list_transactions`, `add_transaction`); Zod 4 schemas with `extra="forbid"`; `investigationKeys` cache hierarchy; 8 fail-closed capability helpers in `capabilities.ts`.
+- [x] **F5.2 — Shared UI Primitives & Filter Bar:** Badges (`InvestigationStatusBadge`, `InvestigationPriorityBadge`, `InvestigationResolutionBadge`); `useInvestigationFilterParams` URL synchronization with mutual exclusivity between `assigned_to` and `unassigned=true`; `InvestigationFiltersBar`.
+- [x] **F5.3 — Investigation Queue Page:** `InvestigationsQueuePage` at `/investigations`; accessible `InvestigationQueueTable` with server-side pagination and deterministic backend ordering (`created_at DESC, id DESC`); empty and loading states.
+- [x] **F5.4 — Investigation Creation Flow:** `InvestigationCreateDialog` with pre-filled, locked transaction UUID from `TransactionDetailPage` ("Investigate Transaction") and queue entry point; priority default `MEDIUM`; no creation notes per backend contract.
+- [x] **F5.5 — Investigation Workspace:** `InvestigationWorkspacePage` at `/investigations/:investigationId`; aggregate context load via single query; `InvestigationPrimaryTransactionCard` with `MoneyValue`; `InvestigationLatestRiskCard` static snapshot; `InvestigationRelatedTransactionsCard`; F6 placeholders; read-only `InvestigationResolutionBanner`.
+- [x] **F5.6 — Assignment, Lifecycle, Linking & Resolution:** `InvestigationAssignDialog` (manual UUID input, unassign); "Take Case" self-assignment; `InvestigationPriorityDialog`; `OPEN -> UNDER_REVIEW` transition; `InvestigationLinkTransactionDialog` with 4-way 1-hop backend error mappings; `InvestigationResolveDialog` with mandatory non-whitespace notes; HTTP `409 Conflict` state reload.
+- [x] **F5.7 — Testing & Verification:** 49 Vitest files (204 tests passed); 13 Playwright E2E tests passed (including 4 dedicated investigation journeys); typecheck and lint passed cleanly.
 
-### Deliverables
+### Exit Criteria Verification
 
-- Investigation queue.
-- Investigation creation flow.
-- Investigation workspace.
-- Assignment and lifecycle controls.
-- Related transaction association.
-- Resolution flow and resolved-case view.
-
-### Exit criteria
-
-- Authorized users can create investigations.
-- New cases reflect backend-created state.
-- Assignment behavior matches endpoint-level role and object rules.
-- Related transaction behavior follows the backend predicate; frontend does not implement graph expansion.
-- Only permitted users can resolve eligible cases.
-- Resolved cases are read-only.
-- Conflict and failure states are tested.
+- [x] Authorized users (`ADMIN`, `ANALYST`, `INVESTIGATOR`) can create investigations.
+- [x] New cases reflect backend-created state (`OPEN`, unassigned).
+- [x] Assignment behavior matches endpoint-level role and object rules (Investigator peer-assignment blocked; Admin reassignment allowed).
+- [x] Related transaction behavior follows backend predicate; frontend does not implement graph expansion.
+- [x] Only permitted users can resolve eligible cases (`UNDER_REVIEW` state required).
+- [x] Resolved cases are strictly read-only and immutable across all roles.
+- [x] Conflict (`409`) and failure states are tested in component tests and E2E Journey 4.
 
 ---
 
@@ -642,7 +633,7 @@ Use this table during implementation. Status values should be controlled and evi
 | F2 — Auth & application shell | IMPLEMENTED & LOCALLY VERIFIED (Formal Acceptance Pending) | F2.1–F2.6 implemented (`F1-AUD-005` & `F1-AUD-006` resolved); `format:check`/`lint`/`typecheck`/`build`/`check:types-drift`/`npm audit --omit=dev` (`0` prod vulns) pass; `87/87` Vitest tests (`22` files) + `5/5` mocked Playwright Chromium E2E pass | Remote F2 CI run pending; live-backend E2E (`E2E_API_MODE=live`) not executed; formal Phase F2 acceptance pending |
 | F3 — Analytics, transactions & risk | IMPLEMENTED & LOCALLY VERIFIED (2026-11-12) | Dashboard, analytics, explorer, facts, hybrid risk scoring, ECharts chunking, `121/121` Vitest + `7/7` mocked Playwright E2E pass | Remote F3 CI & live-backend E2E pending; formal acceptance pending |
 | F4 — Dataset import | IMPLEMENTED & LOCALLY VERIFIED (2026-11-13) | Ledger, filters, 50MB CSV upload, 5m polling cutoff, detail view, recovery dialog, `150/150` Vitest + `9/9` mocked Playwright E2E pass | Remote F4 CI & live-backend E2E pending; formal acceptance pending |
-| F5 — Investigation workflow | NOT STARTED | Role-specific investigation E2E | |
+| F5 — Investigation workflow | IMPLEMENTED & LOCALLY VERIFIED (2026-11-13) | Queue table, URL filters, creation modal, aggregate workspace, primary facts, risk snapshot, related transactions, assignment, lifecycle, linking, resolution, 409 conflict reload, 204/204 Vitest + 13/13 Playwright E2E pass | Independent audit verdict: APPROVED WITH MINOR ISSUES; Remote F5 CI & live-backend E2E pending |
 | F6 — Evidence & AI | NOT STARTED | Evidence/AI workflow tests | |
 | F7 — Hardening | NOT STARTED | Security/accessibility/test reports | |
 | F8 — Deployment & release | NOT STARTED | Staging acceptance and release record | |

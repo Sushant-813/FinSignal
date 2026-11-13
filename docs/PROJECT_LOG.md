@@ -2002,3 +2002,78 @@ Following push of the Phase F1 baseline (`ad02a4e`), remote GitHub Actions CI wo
 - **Live-Backend E2E (`E2E_API_MODE=live`):** Not executed locally (requires live running FastAPI + PostgreSQL backend with populated test transactions).
 - **Remote GitHub Actions CI:** Remote CI workflow execution for Phase F3 commits remains pending.
 - **Account-Level Analytics:** `/analytics/accounts/{account_id}` and `/unusual-spending` remain intentionally excluded from F3 per approved scope.
+
+---
+
+# 40. Phase F5 — Investigation Queue, Workspace & Lifecycle Implementation & Independent Audit
+
+**Date:** 2026-11-13
+**Role:** Senior Frontend Architect, Technical Lead & Independent Reviewer
+**Objective:** Deliver the complete Frontend Phase F5 scope (milestones F5.1 through F5.7) including the investigation queue, workspace, lifecycle transitions, related transaction linking, formal human resolution, and comprehensive unit/component/E2E test verification.
+
+## Key Changes & Components Added
+
+1. **Investigation Domain Types & API Client (`frontend/src/features/investigations/`):**
+   - Implemented pure async functions in `api/investigations-api.ts` covering all seven backend endpoints (`listInvestigations`, `createInvestigation`, `getInvestigation`, `patchInvestigation`, `resolveInvestigation`, `getInvestigationTransactions`, `addRelatedTransaction`).
+   - Re-exported canonical OpenAPI types in `types/investigations.types.ts` without drift or loose type assertions.
+   - Built Zod 4 mutation and filter schemas (`investigation-filter-schema.ts`, `investigation-mutations-schema.ts`) strictly whitelisting allowed properties and enforcing backend `extra="forbid"` constraints.
+   - Enforced mutual exclusivity between `assigned_to` and `unassigned=true` in client filter normalization, preventing HTTP 400 filter conflicts.
+   - Extended `investigationKeys` in `frontend/src/lib/api/query-keys.ts` with hierarchical cache structures.
+   - Implemented 8 fail-closed capability helpers in `frontend/src/lib/permissions/capabilities.ts` strictly mirroring backend RBAC and lifecycle rules.
+
+2. **Investigation Queue Page (`frontend/src/features/investigations/pages/InvestigationsQueuePage.tsx`):**
+   - Replaced placeholder at `/investigations` with fully interactive, accessible queue page protected by `canAccessInvestigations(user)`.
+   - Built `InvestigationFiltersBar` with synchronized URL search parameters (`useInvestigationFilterParams`) for status, priority, page size, and assignee mode (`ALL`, `MINE`, `UNASSIGNED`, `OTHER`).
+   - Built `InvestigationQueueTable` rendering status badges, priority badges, primary transaction references, and server-side pagination with deterministic backend ordering (`created_at DESC, id DESC`).
+   - Provided clean loading skeletons, error retry actions, and distinct empty states (no cases vs no matching filters).
+
+3. **Investigation Creation Flow (`frontend/src/features/investigations/components/InvestigationCreateDialog.tsx`):**
+   - Implemented creation modal accessible from queue header and directly from `TransactionDetailPage` ("Investigate Transaction" button).
+   - Pre-populates and locks primary transaction UUID when opened from transaction detail.
+   - Enforces default `MEDIUM` priority; strictly adheres to backend contract by omitting initial creation notes (`InvestigationCreateRequest` accepts only `transaction_id` and `priority`).
+   - Navigates immediately to `/investigations/:investigationId` upon successful creation.
+
+4. **Investigation Workspace (`frontend/src/features/investigations/pages/InvestigationWorkspacePage.tsx`):**
+   - Routed at `/investigations/:investigationId` with client-side UUID validation.
+   - Single-query aggregate loading (`useInvestigationDetailQuery`) retrieving `InvestigationDetailResponse` envelope without N+1 waterfalls.
+   - `InvestigationWorkspaceHeader`: Displays case metadata, status, priority, assignee, and role-gated action buttons.
+   - `InvestigationPrimaryTransactionCard`: Formats immutable transaction facts strictly via `<MoneyValue>` and `<TimestampDisplay>`, with direct link to transaction explorer.
+   - `InvestigationLatestRiskCard`: Renders read-only snapshot of risk score and risk level recorded at case creation.
+   - `InvestigationRelatedTransactionsCard`: Displays associated transactions from aggregate payload and provides linking trigger.
+   - `InvestigationResolutionBanner`: Permanent read-only banner rendered when case is in `RESOLVED` status, displaying verdict, audit notes, resolver, and timestamp.
+   - `InvestigationEvidencePlaceholderCard` & `InvestigationAiSummaryPlaceholderCard`: Clear placeholders representing deferred Phase F6 scope without broken interactions.
+
+5. **Assignment, Lifecycle, Linking & Resolution Workflows:**
+   - `InvestigationAssignDialog`: Provides manual UUID assignment and unassignment for `ADMIN` role without fabricating an unverified user list.
+   - "Take Case" inline action: Enables one-click self-assignment for `INVESTIGATOR` on unassigned cases.
+   - "Release Case" action: Allows assigned investigators to return case to unassigned queue.
+   - `InvestigationPriorityDialog`: Allows authorized users (`ADMIN` or assigned `INVESTIGATOR`) to adjust triage priority.
+   - `OPEN -> UNDER_REVIEW` transition: Accessible via "Begin Review" button for assigned investigators and admins.
+   - `InvestigationLinkTransactionDialog`: Associates related transactions satisfying the backend 4-way 1-hop scope predicate; maps backend error codes (`NAMESPACE_MISMATCH`, `TRANSACTION_NOT_RELATED`, `TRANSACTION_ALREADY_LINKED`, `INVESTIGATION_ALREADY_RESOLVED`, `TRANSACTION_NOT_FOUND`).
+   - `InvestigationResolveDialog`: Formal human resolution with allowed outcomes (`LEGITIMATE`, `SUSPICIOUS`, `CONFIRMED_FRAUD`, `INCONCLUSIVE`), mandatory non-whitespace notes (`.trim().min(1)`), and prominent permanent lock warning.
+   - Concurrency (`409 Conflict`) Handling: State conflicts (e.g. concurrent claim or modification) surface a clear warning alert, dismiss modal forms, and automatically invalidate queries to reload authoritative server state.
+
+6. **Comprehensive Test Suite & Independent Audit (`F5.7`):**
+   - Added 8 test and fixture files across unit schemas, API client, badges, queue page, workspace page, creation modal, and Playwright E2E.
+   - Authored 4 comprehensive Playwright journeys in `tests/e2e/investigations.spec.ts` (ANALYST creation, INVESTIGATOR lifecycle, ADMIN management, Concurrency 409 conflict handling).
+   - Conducted formal independent audit (`docs/F5_IMPLEMENTATION_AUDIT.md`) resulting in verdict: **APPROVED WITH MINOR ISSUES** (zero Critical, High, or Medium blocking defects).
+
+## Verification Results (Independent Audit Baseline)
+
+- **TypeScript Typecheck (`npm run typecheck`):** `PASS` (`tsc -b --pretty`, 0 errors).
+- **ESLint Code Quality (`npm run lint`):** `PASS` (`eslint .`, 0 errors, 0 warnings).
+- **Vitest Unit & Component Tests (`npm run test`):** **`204/204` PASS** across `49` test files (`0` failed, `0` skipped, duration 31.03s).
+- **Playwright E2E Browser Tests (`npm run test:e2e`):** **`13/13` PASS** in Chromium against production preview (duration 31.2s).
+- **Production Build (`npm run build`):** `PASS` (clean build with code-splitting chunks).
+
+## Audit Findings Disposition & Documentation Synchronization
+
+- **F5-AUD-01 (Creation Notes):** Reconciled `FRONTEND_PRD.md` (§6.5, §AC-006) to match the authoritative backend contract (`InvestigationCreateRequest` accepts only `transaction_id` and `priority`; initial creation notes are forbidden).
+- **F5-AUD-02 (Capability Helper Parameter):** Noted `canAdminAssignInvestigation` optional parameter as a non-blocking type tightness recommendation; runtime usage in workspace safely passes full context.
+- **F5-AUD-03 (Mocked E2E Boundary):** Documented that Playwright journeys use client-side route interception (`page.route`); live-backend E2E execution against running PostgreSQL is retained as a staging qualification gate.
+- **Queue Ordering Discrepancy Resolved:** Verified from backend repository source code (`src/finsignal/investigations/repository.py:184`) that deterministic SQL ordering is strictly `created_at DESC, id DESC`. Reconciled in `FRONTEND_API_INTEGRATION.md`.
+- **Role Model Reconciled:** Verified that backend authentication and database constraint `chk_users_role` enforce strictly three roles (`ADMIN`, `ANALYST`, `INVESTIGATOR`). There is no implemented `AUDITOR` role; unauthenticated/unknown roles fail closed.
+
+## Next Phase
+
+- **Phase F6 — Evidence & AI-Assisted Investigation:** Append-only evidence attachment, evidence list, AI briefing summary generation, staleness detection, and summary history.

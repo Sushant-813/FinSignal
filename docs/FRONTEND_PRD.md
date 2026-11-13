@@ -97,7 +97,7 @@ The frontend MVP will not:
 
 ## 5. Users and Roles
 
-The frontend supports the three backend roles:
+The frontend supports the three backend roles (enforced authoritatively by backend authentication and the database `chk_users_role` constraint):
 
 -   **ADMIN** --- platform administration and broad operational
     authority.
@@ -106,6 +106,8 @@ The frontend supports the three backend roles:
     access.
 -   **INVESTIGATOR** --- investigation ownership, evidence work, and
     human resolution within backend authorization rules.
+
+No other roles (including hypothetical external roles such as `AUDITOR`) exist in the backend system; any unknown or missing role fails closed with zero workspace access.
 
 The backend is the authorization authority. Hiding a button or route in
 the frontend is not a security control. The frontend must handle `401`,
@@ -279,7 +281,7 @@ transactions.
 3.  User opens a transaction and chooses to create an investigation, or
     creates one from the investigation workflow using a primary
     transaction ID.
-4.  User supplies priority and optional initial notes.
+4.  User selects triage priority (defaults to `MEDIUM`). Note: the authoritative backend `InvestigationCreateRequest` schema accepts only `transaction_id` and `priority`; initial creation notes are forbidden (`extra="forbid"`).
 5.  Backend creates an `OPEN`, unassigned investigation and binds
     exactly one `PRIMARY` transaction.
 6.  Frontend displays the newly created workspace and its current state.
@@ -948,7 +950,7 @@ pass against a real or contract-faithful backend environment.
 ### AC-006 --- Investigation creation and queue
 
 -   An authorized user can create an investigation for a primary
-    transaction with priority and optional notes.
+    transaction with priority (defaults to `MEDIUM`; no creation notes per backend contract).
 -   The resulting case appears as `OPEN` and unassigned.
 -   Queue filters and pagination match the API contract.
 -   The UI does not claim automatic case creation.

@@ -206,7 +206,9 @@ The following matrix reflects endpoint-specific rules explicitly documented in `
 
 Important details:
 
-- `GET /investigations/{id}` is role-accessible, but investigator object access may be scoped by assignment rules in the implementation.
+- Backend authentication and the database constraint `chk_users_role` enforce a strict three-role model (`ADMIN`, `ANALYST`, `INVESTIGATOR`). There is no implemented `AUDITOR` role in the backend system; any unknown, unauthenticated, or inactive role fails closed with HTTP 401 or 403.
+- `GET /investigations/{id}` is role-accessible to all three active roles (`ADMIN`, `ANALYST`, `INVESTIGATOR`).
+- Investigation mutations (`PATCH /investigations/{id}`, `POST /investigations/{id}/resolve`, `POST /investigations/{id}/transactions`) are restricted to `ADMIN` and `INVESTIGATOR`. Analysts have zero mutation rights.
 - AI summary generation is Admin or assigned Investigator only.
 - Analysts have read-only AI summary access.
 - Evidence listing and evidence attachment have different permissions.
@@ -443,29 +445,51 @@ Analytics responses are backend-computed. The frontend may map response fields t
 
 Investigation list filters documented:
 
-- `page`
-- `page_size`
-- `status`: `OPEN`, `UNDER_REVIEW`, `RESOLVED`
-- `priority`: `LOW`, `MEDIUM`, `HIGH`, `CRITICAL`
-- `assigned_to`
-- `unassigned`
+- `page`: 1-indexed, minimum 1 (default `1`).
+- `page_size`: items per page, 1 to 100 (default `25`).
+- `status`: `OPEN`, `UNDER_REVIEW`, `RESOLVED`.
+- `priority`: `LOW`, `MEDIUM`, `HIGH`, `CRITICAL`.
+- `assigned_to`: user UUID filter.
+- `unassigned`: boolean flag.
 
-Supplying both `assigned_to` and `unassigned=true` returns `400 FILTER_CONFLICT`.
+Supplying both `assigned_to` and `unassigned=true` is rejected fail-closed (the frontend filter schema and API client enforce mutual exclusivity, omitting `assigned_to` when `unassigned=true` is set).
 
-Create request example:
+**Deterministic Ordering:** The backend repository executes strictly:
+```sql
+ORDER BY investigations.created_at DESC, investigations.id DESC
+```
+Client-side sorting is not supported; the queue table displays records faithfully in authoritative server order.
+
+Create request example (`POST /api/v1/investigations`):
 
 ```json
 {
-  "transaction_id": "transaction-uuid",
+  "transaction_id": "00000000-0000-4000-8000-000000000000",
   "priority": "HIGH"
 }
 ```
 
-Creation is manual-first. Note: the backend schema (`InvestigationCreateRequest`) strictly forbids additional properties (`extra="forbid"`); do not send fields such as `notes` or `title` during creation. If investigator notes are needed, attach them post-creation via `POST /api/v1/investigations/{id}/evidence` with `evidence_type: "USER_NOTE"`. The backend creates an `OPEN`, unassigned investigation and binds the primary transaction.
+Creation is manual-first. The backend schema (`InvestigationCreateRequest`) strictly forbids additional properties (`extra="forbid"`); do not send fields such as `notes` or `title` during creation. If investigator notes are needed, attach them post-creation via evidence records. The backend creates an `OPEN`, unassigned investigation and binds the primary transaction, returning `201 Created` with full `InvestigationDetailResponse`.
 
-Workspace response is documented as an `InvestigationDetailResponse` containing investigation metadata, primary transaction context, related transaction count, and latest risk-analysis context. Verify exact nested fields from OpenAPI before coding.
+Workspace response (`GET /api/v1/investigations/{id}`):
+Returns an `InvestigationDetailResponse` envelope containing metadata, primary transaction facts (`amount` string, `currency`, `direction`, `category`, `payment_method`, etc.), `latest_risk_analysis` snapshot (`score`, `risk_level`, `model_version`, `created_at`), and `related_transactions` list (`InvestigationTransactionItem[]`). Note: The workspace page consumes `related_transactions` directly from this aggregate payload, avoiding redundant secondary calls to `/investigations/{id}/transactions`.
 
-Resolution request example:
+Investigation update (`PATCH /api/v1/investigations/{id}`):
+Request body (`InvestigationPatchRequest`, `extra="forbid"`):
+- `assigned_to`: UUID to assign, or explicit `null` to unassign.
+- `status`: Only `"UNDER_REVIEW"` is permitted via PATCH (`OPEN -> UNDER_REVIEW`). Terminal resolution must use `/resolve`.
+- `priority`: `"LOW"`, `"MEDIUM"`, `"HIGH"`, or `"CRITICAL"`.
+
+Concurrency & Conflict Error Mappings:
+- Uses database row lock `SELECT ... FOR UPDATE`.
+- `409 Conflict` (`code="CASE_ALREADY_ASSIGNED"`): Concurrency loser race condition. The frontend surfaces a concurrency warning and reloads `investigationKeys.detail(id)` and `investigationKeys.lists()` immediately.
+- `409 Conflict` (`code="INVESTIGATION_ALREADY_RESOLVED"`): Resolved investigations are strictly immutable.
+- `404 Not Found` (`code="USER_NOT_FOUND"`): Assignee user does not exist.
+- `400 Bad Request` (`code="USER_INACTIVE"`): Assignee user account is inactive.
+- `400 Bad Request` (`code="INVALID_ASSIGNEE_ROLE"`): Assignee does not possess `ADMIN` or `INVESTIGATOR` role.
+- `403 Forbidden`: Investigators cannot take peer-assigned cases or mutate cases assigned to others.
+
+Resolution request example (`POST /api/v1/investigations/{id}/resolve`):
 
 ```json
 {
@@ -475,21 +499,21 @@ Resolution request example:
 ```
 
 Allowed outcomes:
-
 - `LEGITIMATE`
 - `SUSPICIOUS`
 - `CONFIRMED_FRAUD`
 - `INCONCLUSIVE`
 
-Resolution requires non-empty, non-whitespace notes and a case currently in `UNDER_REVIEW`. An `OPEN` case cannot be resolved directly. Resolved cases are immutable.
+Resolution requires meaningful non-empty, non-whitespace notes (validated client-side via Zod `.trim().min(1)` and backend Pydantic field validator). Case must currently be in `UNDER_REVIEW` (returns `409 Conflict` with `code="INVALID_LIFECYCLE_TRANSITION"` if `OPEN` or already resolved). Successful resolution renders the case permanently read-only and immutable.
 
-Related transaction linking:
-
-- Must use the same `source_namespace` as the primary transaction.
-- Must satisfy the documented direct 1-hop shared-account predicate.
-- Cannot link a transaction already linked to the case.
-- Cannot link to a resolved investigation.
-- The frontend must not implement recursive graph traversal.
+Related transaction linking (`POST /api/v1/investigations/{id}/transactions`):
+Request body: `{ "transaction_id": "uuid" }`.
+- Must belong to the exact same `source_namespace` as the primary transaction (returns `400` with `code="NAMESPACE_MISMATCH"`).
+- Must satisfy the strict 4-way 1-hop shared-account predicate with the primary transaction (returns `400` with `code="TRANSACTION_NOT_RELATED"`).
+- Cannot link an already-linked transaction (returns `409` with `code="TRANSACTION_ALREADY_LINKED"`).
+- Cannot link to a resolved case (returns `409` with `code="INVESTIGATION_ALREADY_RESOLVED"`).
+- Target transaction must exist (returns `404` with `code="TRANSACTION_NOT_FOUND"`).
+- Investigators can only link on cases assigned to themselves (returns `403` with `code="FORBIDDEN"`).
 
 Evidence list:
 

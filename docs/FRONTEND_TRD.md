@@ -341,6 +341,24 @@ For active dataset ingestion monitoring, TanStack Query refetch intervals are bo
 
 The cutoff safeguard operates independently per import ID. When the query response contains items whose tracking duration exceeds 300,000 ms, `shouldPollImport` evaluates to `false`, disabling automatic background polling. This prevents runaway network traffic if an import remains stuck in backend processing while leaving manual on-demand refetching available.
 
+#### 8.1.2 Investigation Workspace & Lifecycle Query Architecture (Phase F5)
+
+Investigation state management adheres to backend-authoritative invariants without speculative optimistic updates:
+
+| Operation | Query Hook / Function | Query Key | Cache Invalidation Behavior | Concurrency (409) Handling |
+|---|---|---|---|---|
+| Queue List | `useInvestigationListQuery` | `investigationKeys.list(params)` | Stale time: 10s. Placeholder: `keepPreviousData` for smooth pagination. | Refreshes on error retry action |
+| Workspace Context | `useInvestigationDetailQuery` | `investigationKeys.detail(id)` | Stale time: 10s. Disabled if UUID is invalid. | Reloads automatically on mutation conflict |
+| Create Case | `useCreateInvestigationMutation` | N/A | Invalidates `investigationKeys.lists()`. Navigates to `/investigations/:id`. | N/A (validates unique primary link) |
+| Patch Case (Assign/Priority/Status) | `usePatchInvestigationMutation` | N/A | On success: invalidates `investigationKeys.detail(id)` and `investigationKeys.lists()`. | On 409 Conflict: immediately invalidates `detail` and `lists` to reload server winner. |
+| Resolve Case | `useResolveInvestigationMutation` | N/A | On success: invalidates `investigationKeys.detail(id)` and `investigationKeys.lists()`. Permanently locks workspace controls. | On 409 Conflict: invalidates `detail` and `lists`. Displays error alert. |
+| Link Related Transaction | `useLinkTransactionMutation` | N/A | On success: invalidates `investigationKeys.detail(id)`. | On 409 Conflict: invalidates `detail`. Maps backend 4-way scope/partition errors. |
+
+##### Invariants:
+1. **Zero Client Financial Arithmetic:** Monetary values are rendered strictly via `<MoneyValue amount={amount} currency={currency} />`.
+2. **Zero Client Risk Scoring:** The workspace displays the static snapshot from `latest_risk_analysis` returned by the backend detail endpoint without computing scores.
+3. **Strict Resolved Immutability:** When `investigation.status === "RESOLVED"`, all mutation dialogs, assignment controls, priority buttons, and link triggers are disabled across all roles.
+
 ### 8.2 Client/UI state
 
 Use component state for local interactions. Use React Context for small cross-cutting state such as theme or application shell state where appropriate.

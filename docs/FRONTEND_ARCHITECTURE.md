@@ -556,14 +556,18 @@ If the first release has no distinct risk queue API, Risk should remain a reusab
 
 ### 7.8 Investigations (`features/investigations`)
 
-Subdomains:
+Phase F5 implements the core investigation queue, workspace, and lifecycle architecture:
 
-- `queue`: list, filter, sort, and paginate cases.
-- `workspace`: case overview, assignment, status progression, and resolution.
-- `evidence`: append-only evidence display and attachment.
-- `ai-summary`: generation lifecycle, summary history, and structured summary display.
-
-These subdomains share investigation identity and workspace context. They should not become separate applications or independently own duplicate investigation state.
+- **Queue (`InvestigationsQueuePage` at `/investigations`):** Server-side paginated queue table displaying case ID, operational status badge, priority badge, primary transaction ID, assignee email/UUID, and deterministic UTC timestamps. Synchronized via `useInvestigationFilterParams` (`status`, `priority`, `page`, `page_size`, `assigned_to`, `unassigned`) with strict mutual exclusivity between `assigned_to` and `unassigned=true`. Server ordering is authoritative: `created_at DESC, id DESC`.
+- **Case Creation (`InvestigationCreateDialog`):** Modal dialog accessible from the queue header and from `TransactionDetailPage` ("Investigate Transaction" button, pre-populating and locking the transaction UUID). Validates target transaction UUID and priority (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL`, default `MEDIUM`). In accordance with backend schema `InvestigationCreateRequest` (`extra="forbid"`), initial creation notes are not accepted.
+- **Workspace (`InvestigationWorkspacePage` at `/investigations/:investigationId`):** Aggregate workspace loading the authoritative `InvestigationDetailResponse` envelope in a single query (`useInvestigationDetailQuery`) avoiding N+1 requests:
+  - `InvestigationWorkspaceHeader`: Case metadata and role-gated lifecycle mutation triggers.
+  - `InvestigationPrimaryTransactionCard`: Authoritative immutable transaction facts formatted with `<MoneyValue>` and `<TimestampDisplay>` with direct link to transaction explorer.
+  - `InvestigationLatestRiskCard`: Static snapshot of risk score and level recorded at case creation.
+  - `InvestigationRelatedTransactionsCard`: Displays linked transactions and triggers linking modal.
+  - `InvestigationResolutionBanner`: Prominent read-only banner rendered when `status === "RESOLVED"`, showing resolution verdict, audit notes, resolver, and timestamp.
+  - Phase F6 placeholders (`InvestigationEvidencePlaceholderCard`, `InvestigationAiSummaryPlaceholderCard`): Honest visual placeholders indicating deferred F6 functionality without broken interactions.
+- **Lifecycle & Concurrency:** Lifecycle mutations (`usePatchInvestigationMutation`, `useResolveInvestigationMutation`, `useLinkTransactionMutation`) handle HTTP `409 Conflict` by alerting the user, dismissing modals, and invalidating `investigationKeys` to reload winning server state. Once resolved, investigations are permanently immutable.
 
 ### 7.9 Administration
 
@@ -638,19 +642,36 @@ Route protection does not replace backend checks. In Phase F2, `ProtectedRoute` 
 
 ### 9.2 Role and object gates
 
-Centralized Phase F2 capability helpers in `src/lib/permissions/capabilities.ts` fail closed when user is missing, `is_active !== true`, or `isUserRole(user.role)` is `false`:
+Centralized capability helpers in `src/lib/permissions/capabilities.ts` fail closed when user is missing, `is_active !== true`, or `isUserRole(user.role)` is `false`:
 
 ```text
+// Core navigation capabilities (F2–F5)
 canAccessWorkspace(user)         // ADMIN | ANALYST | INVESTIGATOR
 canViewTransactions(user)        // ADMIN | ANALYST | INVESTIGATOR
 canViewAnalytics(user)           // ADMIN | ANALYST | INVESTIGATOR
 canViewInvestigations(user)      // ADMIN | ANALYST | INVESTIGATOR
 canViewDatasetImports(user)      // ADMIN | ANALYST | INVESTIGATOR (read-only import history)
 canManageDatasets(user)          // ADMIN | ANALYST (upload & recovery)
+
+// Risk analysis capabilities (F3)
+canAnalyzeActiveRisk(user)       // ADMIN | ANALYST | INVESTIGATOR
+canAnalyzeValidatedRisk(user)    // ADMIN only
+
+// Investigation lifecycle capabilities (F5)
+canCreateInvestigation(user)                                  // ADMIN | ANALYST | INVESTIGATOR
+canModifyInvestigation(user, investigation)                   // ADMIN, or INVESTIGATOR if assigned to self/unassigned; false if RESOLVED
+canSelfAssignInvestigation(user, investigation)               // INVESTIGATOR if unassigned; ADMIN if not self; false if RESOLVED
+canSelfUnassignInvestigation(user, investigation)             // ADMIN or INVESTIGATOR if assigned to self; false if RESOLVED
+canAdminAssignInvestigation(user, investigation?)             // ADMIN only; false if investigation.status === "RESOLVED"
+canUpdateInvestigationPriority(user, investigation)           // ADMIN, or INVESTIGATOR if assigned to self; false if RESOLVED
+canTransitionInvestigation(user, investigation)               // OPEN -> UNDER_REVIEW: ADMIN, or INVESTIGATOR if assigned to self
+canLinkInvestigationTransaction(user, investigation)          // ADMIN, or INVESTIGATOR if assigned to self; false if RESOLVED
+canResolveInvestigation(user, investigation)                  // Case must be UNDER_REVIEW: ADMIN, or INVESTIGATOR if assigned to self
+
 getDefaultAuthenticatedRoute(user)
 ```
 
-*(Future risk-model, investigation mutation/resolution, evidence, and AI-summary capabilities remain deferred to Phases F3–F6.)*
+*(Evidence attachment and AI-summary generation capabilities remain planned for Phase F6.)*
 
 These helpers are UI policy adapters, not authorization engines. Backend `403` responses remain authoritative.
 
@@ -730,10 +751,21 @@ const analyticsKeys = {
 
 const investigationKeys = {
   all: ["investigations"] as const,
-  list: (filters: InvestigationFilters) =>
-    [...investigationKeys.all, "list", filters] as const,
-  detail: (id: string) =>
-    [...investigationKeys.all, "detail", id] as const,
+  lists: () => [...investigationKeys.all, "list"] as const,
+  list: (params: InvestigationListParams) =>
+    [
+      ...investigationKeys.lists(),
+      {
+        page: params.page,
+        page_size: params.page_size,
+        status: params.status ?? null,
+        priority: params.priority ?? null,
+        assigned_to: normalizeNullableString(params.assigned_to),
+        unassigned: params.unassigned ?? null,
+      },
+    ] as const,
+  details: () => [...investigationKeys.all, "detail"] as const,
+  detail: (id: string) => [...investigationKeys.details(), id] as const,
 };
 ```
 

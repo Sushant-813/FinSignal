@@ -231,7 +231,23 @@ In the generated OpenAPI contract, `UserResponse.role` is typed as `string`; Pha
 - Is read-only on existing investigations.
 - Cannot self-assign, modify cases, link transactions, attach evidence, or resolve cases.
 
-These rules must be reconciled with `API_GUIDELINES.md` and the running backend. Where endpoint-specific documentation conflicts with a general role matrix, do not guess: verify the implemented endpoint policy and record the canonical rule.
+**UNKNOWN / AUDITOR / INACTIVE ROLES**
+- The backend authentication system and database constraint `chk_users_role` enforce a strict three-role model (`ADMIN`, `ANALYST`, `INVESTIGATOR`).
+- There is no `AUDITOR` role in the backend system.
+- Any unauthenticated, inactive, or unknown role string fails closed with zero access to investigation routes or endpoints.
+
+The centralized frontend capability helpers in `src/lib/permissions/capabilities.ts` reflect these rules:
+- `canAccessInvestigations(user)` requires active user with `ADMIN`, `ANALYST`, or `INVESTIGATOR` role.
+- `canCreateInvestigation(user)` requires active user with `ADMIN`, `ANALYST`, or `INVESTIGATOR` role.
+- `canSelfAssignInvestigation(user, investigation)` requires active `INVESTIGATOR` on unassigned case, or active `ADMIN` on case not assigned to self; returns `false` if case is `RESOLVED`.
+- `canSelfUnassignInvestigation(user, investigation)` requires active `ADMIN` or `INVESTIGATOR` assigned to self; returns `false` if case is `RESOLVED`.
+- `canAdminAssignInvestigation(user, investigation?)` requires active `ADMIN`; returns `false` if `investigation.status === "RESOLVED"`.
+- `canUpdateInvestigationPriority(user, investigation)` requires active `ADMIN`, or active `INVESTIGATOR` assigned to self; returns `false` if `investigation.status === "RESOLVED"`.
+- `canTransitionInvestigation(user, investigation)` requires case in `OPEN` and active `ADMIN` or `INVESTIGATOR` assigned to self.
+- `canLinkInvestigationTransaction(user, investigation)` requires active `ADMIN`, or active `INVESTIGATOR` assigned to self; returns `false` if `investigation.status === "RESOLVED"`.
+- `canResolveInvestigation(user, investigation)` requires case in `UNDER_REVIEW` and active `ADMIN`, or active `INVESTIGATOR` assigned to self.
+
+These rules have been verified against backend source code and enforced at the API client boundary. Where endpoint-specific policy rejects a request (e.g. concurrent claim or permission violation), the frontend surfaces an authoritative alert without crashing or entering inconsistent state.
 
 ### 6.4 Access-denied behavior
 
@@ -569,7 +585,7 @@ The frontend security baseline is acceptable for MVP review when:
 - [x] `/auth/me` establishes current-user context and runtime role narrowing (`isUserRole` / `parseAuthUser` fail closed).
 - [x] Protected UI does not render while authentication is unresolved (`ProtectedRoute` / `PublicOnlyRoute` `initializing` loading guard).
 - [x] Backend remains authoritative for all permissions (`canViewDatasetImports` vs `canManageDatasets` documented as UI policy only; backend `403` preserves session).
-- [ ] Endpoint and object-level authorization behavior is verified across remaining F3–F6 workflows (datasets upload/recovery, risk models, investigations, evidence, AI summary).
+- [x] Endpoint and object-level authorization behavior is verified across F3–F5 workflows (datasets upload/recovery, risk models, investigations queue/workspace/lifecycle; evidence and AI summary remain for Phase F6).
 - [x] Tokens and sensitive payloads are absent from URLs, logs, telemetry, and browser persistence in F2 tests (`session-lifecycle.test.tsx`, `auth.spec.ts`).
 - [x] XSS-safe rendering and open-redirect rejection (`sanitizeRedirectPath`) are implemented for F2 auth/shell views.
 - [ ] CORS and HTTPS are verified against a live deployed/staging backend (local mocked E2E and `env.ts` production HTTPS validation complete; live-backend E2E pending).

@@ -4,13 +4,14 @@ import { LoginPage } from "../../features/auth/pages/LoginPage.tsx";
 import { DashboardPage } from "../../features/dashboard/pages/DashboardPage.tsx";
 import { DatasetImportDetailPage } from "../../features/datasets/pages/DatasetImportDetailPage.tsx";
 import { DatasetsPage } from "../../features/datasets/pages/DatasetsPage.tsx";
+import { InvestigationsQueuePage } from "../../features/investigations/pages/InvestigationsQueuePage.tsx";
+import { InvestigationWorkspacePage } from "../../features/investigations/pages/InvestigationWorkspacePage.tsx";
 import { TransactionDetailPage } from "../../features/transactions/pages/TransactionDetailPage.tsx";
 import { TransactionsListPage } from "../../features/transactions/pages/TransactionsListPage.tsx";
 import { NotFoundPage } from "../errors/NotFoundPage.tsx";
 import { ErrorFallbackView } from "../errors/RootErrorBoundary.tsx";
 import { AppLayout } from "../layouts/AppLayout.tsx";
 import { AuthLayout } from "../layouts/AuthLayout.tsx";
-import { PhasePlaceholderPage } from "./PhasePlaceholderPage.tsx";
 import { ProtectedRoute } from "./ProtectedRoute.tsx";
 import { PublicOnlyRoute } from "./PublicOnlyRoute.tsx";
 
@@ -55,13 +56,11 @@ export const appRoutes: RouteObject[] = [
           },
           {
             path: "/investigations",
-            element: (
-              <PhasePlaceholderPage
-                title="Investigations"
-                phaseLabel="Phase F5"
-                description="Case queue, assignment management, evidence attachment, and AI advisory summary views are scheduled for Phases F5–F6."
-              />
-            ),
+            element: <InvestigationsQueuePage />,
+          },
+          {
+            path: "/investigations/:investigationId",
+            element: <InvestigationWorkspacePage />,
           },
           {
             path: "/datasets",

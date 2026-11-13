@@ -726,7 +726,7 @@ Phase F4 adds 7 Vitest/MSW test files and 1 Playwright E2E spec file, expanding 
   - ANALYST journey (upload CSV -> verify ledger row -> view detail drawer & quarantine errors -> dispatch recovery -> verify terminal completion).
   - INVESTIGATOR journey (verify read-only view; assert upload card and recovery buttons are hidden).
 
-### 23.2 Current Verification Baseline (Phase F4 Snapshot — 2026-11-13)
+### 23.2 Previous Verification Baseline (Phase F4 Snapshot)
 
 | Check | Tool / Runner | Result | Scope / Notes |
 |---|---|---|---|
@@ -736,6 +736,45 @@ Phase F4 adds 7 Vitest/MSW test files and 1 Playwright E2E spec file, expanding 
 | ESLint Code Quality | `eslint .` | **PASS (0 errors, 0 warnings)** | Flat config, zero rule bypasses |
 | OpenAPI Schema Drift | `node scripts/check-types-drift.mjs` | **PASS (zero drift)** | Generated `schema.ts` strictly in sync with `openapi.json` |
 | Production Build | `vite build` | **PASS (built in 8.25s)** | Dedicated chunks: `echarts-chunk`, `index` CSS/JS |
+
+---
+
+## 24. Implemented Phase F5 Test Suite & Verification Snapshot (2026-11-13)
+
+Phase F5 introduces the complete investigation management workflow (milestones F5.1 through F5.7), expanding the test suite to **49 Vitest files (204 tests)** and **13 Playwright E2E tests**:
+
+### 24.1 Phase F5 Test Suite Inventory
+
+- **Unit, Schema & API Tests:**
+  - `tests/unit/investigation-schemas.test.ts` (18 tests): Request validation matching backend `extra="forbid"`, UUID validation regex, resolution notes non-whitespace enforcement (`.trim().min(1)`), priority enums, pagination boundaries, and filter mutual exclusivity between `assigned_to` and `unassigned=true`.
+  - `tests/unit/investigations-api.test.ts` (11 tests): Pure async client verification for all 7 endpoints (`listInvestigations`, `createInvestigation`, `getInvestigation`, `patchInvestigation`, `resolveInvestigation`, `getInvestigationTransactions`, `addRelatedTransaction`), verifying URL generation, parameter encoding, and `AbortSignal` propagation.
+  - `tests/unit/capabilities.test.ts` (10 tests): Complete permutation coverage of investigation capability helpers (`canCreateInvestigation`, `canSelfAssignInvestigation`, `canSelfUnassignInvestigation`, `canAdminAssignInvestigation`, `canUpdateInvestigationPriority`, `canTransitionInvestigation`, `canLinkInvestigationTransaction`, `canResolveInvestigation`) across roles (`ADMIN`, `INVESTIGATOR`, `ANALYST`, and unknown/missing roles) and lifecycle states.
+  - `tests/unit/query-keys.test.ts` (3 tests): Hierarchical query key serialization for investigation list filters and detail identifiers.
+- **Component & Integration Tests:**
+  - `tests/components/investigation-badges.test.tsx` (3 tests): Badge rendering, accessibility labels, and color token conformance across operational statuses (`OPEN`, `UNDER_REVIEW`, `RESOLVED`), triage priorities (`LOW`, `MEDIUM`, `HIGH`, `CRITICAL`), and formal resolutions (`LEGITIMATE`, `SUSPICIOUS`, `CONFIRMED_FRAUD`, `INCONCLUSIVE`).
+  - `tests/components/investigations-queue-page.test.tsx` (6 tests): Queue table rendering, server-side pagination, status/priority filtering, unassigned mode toggle, creation modal submission, empty states, and 500 error retry.
+  - `tests/components/investigation-workspace-page.test.tsx` (7 tests): Complete workspace context loading, primary transaction immutable facts with `MoneyValue`, latest risk analysis snapshot, related transactions table, self-assignment ("Take Case"), priority updates, OPEN -> UNDER_REVIEW lifecycle progression, related transaction linking dialog, and irreversible case resolution with read-only terminal banner.
+  - `tests/components/investigation-creation.test.tsx` (1 test): "Investigate Transaction" entry point on `TransactionDetailPage`, modal pre-population of transaction UUID, and disabled field lock.
+- **Committed Playwright E2E Specs (`tests/e2e/investigations.spec.ts` — 4 Journeys):**
+  - *Journey 1 (ANALYST):* Navigates from transaction detail -> clicks "Investigate Transaction" -> confirms pre-filled UUID -> submits case -> verifies navigation to queue and workspace.
+  - *Journey 2 (INVESTIGATOR):* Views unassigned case in queue -> claims case via "Take Case" -> transitions to `UNDER_REVIEW` -> links related transaction satisfying 1-hop scope -> resolves case with mandatory notes -> verifies permanent read-only state.
+  - *Journey 3 (ADMIN):* Reassigns case via manual UUID dialog -> updates priority to `CRITICAL` -> executes formal resolution -> confirms irreversible lock banner.
+  - *Journey 4 (Concurrency Conflict):* Simulates HTTP `409 Conflict` (`CASE_ALREADY_ASSIGNED`) on concurrent assignment attempt -> asserts concurrency warning alert -> verifies automatic cache invalidation and UI refresh of server-winning assignee.
+
+### 24.2 Browser Verification Status & Explicit Limitations (Finding F5-AUD-03)
+
+- **Mocked Route E2E (`13 / 13 PASS`):** Playwright E2E tests run using client-side network route interception (`page.route`) against mocked backend JSON fixtures. This thoroughly exercises client-side routing, React component lifecycles, form validation, error banners, and cache invalidation.
+- **Live Backend Staging Boundary:** As noted in independent audit finding `F5-AUD-03`, mocked Playwright journeys do not constitute live end-to-end integration against a running PostgreSQL database. Live backend E2E execution (`E2E_API_MODE=live`) is retained as an explicit staging/CI qualification requirement.
+
+### 24.3 Verified Phase F5 Baseline (Independent Audit Verification)
+
+| Check | Tool / Runner | Result | Scope / Notes |
+|---|---|---|---|
+| Vitest Unit & Integration | Vitest 5.1.0 (`npm test`) | **204 / 204 PASS** | 49 test files across all F1–F5 modules (duration 31.03s) |
+| End-to-End Browser | Playwright 1.52.0 (`npm run test:e2e`) | **13 / 13 PASS** | Chromium mocked suites across auth, shell, analytics, transactions, datasets, and investigations (duration 31.2s) |
+| TypeScript Typecheck | `tsc -b --pretty` | **PASS (0 errors)** | `strict: true`, clean typing, 0 errors |
+| ESLint Code Quality | `eslint .` | **PASS (0 errors, 0 warnings)** | Flat config, zero rule bypasses |
+| Production Build | `vite build` | **PASS** | Clean bundle generation with code-splitting chunks |
 
 
 ### 22.1 Vitest + MSW Unit & Integration Coverage (`22` Files, `87/87` Passing)

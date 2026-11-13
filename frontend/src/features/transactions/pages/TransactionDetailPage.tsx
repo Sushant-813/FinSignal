@@ -1,4 +1,5 @@
-import { ArrowLeft, RefreshCw } from "lucide-react";
+import { ArrowLeft, FolderSearch, RefreshCw } from "lucide-react";
+import { useState } from "react";
 import { Link, useLocation, useParams, useSearchParams } from "react-router";
 import { Alert } from "../../../components/ui/Alert.tsx";
 import { Button } from "../../../components/ui/Button.tsx";
@@ -8,6 +9,9 @@ import {
   isApiClientError,
   isForbiddenError,
 } from "../../../lib/api/errors.ts";
+import { canCreateInvestigation } from "../../../lib/permissions/capabilities.ts";
+import { useAuth } from "../../auth/hooks/useAuth.ts";
+import { InvestigationCreateDialog } from "../../investigations/components/InvestigationCreateDialog.tsx";
 import { RiskAnalysisPanel } from "../../risk/components/RiskAnalysisPanel.tsx";
 import { TransactionFactsCard } from "../components/TransactionFactsCard.tsx";
 import { TransactionRelationsCard } from "../components/TransactionRelationsCard.tsx";
@@ -19,6 +23,8 @@ interface DetailNavigationState {
 }
 
 export function TransactionDetailPage() {
+  const { user } = useAuth();
+  const [isInvestigateOpen, setIsInvestigateOpen] = useState(false);
   const { transactionId = "" } = useParams<{ transactionId: string }>();
   const [searchParams] = useSearchParams();
   const location = useLocation();
@@ -55,6 +61,19 @@ export function TransactionDetailPage() {
           </h1>
           <p className="font-mono text-xs text-text-muted">{transactionId || "Missing ID"}</p>
         </div>
+        {canCreateInvestigation(user) && detailQuery.data && (
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setIsInvestigateOpen(true)}
+              data-testid="investigate-transaction-button"
+            >
+              <FolderSearch className="h-4 w-4" aria-hidden="true" />
+              Investigate Transaction
+            </Button>
+          </div>
+        )}
       </div>
 
       {!isValidUuid ? (
@@ -106,6 +125,14 @@ export function TransactionDetailPage() {
           />
         </>
       ) : null}
+      {isInvestigateOpen && (
+        <InvestigationCreateDialog
+          isOpen={isInvestigateOpen}
+          onClose={() => setIsInvestigateOpen(false)}
+          defaultTransactionId={transactionId}
+          isTransactionIdFixed
+        />
+      )}
     </div>
   );
 }

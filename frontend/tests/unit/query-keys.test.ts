@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { analyticsKeys, riskKeys, transactionKeys } from "../../src/lib/api/query-keys.ts";
+import {
+  analyticsKeys,
+  investigationKeys,
+  riskKeys,
+  transactionKeys,
+} from "../../src/lib/api/query-keys.ts";
 
 describe("F3 query key factory isolation and normalization", () => {
   it("normalizes optional analytics params and separates namespaces, currencies, and timezones", () => {
@@ -67,5 +72,45 @@ describe("F3 query key factory isolation and normalization", () => {
     );
     expect(riskKeys.byTransaction("tx-1")).toEqual(["risk", "transaction", "tx-1"]);
     expect(JSON.stringify(riskKeys.byTransaction("tx-1"))).not.toContain("Bearer");
+  });
+
+  it("normalizes investigation query keys and excludes redundant transactions key", () => {
+    const listKeyA = investigationKeys.list({
+      page: 1,
+      page_size: 25,
+      status: "OPEN",
+      priority: "HIGH",
+      assigned_to: "   ",
+      unassigned: undefined,
+    });
+
+    const listKeyB = investigationKeys.list({
+      page: 1,
+      page_size: 25,
+      status: "OPEN",
+      priority: "HIGH",
+      assigned_to: null,
+      unassigned: null,
+    });
+
+    expect(listKeyA).toEqual(listKeyB);
+
+    const listKeyDiff = investigationKeys.list({
+      page: 2,
+      page_size: 25,
+      status: "UNDER_REVIEW",
+      priority: "LOW",
+    });
+
+    expect(listKeyA).not.toEqual(listKeyDiff);
+
+    const detail1 = investigationKeys.detail("inv-1");
+    const detail2 = investigationKeys.detail("inv-2");
+    expect(detail1).toEqual(["investigations", "detail", "inv-1"]);
+    expect(detail1).not.toEqual(detail2);
+
+    // Architectural guard: ensure separate transactions query key is NOT exposed on investigationKeys
+    expect((investigationKeys as Record<string, unknown>).transactions).toBeUndefined();
+    expect(JSON.stringify(detail1)).not.toContain("Bearer");
   });
 });

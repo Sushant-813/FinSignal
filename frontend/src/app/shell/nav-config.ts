@@ -77,6 +77,9 @@ export function getRouteBreadcrumbLabel(pathname: string): string {
   if (pathname.startsWith("/transactions/")) {
     return "Transaction Detail";
   }
+  if (pathname.startsWith("/investigations/")) {
+    return "Investigation Workspace";
+  }
   if (pathname.startsWith("/datasets/imports/")) {
     return "Dataset Import Details";
   }
