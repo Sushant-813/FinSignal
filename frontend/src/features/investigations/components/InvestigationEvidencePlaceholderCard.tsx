@@ -1,15 +1,14 @@
 import { FileText } from "lucide-react";
 import { Badge } from "../../../components/ui/Badge.tsx";
-import {
-  Card,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "../../../components/ui/Card.tsx";
+import { Card, CardDescription, CardHeader, CardTitle } from "../../../components/ui/Card.tsx";
 
 export function InvestigationEvidencePlaceholderCard() {
   return (
-    <Card elevated className="space-y-3 opacity-90" data-testid="investigation-evidence-placeholder">
+    <Card
+      elevated
+      className="space-y-3 opacity-90"
+      data-testid="investigation-evidence-placeholder"
+    >
       <CardHeader className="flex flex-row items-start justify-between pb-1">
         <div className="flex items-center gap-2">
           <FileText className="h-5 w-5 text-text-muted" aria-hidden="true" />
@@ -29,4 +28,3 @@ export function InvestigationEvidencePlaceholderCard() {
     </Card>
   );
 }
-

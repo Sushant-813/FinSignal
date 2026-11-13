@@ -104,13 +104,10 @@ describe("Investigations API client functions (F5.1)", () => {
     let capturedUrl = "";
 
     server.use(
-      http.get(
-        `*/api/v1/investigations/${SAMPLE_INVESTIGATION_ID}`,
-        ({ request }) => {
-          capturedUrl = request.url;
-          return HttpResponse.json(buildInvestigationDetailResponse());
-        }
-      )
+      http.get(`*/api/v1/investigations/${SAMPLE_INVESTIGATION_ID}`, ({ request }) => {
+        capturedUrl = request.url;
+        return HttpResponse.json(buildInvestigationDetailResponse());
+      })
     );
 
     const detail = await getInvestigation(SAMPLE_INVESTIGATION_ID);
@@ -146,18 +143,15 @@ describe("Investigations API client functions (F5.1)", () => {
     let capturedBody: unknown = null;
 
     server.use(
-      http.patch(
-        `*/api/v1/investigations/${SAMPLE_INVESTIGATION_ID}`,
-        async ({ request }) => {
-          capturedBody = await request.json();
-          return HttpResponse.json(
-            buildInvestigationDetailResponse({
-              assigned_to: SAMPLE_INVESTIGATOR_ID,
-              status: "UNDER_REVIEW",
-            })
-          );
-        }
-      )
+      http.patch(`*/api/v1/investigations/${SAMPLE_INVESTIGATION_ID}`, async ({ request }) => {
+        capturedBody = await request.json();
+        return HttpResponse.json(
+          buildInvestigationDetailResponse({
+            assigned_to: SAMPLE_INVESTIGATOR_ID,
+            status: "UNDER_REVIEW",
+          })
+        );
+      })
     );
 
     const updated = await patchInvestigation(SAMPLE_INVESTIGATION_ID, {
@@ -177,20 +171,17 @@ describe("Investigations API client functions (F5.1)", () => {
     setAccessToken("test-jwt");
 
     server.use(
-      http.patch(
-        `*/api/v1/investigations/${SAMPLE_INVESTIGATION_ID}`,
-        () => {
-          return HttpResponse.json(
-            {
-              error: {
-                code: "CASE_ALREADY_ASSIGNED",
-                message: "Investigation was concurrently assigned to another user.",
-              },
+      http.patch(`*/api/v1/investigations/${SAMPLE_INVESTIGATION_ID}`, () => {
+        return HttpResponse.json(
+          {
+            error: {
+              code: "CASE_ALREADY_ASSIGNED",
+              message: "Investigation was concurrently assigned to another user.",
             },
-            { status: 409 }
-          );
-        }
-      )
+          },
+          { status: 409 }
+        );
+      })
     );
 
     await expect(
@@ -238,12 +229,9 @@ describe("Investigations API client functions (F5.1)", () => {
     setAccessToken("test-jwt");
 
     server.use(
-      http.get(
-        `*/api/v1/investigations/${SAMPLE_INVESTIGATION_ID}/transactions`,
-        () => {
-          return HttpResponse.json(buildInvestigationTransactionsListResponse());
-        }
-      )
+      http.get(`*/api/v1/investigations/${SAMPLE_INVESTIGATION_ID}/transactions`, () => {
+        return HttpResponse.json(buildInvestigationTransactionsListResponse());
+      })
     );
 
     const txList = await getInvestigationTransactions(SAMPLE_INVESTIGATION_ID);
@@ -282,21 +270,18 @@ describe("Investigations API client functions (F5.1)", () => {
     setAccessToken("test-jwt");
 
     server.use(
-      http.post(
-        `*/api/v1/investigations/${SAMPLE_INVESTIGATION_ID}/transactions`,
-        () => {
-          return HttpResponse.json(
-            {
-              error: {
-                code: "TRANSACTION_NOT_RELATED",
-                message:
-                  "Transaction does not satisfy direct 1-hop relationship condition with primary transaction.",
-              },
+      http.post(`*/api/v1/investigations/${SAMPLE_INVESTIGATION_ID}/transactions`, () => {
+        return HttpResponse.json(
+          {
+            error: {
+              code: "TRANSACTION_NOT_RELATED",
+              message:
+                "Transaction does not satisfy direct 1-hop relationship condition with primary transaction.",
             },
-            { status: 422 }
-          );
-        }
-      )
+          },
+          { status: 422 }
+        );
+      })
     );
 
     await expect(

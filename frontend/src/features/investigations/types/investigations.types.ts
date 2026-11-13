@@ -48,4 +48,3 @@ export type ListInvestigationTransactionsOperation =
   operations["list_investigation_transactions_api_v1_investigations__id__transactions_get"];
 export type AddRelatedTransactionOperation =
   operations["add_related_transaction_api_v1_investigations__id__transactions_post"];
-

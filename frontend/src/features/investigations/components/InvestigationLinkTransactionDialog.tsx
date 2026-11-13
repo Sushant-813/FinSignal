@@ -60,7 +60,8 @@ export function InvestigationLinkTransactionDialog({
     if (err.code === "NAMESPACE_MISMATCH") {
       errorMessage = "Namespace mismatch: the target transaction belongs to a different partition.";
     } else if (err.code === "TRANSACTION_NOT_RELATED") {
-      errorMessage = "The target transaction is not related to this investigation's primary transaction.";
+      errorMessage =
+        "The target transaction is not related to this investigation's primary transaction.";
     } else if (err.code === "TRANSACTION_ALREADY_LINKED") {
       errorMessage = "This transaction is already linked to the current investigation.";
     } else if (err.code === "INVESTIGATION_ALREADY_RESOLVED") {

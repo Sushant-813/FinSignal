@@ -24,9 +24,7 @@ function renderQueuePage(
 ) {
   setAccessToken("test-role-jwt");
   server.use(
-    http.get("*/api/v1/auth/me", () =>
-      HttpResponse.json(buildAuthUser(role, userOverrides))
-    )
+    http.get("*/api/v1/auth/me", () => HttpResponse.json(buildAuthUser(role, userOverrides)))
   );
 
   const router = createMemoryRouter(
@@ -84,7 +82,9 @@ describe("InvestigationsQueuePage component (F5.2–F5.3)", () => {
 
     expect(await screen.findByRole("heading", { name: "Investigations" })).toBeInTheDocument();
     expect(await screen.findByTestId("investigation-queue-table")).toBeInTheDocument();
-    expect(await screen.findByTestId(`investigation-row-${SAMPLE_INVESTIGATION_ID}`)).toBeInTheDocument();
+    expect(
+      await screen.findByTestId(`investigation-row-${SAMPLE_INVESTIGATION_ID}`)
+    ).toBeInTheDocument();
     expect(screen.getByTestId("investigation-status-badge-open")).toBeInTheDocument();
     expect(screen.getByTestId("investigation-priority-badge-high")).toBeInTheDocument();
     expect(screen.getByText("Unassigned")).toBeInTheDocument();
@@ -144,30 +144,35 @@ describe("InvestigationsQueuePage component (F5.2–F5.3)", () => {
   it("opens New Investigation dialog when permitted and submits successfully", async () => {
     const user = userEvent.setup();
     server.use(
-      http.get("*/api/v1/investigations", () => HttpResponse.json(buildInvestigationListResponse())),
+      http.get("*/api/v1/investigations", () =>
+        HttpResponse.json(buildInvestigationListResponse())
+      ),
       http.post("*/api/v1/investigations", async () => {
-        return HttpResponse.json({
-          id: "99999999-8888-7777-6666-555555555555",
-          status: "OPEN",
-          priority: "HIGH",
-          assigned_to: null,
-          primary_transaction: {
-            id: SAMPLE_PRIMARY_TX_ID,
-            external_transaction_id: "EXT-001",
-            account_id: "00000000-0000-0000-0000-000000000000",
-            amount: "100.00",
-            currency: "USD",
-            direction: "DEBIT",
-            occurred_at: "2026-11-13T10:00:00Z",
-            source_namespace: "SYNTHETIC",
+        return HttpResponse.json(
+          {
+            id: "99999999-8888-7777-6666-555555555555",
+            status: "OPEN",
+            priority: "HIGH",
+            assigned_to: null,
+            primary_transaction: {
+              id: SAMPLE_PRIMARY_TX_ID,
+              external_transaction_id: "EXT-001",
+              account_id: "00000000-0000-0000-0000-000000000000",
+              amount: "100.00",
+              currency: "USD",
+              direction: "DEBIT",
+              occurred_at: "2026-11-13T10:00:00Z",
+              source_namespace: "SYNTHETIC",
+            },
+            latest_risk_analysis: null,
+            related_transactions: [],
+            resolution: null,
+            resolution_notes: null,
+            created_at: "2026-11-13T10:00:00Z",
+            updated_at: "2026-11-13T10:00:00Z",
           },
-          latest_risk_analysis: null,
-          related_transactions: [],
-          resolution: null,
-          resolution_notes: null,
-          created_at: "2026-11-13T10:00:00Z",
-          updated_at: "2026-11-13T10:00:00Z",
-        }, { status: 201 });
+          { status: 201 }
+        );
       })
     );
 
@@ -187,7 +192,9 @@ describe("InvestigationsQueuePage component (F5.2–F5.3)", () => {
     await user.click(submitBtn);
 
     await waitFor(() => {
-      expect(router.state.location.pathname).toBe("/investigations/99999999-8888-7777-6666-555555555555");
+      expect(router.state.location.pathname).toBe(
+        "/investigations/99999999-8888-7777-6666-555555555555"
+      );
     });
   });
 

@@ -47,4 +47,3 @@ describe("Investigation badges (F5.2)", () => {
     }
   });
 });
-

@@ -2,7 +2,10 @@ import { FolderPlus, RefreshCw } from "lucide-react";
 import { useState } from "react";
 import { Alert } from "../../../components/ui/Alert.tsx";
 import { Button } from "../../../components/ui/Button.tsx";
-import { canCreateInvestigation, canViewInvestigations } from "../../../lib/permissions/capabilities.ts";
+import {
+  canCreateInvestigation,
+  canViewInvestigations,
+} from "../../../lib/permissions/capabilities.ts";
 import { useAuth } from "../../auth/hooks/useAuth.ts";
 import { InvestigationCreateDialog } from "../components/InvestigationCreateDialog.tsx";
 import { InvestigationFiltersBar } from "../components/InvestigationFiltersBar.tsx";
@@ -119,12 +122,8 @@ export function InvestigationsQueuePage() {
 
       {/* Creation Dialog */}
       {isCreateOpen && (
-        <InvestigationCreateDialog
-          isOpen={isCreateOpen}
-          onClose={() => setIsCreateOpen(false)}
-        />
+        <InvestigationCreateDialog isOpen={isCreateOpen} onClose={() => setIsCreateOpen(false)} />
       )}
     </div>
   );
 }
-

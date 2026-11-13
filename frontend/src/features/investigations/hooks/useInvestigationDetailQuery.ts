@@ -3,10 +3,7 @@ import { investigationKeys } from "../../../lib/api/query-keys.ts";
 import { getInvestigation } from "../api/investigations-api.ts";
 import { UUID_REGEX } from "../schemas/investigation-filter-schema.ts";
 
-export function useInvestigationDetailQuery(
-  investigationId: string | undefined,
-  enabled = true
-) {
+export function useInvestigationDetailQuery(investigationId: string | undefined, enabled = true) {
   const isValid = Boolean(investigationId && UUID_REGEX.test(investigationId));
 
   return useQuery({
@@ -16,4 +13,3 @@ export function useInvestigationDetailQuery(
     staleTime: 10_000,
   });
 }
-

@@ -14,13 +14,8 @@ export const INVESTIGATION_RESOLUTIONS = [
  */
 export const investigationCreateSchema = z
   .object({
-    transaction_id: z
-      .string()
-      .trim()
-      .regex(UUID_REGEX, "Transaction ID must be a valid UUID."),
-    priority: z
-      .enum(["LOW", "MEDIUM", "HIGH", "CRITICAL"])
-      .default("MEDIUM"),
+    transaction_id: z.string().trim().regex(UUID_REGEX, "Transaction ID must be a valid UUID."),
+    priority: z.enum(["LOW", "MEDIUM", "HIGH", "CRITICAL"]).default("MEDIUM"),
   })
   .strict();
 
@@ -34,10 +29,7 @@ export type InvestigationCreateFormValues = z.infer<typeof investigationCreateSc
 export const investigationPatchSchema = z
   .object({
     assigned_to: z
-      .union([
-        z.string().trim().regex(UUID_REGEX, "Assignee must be a valid UUID."),
-        z.null(),
-      ])
+      .union([z.string().trim().regex(UUID_REGEX, "Assignee must be a valid UUID."), z.null()])
       .optional(),
     status: z.literal("UNDER_REVIEW").optional(),
     priority: z.enum(["LOW", "MEDIUM", "HIGH", "CRITICAL"]).optional(),
@@ -70,12 +62,8 @@ export type InvestigationResolveFormValues = z.infer<typeof investigationResolve
  */
 export const investigationLinkSchema = z
   .object({
-    transaction_id: z
-      .string()
-      .trim()
-      .regex(UUID_REGEX, "Transaction ID must be a valid UUID."),
+    transaction_id: z.string().trim().regex(UUID_REGEX, "Transaction ID must be a valid UUID."),
   })
   .strict();
 
 export type InvestigationLinkFormValues = z.infer<typeof investigationLinkSchema>;
-

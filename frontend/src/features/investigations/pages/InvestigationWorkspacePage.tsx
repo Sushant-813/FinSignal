@@ -127,9 +127,7 @@ export function InvestigationWorkspacePage() {
             <InvestigationPrimaryTransactionCard
               transaction={detailQuery.data.primary_transaction}
             />
-            <InvestigationLatestRiskCard
-              riskAnalysis={detailQuery.data.latest_risk_analysis}
-            />
+            <InvestigationLatestRiskCard riskAnalysis={detailQuery.data.latest_risk_analysis} />
           </div>
 
           {/* Related Transactions */}
@@ -182,4 +180,3 @@ export function InvestigationWorkspacePage() {
     </div>
   );
 }
-

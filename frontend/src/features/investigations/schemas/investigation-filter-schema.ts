@@ -5,8 +5,7 @@ import type {
   InvestigationStatus,
 } from "../types/investigations.types.ts";
 
-export const UUID_REGEX =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export const INVESTIGATION_STATUSES: readonly InvestigationStatus[] = [
   "OPEN",
@@ -133,9 +132,7 @@ export function parseInvestigationFilterParams(
     const fallbackPageSize =
       !Number.isNaN(rawSize) && rawSize >= 1 && rawSize <= 100 ? rawSize : DEFAULT_PAGE_SIZE;
 
-    const validStatus = INVESTIGATION_STATUSES.includes(
-      rawInput.status as InvestigationStatus
-    )
+    const validStatus = INVESTIGATION_STATUSES.includes(rawInput.status as InvestigationStatus)
       ? (rawInput.status as InvestigationStatus)
       : undefined;
 
@@ -146,8 +143,7 @@ export function parseInvestigationFilterParams(
       : undefined;
 
     const isUnassigned =
-      typeof rawInput.unassigned === "string" &&
-      rawInput.unassigned.toLowerCase() === "true";
+      typeof rawInput.unassigned === "string" && rawInput.unassigned.toLowerCase() === "true";
 
     const validAssignedTo =
       !isUnassigned &&

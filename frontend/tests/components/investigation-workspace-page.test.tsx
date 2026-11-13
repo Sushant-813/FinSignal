@@ -252,10 +252,7 @@ describe("InvestigationWorkspacePage component (F5.5–F5.6)", () => {
     await user.click(confirmedFraudOption);
 
     const notesArea = screen.getByLabelText(/resolution notes/i);
-    await user.type(
-      notesArea,
-      "Identity theft and unauthorized device velocity confirmed."
-    );
+    await user.type(notesArea, "Identity theft and unauthorized device velocity confirmed.");
 
     const confirmBtn = screen.getByTestId("confirm-resolve-case-button");
     await user.click(confirmBtn);

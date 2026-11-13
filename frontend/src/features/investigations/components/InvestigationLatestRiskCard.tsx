@@ -1,21 +1,14 @@
 import { ShieldAlert } from "lucide-react";
 import { RiskBadge } from "../../../components/data-display/RiskBadge.tsx";
 import { TimestampDisplay } from "../../../components/data-display/TimestampDisplay.tsx";
-import {
-  Card,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "../../../components/ui/Card.tsx";
+import { Card, CardDescription, CardHeader, CardTitle } from "../../../components/ui/Card.tsx";
 import type { InvestigationLatestRiskDTO } from "../types/investigations.types.ts";
 
 export interface InvestigationLatestRiskCardProps {
   readonly riskAnalysis?: InvestigationLatestRiskDTO | null | undefined;
 }
 
-export function InvestigationLatestRiskCard({
-  riskAnalysis,
-}: InvestigationLatestRiskCardProps) {
+export function InvestigationLatestRiskCard({ riskAnalysis }: InvestigationLatestRiskCardProps) {
   return (
     <Card elevated className="space-y-4" data-testid="investigation-latest-risk-card">
       <CardHeader className="pb-2">

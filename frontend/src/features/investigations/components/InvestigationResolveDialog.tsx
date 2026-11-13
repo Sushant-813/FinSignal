@@ -99,7 +99,9 @@ export function InvestigationResolveDialog({
             <div className="flex items-start gap-2">
               <AlertTriangle className="h-4 w-4 text-warning shrink-0 mt-0.5" aria-hidden="true" />
               <div>
-                <p className="font-medium text-text-primary">Resolution is permanent and irreversible.</p>
+                <p className="font-medium text-text-primary">
+                  Resolution is permanent and irreversible.
+                </p>
                 <p className="mt-0.5 text-xs text-text-secondary">
                   Once resolved, this case becomes strictly read-only. No further status changes,
                   assignee modifications, or transaction links can be made.
@@ -142,7 +144,9 @@ export function InvestigationResolveDialog({
               id="resolution-notes-input"
               rows={4}
               className={`w-full rounded-input border bg-surface p-2.5 text-sm text-text-primary placeholder:text-text-muted focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 disabled:opacity-50 ${
-                fieldErrors.resolution_notes ? "border-danger focus:border-danger focus:ring-danger" : "border-border"
+                fieldErrors.resolution_notes
+                  ? "border-danger focus:border-danger focus:ring-danger"
+                  : "border-border"
               }`}
               placeholder="Document the analytical findings, evidence basis, and justification for this case verdict…"
               value={notes}

@@ -57,7 +57,7 @@ export function InvestigationFiltersBar({
   disabled = false,
 }: InvestigationFiltersBarProps) {
   const [customAssigneeInput, setCustomAssigneeInput] = useState(
-    assigneeMode === "OTHER" ? filters.assigned_to ?? "" : ""
+    assigneeMode === "OTHER" ? (filters.assigned_to ?? "") : ""
   );
 
   useEffect(() => {

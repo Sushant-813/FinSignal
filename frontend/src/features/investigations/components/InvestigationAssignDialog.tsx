@@ -66,7 +66,8 @@ export function InvestigationAssignDialog({
   let errorMessage = getUserFriendlyErrorMessage(err);
   if (isClientErr) {
     if (err.code === "CASE_ALREADY_ASSIGNED" || err.status === 409) {
-      errorMessage = "Assignment conflict: this investigation was modified or claimed concurrently.";
+      errorMessage =
+        "Assignment conflict: this investigation was modified or claimed concurrently.";
     } else if (err.code === "USER_NOT_FOUND") {
       errorMessage = "Assignee user not found. Verify the user UUID.";
     } else if (err.code === "USER_INACTIVE") {
@@ -82,7 +83,8 @@ export function InvestigationAssignDialog({
         <DialogHeader>
           <DialogTitle>Assign Investigation</DialogTitle>
           <DialogDescription id="assign-dialog-description">
-            Assign this investigation to an investigator or administrator, or remove current assignment.
+            Assign this investigation to an investigator or administrator, or remove current
+            assignment.
           </DialogDescription>
         </DialogHeader>
 

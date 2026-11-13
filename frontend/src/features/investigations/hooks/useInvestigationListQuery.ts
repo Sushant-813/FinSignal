@@ -11,4 +11,3 @@ export function useInvestigationListQuery(params: InvestigationListParams) {
     staleTime: 10_000,
   });
 }
-

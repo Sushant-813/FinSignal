@@ -4,12 +4,7 @@ import { MoneyValue } from "../../../components/data-display/MoneyValue.tsx";
 import { TimestampDisplay } from "../../../components/data-display/TimestampDisplay.tsx";
 import { Badge } from "../../../components/ui/Badge.tsx";
 import { Button } from "../../../components/ui/Button.tsx";
-import {
-  Card,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "../../../components/ui/Card.tsx";
+import { Card, CardDescription, CardHeader, CardTitle } from "../../../components/ui/Card.tsx";
 import {
   Table,
   TableBody,

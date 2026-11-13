@@ -167,4 +167,3 @@ export function useInvestigationFilterParams(currentUserId?: string | null | und
     resetFilters,
   };
 }
-

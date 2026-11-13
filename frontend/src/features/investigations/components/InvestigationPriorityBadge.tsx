@@ -7,27 +7,25 @@ export interface InvestigationPriorityBadgeProps extends HTMLAttributes<HTMLSpan
   readonly size?: BadgeSize | undefined;
 }
 
-const priorityDisplayMap: Record<
-  InvestigationPriority,
-  { label: string; variant: BadgeVariant }
-> = {
-  LOW: {
-    label: "Low",
-    variant: "neutral",
-  },
-  MEDIUM: {
-    label: "Medium",
-    variant: "info",
-  },
-  HIGH: {
-    label: "High",
-    variant: "warning",
-  },
-  CRITICAL: {
-    label: "Critical",
-    variant: "danger",
-  },
-};
+const priorityDisplayMap: Record<InvestigationPriority, { label: string; variant: BadgeVariant }> =
+  {
+    LOW: {
+      label: "Low",
+      variant: "neutral",
+    },
+    MEDIUM: {
+      label: "Medium",
+      variant: "info",
+    },
+    HIGH: {
+      label: "High",
+      variant: "warning",
+    },
+    CRITICAL: {
+      label: "Critical",
+      variant: "danger",
+    },
+  };
 
 export function InvestigationPriorityBadge({
   priority,
@@ -52,4 +50,3 @@ export function InvestigationPriorityBadge({
     </Badge>
   );
 }
-
